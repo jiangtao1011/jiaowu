@@ -78,8 +78,9 @@ export default function Inspections() {
 
   // 类型管理状态
   const [catForm, setCatForm] = useState({ name: '' });
-  const [typeForm, setTypeForm] = useState({ name: '', category_id: '', cycle: 'daily', items: [{ key: '', label: '', type: 'select', options: '' }] });
-  const [editingType, setEditingType] = useState(null); // 展开编辑的类型 id
+  const [typeForm, setTypeForm] = useState({ name: '', category_id: '', cycle: 'daily', schedule_link: 1, description: '', items: [{ key: '', label: '', type: 'select', options: '' }] });
+  const [typeEditId, setTypeEditId] = useState(null); // 正在编辑的类型 id（null=新建）
+  const [editingType, setEditingType] = useState(null); // 展开编辑维度的类型 id
   const [dimForm, setDimForm] = useState([]); // 编辑某类型维度
 
   // 检查配置状态（学期起始 + 达标线）
@@ -126,6 +127,7 @@ export default function Inspections() {
   const teacherById = useMemo(() => new Map(teachers.map((t) => [t.id, t])), [teachers]);
   const catById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const typeDims = currentType?.dimensions || [];
+  const linkType = currentType && currentType.schedule_link !== 0; // 该类型是否需要课表联动
 
   // 课表联动：选班 + 日期后拉取当天该班课程
   const loadDayLessons = async (date, cid) => {
@@ -227,6 +229,8 @@ export default function Inspections() {
   const addTplItem = () => setTypeForm({ ...typeForm, items: [...typeForm.items, { key: '', label: '', type: 'select', options: '' }] });
   const removeTplItem = (i) => setTypeForm({ ...typeForm, items: typeForm.items.filter((_, idx) => idx !== i) });
 
+  const emptyTypeForm = () => ({ name: '', category_id: '', cycle: 'daily', schedule_link: 1, description: '', items: [{ key: '', label: '', type: 'select', options: '' }] });
+
   const saveType = async (e) => {
     e.preventDefault();
     setError(''); setMsg('');
@@ -236,15 +240,49 @@ export default function Inspections() {
         .map((it) => ({ key: it.key || it.label, label: it.label, type: it.type, options: it.type === 'select' ? it.options.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined }));
       if (!items.length) return setError('请至少添加一个检查项');
       if (!typeForm.category_id) return setError('请选择检查大类');
-      await api.post('/inspections/types', { name: typeForm.name.trim(), category_id: Number(typeForm.category_id), cycle: typeForm.cycle, items });
-      setTypeForm({ name: '', category_id: '', cycle: 'daily', items: [{ key: '', label: '', type: 'select', options: '' }] });
-      setMsg('检查类型已创建');
+      const payload = {
+        name: typeForm.name.trim(),
+        category_id: Number(typeForm.category_id),
+        cycle: typeForm.cycle,
+        schedule_link: typeForm.schedule_link ? 1 : 0,
+        description: typeForm.description || null,
+        items,
+      };
+      if (typeEditId != null) {
+        await api.patch(`/inspections/types/${typeEditId}`, payload);
+        setMsg('检查类型已更新');
+      } else {
+        await api.post('/inspections/types', payload);
+        setMsg('检查类型已创建');
+      }
+      setTypeForm(emptyTypeForm());
+      setTypeEditId(null);
       load();
     } catch (e) { setError(errMsg(e)); }
   };
+
+  // 编辑检查类型：把类型现有字段填进表单
+  const openTypeEdit = (t) => {
+    setEditingType(null); // 收起维度编辑
+    setTypeEditId(t.id);
+    setTypeForm({
+      name: t.name,
+      category_id: t.category_id ?? '',
+      cycle: t.cycle || 'daily',
+      schedule_link: t.schedule_link === 0 ? 0 : 1,
+      description: t.description || '',
+      items: (t.items || []).length
+        ? t.items.map((it) => ({ key: it.key || '', label: it.label || '', type: it.type || 'select', options: (it.options || []).join(',') }))
+        : [{ key: '', label: '', type: 'select', options: '' }],
+    });
+  };
+  const cancelTypeEdit = () => {
+    setTypeForm(emptyTypeForm());
+    setTypeEditId(null);
+  };
   const delType = async (id) => {
     if (!confirm('删除该检查类型？已有检查记录则不可删。')) return;
-    try { await api.delete(`/inspections/types/${id}`); load(); } catch (e) { setError(errMsg(e)); }
+    try { await api.delete(`/inspections/types/${id}`); if (typeEditId === id) cancelTypeEdit(); load(); } catch (e) { setError(errMsg(e)); }
   };
 
   // 编辑某类型维度
@@ -419,63 +457,88 @@ export default function Inspections() {
             </div>
           )}
 
-          <div className="link-section">
-            <div className="link-head">课表联动 <span className="muted">（选日期 + 班级 + 节次，自动带出课程信息）</span></div>
-            <div className="form-grid">
-              <div>
-                <label>检查日期</label>
-                <input type="date" value={lessonDate} onChange={(e) => { setLessonDate(e.target.value); setPeriodNo(''); setTeacherId(''); setSubject(''); }} />
-                {lessonDate && <div className="hint mt-xs">{DAYS[dowOf(lessonDate) - 1]}</div>}
-              </div>
-              <div>
+          <div className="form-row">
+            <label>检查日期</label>
+            <input type="date" value={lessonDate} onChange={(e) => { setLessonDate(e.target.value); setPeriodNo(''); setTeacherId(''); setSubject(''); }} />
+            {lessonDate && <div className="hint mt-xs">{DAYS[dowOf(lessonDate) - 1]}</div>}
+          </div>
+
+          {linkType ? (
+            <div className="link-section">
+              <div className="link-head">课表联动 <span className="muted">（选班级 + 节次，自动带出课程信息）</span></div>
+              <div className="form-row">
                 <label>班级</label>
                 <select value={classId} onChange={(e) => { setClassId(e.target.value); setPeriodNo(''); setTeacherId(''); setSubject(''); }}>
                   <option value="">请选择班级</option>
                   {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </div>
-            </div>
 
-            {classId && periods.length > 0 && (
-              <div className="mt">
-                <label>选择节次（当天该班课程）</label>
-                <div className="period-pills">
-                  {periods.map((p) => {
-                    const lessons = dayLessons.filter((l) => l.period_no === p);
-                    const subj = [...new Set(lessons.map((l) => l.subject).filter(Boolean))].join('/');
-                    return (
-                      <button key={p} type="button" className={`period-pill ${String(p) === periodNo ? 'on' : ''}`} onClick={() => pickPeriod(p)}>
-                        <span className="pp-no">第{p}节</span>
-                        {subj && <span className="pp-subj">{subj}</span>}
-                      </button>
-                    );
-                  })}
+              {classId && periods.length > 0 && (
+                <div className="mt">
+                  <label>选择节次（当天该班课程）</label>
+                  <div className="period-pills">
+                    {periods.map((p) => {
+                      const lessons = dayLessons.filter((l) => l.period_no === p);
+                      const subj = [...new Set(lessons.map((l) => l.subject).filter(Boolean))].join('/');
+                      return (
+                        <button key={p} type="button" className={`period-pill ${String(p) === periodNo ? 'on' : ''}`} onClick={() => pickPeriod(p)}>
+                          <span className="pp-no">第{p}节</span>
+                          {subj && <span className="pp-subj">{subj}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
+              )}
+
+              {classId && lessonDate && periods.length === 0 && (
+                <p className="muted mt">该班当天暂无课程记录，可手动选择教师与科目。</p>
+              )}
+
+              <div className="course-card mt">
+                <div className="course-card-title">课程信息</div>
+                <div className="course-grid">
+                  <div className="course-cell"><span className="k">班级</span><span className="v">{classById.get(Number(classId))?.name || '-'}</span></div>
+                  <div className="course-cell"><span className="k">科目</span><span className="v">{subject || '-'}</span></div>
+                  <div className="course-cell"><span className="k">节次</span><span className="v">{periodNo ? `第${periodNo}节` : '-'}</span></div>
+                  <div className="course-cell"><span className="k">教师</span>
+                    <select value={teacherId} onChange={(e) => setTeacherId(e.target.value)} className="inline-select">
+                      <option value="">请选择教师</option>
+                      {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {dayLessons.filter((l) => String(l.period_no) === periodNo).length > 1 && (
+                  <p className="hint mt-xs">该节为分层/走班多门课，已取第一门，可手动调整教师。</p>
+                )}
               </div>
-            )}
-
-            {classId && lessonDate && periods.length === 0 && (
-              <p className="muted mt">该班当天暂无课程记录，可手动选择教师与科目。</p>
-            )}
-
-            <div className="course-card mt">
-              <div className="course-card-title">课程信息</div>
-              <div className="course-grid">
-                <div className="course-cell"><span className="k">班级</span><span className="v">{classById.get(Number(classId))?.name || '-'}</span></div>
-                <div className="course-cell"><span className="k">科目</span><span className="v">{subject || '-'}</span></div>
-                <div className="course-cell"><span className="k">节次</span><span className="v">{periodNo ? `第${periodNo}节` : '-'}</span></div>
-                <div className="course-cell"><span className="k">教师</span>
-                  <select value={teacherId} onChange={(e) => setTeacherId(e.target.value)} className="inline-select">
+            </div>
+          ) : (
+            <div className="link-section">
+              <div className="link-head">检查对象 <span className="muted">（该类型无需课表联动，直接选择被检查教师）</span></div>
+              <div className="form-grid">
+                <div>
+                  <label>班级</label>
+                  <select value={classId} onChange={(e) => setClassId(e.target.value)}>
+                    <option value="">请选择班级</option>
+                    {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label>教师</label>
+                  <select value={teacherId} onChange={(e) => { setTeacherId(e.target.value); const t = teacherById.get(Number(e.target.value)); if (t?.subject && !subject) setSubject(t.subject); }}>
                     <option value="">请选择教师</option>
                     {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
                 </div>
               </div>
-              {dayLessons.filter((l) => String(l.period_no) === periodNo).length > 1 && (
-                <p className="hint mt-xs">该节为分层/走班多门课，已取第一门，可手动调整教师。</p>
-              )}
+              <div className="form-row">
+                <label>科目</label>
+                <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="如 语文" />
+              </div>
             </div>
-          </div>
+          )}
 
           {currentType && (
             <div className="mt-lg">
@@ -664,22 +727,24 @@ export default function Inspections() {
           <h3 className="mt-lg">检查类型</h3>
           <div className="table-wrap">
             <table>
-              <thead><tr><th>类型名</th><th>大类</th><th>周期</th><th>检查项</th><th>维度</th><th style={{ width: 200 }}>操作</th></tr></thead>
+              <thead><tr><th>类型名</th><th>大类</th><th>周期</th><th>课表联动</th><th>检查项</th><th>维度</th><th style={{ width: 200 }}>操作</th></tr></thead>
               <tbody>
                 {types.map((t) => (
                   <tr key={t.id}>
                     <td>{t.name}</td>
                     <td><span className={`badge ${categoryBadge(t.category_name)}`}>{t.category_name}</span></td>
                     <td><span className={`badge ${CYCLE_BADGE[t.cycle] || ''}`}>{CYCLE_LABEL[t.cycle] || t.cycle}</span></td>
+                    <td>{t.schedule_link === 0 ? <span className="badge neutral">否</span> : <span className="badge ok">是</span>}</td>
                     <td>{t.items.length}</td>
                     <td>{t.dimensions.length}</td>
                     <td>
-                      <button className="btn sm" onClick={() => openDim(t)}>编辑维度</button>
+                      <button className="btn sm" onClick={() => openTypeEdit(t)}>编辑</button>
+                      <button className="btn sm" style={{ marginLeft: 6 }} onClick={() => openDim(t)}>维度</button>
                       <button className="btn sm danger" style={{ marginLeft: 6 }} onClick={() => delType(t.id)}>删</button>
                     </td>
                   </tr>
                 ))}
-                {types.length === 0 && <tr><td colSpan={6} className="muted">暂无检查类型</td></tr>}
+                {types.length === 0 && <tr><td colSpan={7} className="muted">暂无检查类型</td></tr>}
               </tbody>
             </table>
           </div>
@@ -703,7 +768,7 @@ export default function Inspections() {
             </div>
           )}
 
-          <h3 className="mt-lg">新建检查类型</h3>
+          <h3 className="mt-lg">{typeEditId != null ? '编辑检查类型' : '新建检查类型'}</h3>
           <form onSubmit={saveType}>
             <div className="form-grid">
               <div><label>类型名称</label><input value={typeForm.name} onChange={(e) => setTypeForm({ ...typeForm, name: e.target.value })} required /></div>
@@ -719,6 +784,16 @@ export default function Inspections() {
                   <option value="periodic">周期（标周次）</option>
                 </select>
               </div>
+              <div><label>课表联动</label>
+                <select value={typeForm.schedule_link ? 1 : 0} onChange={(e) => setTypeForm({ ...typeForm, schedule_link: Number(e.target.value) })}>
+                  <option value={1}>需要（选日期/班级/节次自动带出）</option>
+                  <option value={0}>不需要（如备课本/听课本等材料检查）</option>
+                </select>
+              </div>
+            </div>
+            <div className="mt form-row">
+              <label>描述（选填）</label>
+              <input value={typeForm.description || ''} onChange={(e) => setTypeForm({ ...typeForm, description: e.target.value })} placeholder="该检查类型的使用说明" />
             </div>
             <div className="mt">
               <label>检查项（type 支持 select / text / textarea / photo）</label>
@@ -738,7 +813,10 @@ export default function Inspections() {
               ))}
               <button type="button" className="btn sm" onClick={addTplItem}>+ 添加检查项</button>
             </div>
-            <div className="mt"><button className="btn primary">保存类型</button></div>
+            <div className="mt">
+              <button className="btn primary">{typeEditId != null ? '保存修改' : '保存类型'}</button>
+              {typeEditId != null && <button type="button" className="btn ghost" style={{ marginLeft: 8 }} onClick={cancelTypeEdit}>取消</button>}
+            </div>
           </form>
         </div>
       )}

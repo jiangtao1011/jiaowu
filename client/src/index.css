@@ -1316,6 +1316,38 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .mfield { margin-bottom: 16px; }
 .mfield > label { display: block; font-size: 14px; font-weight: 600; color: var(--text-soft); margin-bottom: 8px; }
 
+/* 移动端常规检查：联动结果卡 + 照片缩略图 */
+.minsp-course {
+  background: var(--primary-soft); border-radius: 12px; padding: 12px 14px; margin-top: 12px;
+}
+.minsp-course-subj { font-size: 17px; font-weight: 700; color: var(--primary); }
+.minsp-course-line { font-size: 13px; color: var(--text-soft); margin-top: 3px; }
+.minsp-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.minsp-thumb { position: relative; width: 72px; height: 72px; }
+.minsp-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; border: 1px solid var(--border); }
+.minsp-thumb-x {
+  position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; border-radius: 50%;
+  background: var(--danger); color: #fff; font-size: 13px; line-height: 20px; text-align: center;
+  cursor: pointer;
+}
+
+/* 移动端常规检查：年级/学科折叠分组选择器 */
+.minsp-groups { display: flex; flex-direction: column; gap: 8px; }
+.minsp-group { border: 1px solid var(--border); border-radius: 12px; background: var(--bg); overflow: hidden; }
+.minsp-group-head {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  background: none; border: none; padding: 12px 14px; cursor: pointer;
+  font-family: inherit; text-align: left;
+}
+.minsp-group-head:active { background: var(--primary-soft); }
+.minsp-group-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.minsp-group-title.has-sel { color: var(--primary); }
+.minsp-group-meta { flex: 1; font-size: 12px; color: var(--muted); }
+.minsp-group-arrow { font-size: 13px; color: var(--muted); }
+.minsp-group-body { padding: 2px 14px 14px; border-top: 1px solid var(--border); }
+.minsp-type-tabs { display: flex; flex-direction: column; gap: 12px; }
+.minsp-type-label { font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+
 /* 移动端空态 */
 .mempty { text-align: center; color: var(--muted); padding: 28px 0; font-size: 14px; }
 

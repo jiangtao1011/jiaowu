@@ -49,7 +49,7 @@ export default function MobileHome() {
       </div>
 
       {/* ===== 教师视角 ===== */}
-      {mine?.bound && (
+      {mine?.bound && Array.isArray(mine.today) && (
         <>
           {/* 今日课程（时间线） */}
           <div className="mcard mcard-today">

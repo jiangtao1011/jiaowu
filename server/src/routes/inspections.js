@@ -159,15 +159,16 @@ router.delete('/categories/:id', roleRequired(...INSPECTION_CONFIG_ROLES), (req,
 router.get('/types', (req, res) => res.json({ ok: true, data: listTypes() }));
 
 router.post('/types', roleRequired(...INSPECTION_CONFIG_ROLES), (req, res) => {
-  const { name, category_id, cycle, items, description } = req.body || {};
+  const { name, category_id, cycle, items, description, schedule_link } = req.body || {};
   const n = String(name || '').trim();
   if (!n) return res.status(400).json({ ok: false, error: '检查类型名称必填' });
   if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ ok: false, error: '请至少添加一个检查项' });
   const cat = db.prepare('SELECT * FROM inspection_categories WHERE id = ?').get(Number(category_id));
   if (!cat) return res.status(400).json({ ok: false, error: '请选择检查大类' });
   const cyc = cycle === 'periodic' ? 'periodic' : 'daily';
-  const info = db.prepare('INSERT INTO inspection_templates (name, category, category_id, cycle, items, description, created_by) VALUES (?,?,?,?,?,?,?)')
-    .run(n, cat.name, cat.id, cyc, JSON.stringify(items), description ?? null, req.user.id);
+  const link = schedule_link === 0 || schedule_link === false ? 0 : 1;
+  const info = db.prepare('INSERT INTO inspection_templates (name, category, category_id, cycle, items, description, schedule_link, created_by) VALUES (?,?,?,?,?,?,?,?)')
+    .run(n, cat.name, cat.id, cyc, JSON.stringify(items), description ?? null, link, req.user.id);
   logAudit(req.user.id, 'create_inspection_type', `inspection_templates:${info.lastInsertRowid}`, `创建检查类型 ${n}`);
   return res.json({ ok: true, data: { id: Number(info.lastInsertRowid) } });
 });
@@ -176,17 +177,19 @@ router.patch('/types/:id', roleRequired(...INSPECTION_CONFIG_ROLES), (req, res) 
   const id = Number(req.params.id);
   const t = db.prepare('SELECT * FROM inspection_templates WHERE id = ?').get(id);
   if (!t) return res.status(404).json({ ok: false, error: '检查类型不存在' });
-  const { name, category_id, cycle, items, description, active } = req.body || {};
+  const { name, category_id, cycle, items, description, active, schedule_link } = req.body || {};
   const cat = category_id != null
     ? db.prepare('SELECT * FROM inspection_categories WHERE id = ?').get(Number(category_id))
     : db.prepare('SELECT * FROM inspection_categories WHERE id = ?').get(t.category_id);
   if (!cat) return res.status(400).json({ ok: false, error: '请选择检查大类' });
-  db.prepare('UPDATE inspection_templates SET name = ?, category = ?, category_id = ?, cycle = ?, items = ?, description = ?, active = ? WHERE id = ?')
+  const link = schedule_link === 0 || schedule_link === false ? 0 : (schedule_link != null ? 1 : t.schedule_link ?? 1);
+  db.prepare('UPDATE inspection_templates SET name = ?, category = ?, category_id = ?, cycle = ?, items = ?, description = ?, active = ?, schedule_link = ? WHERE id = ?')
     .run(name ? String(name).trim() : t.name, cat.name, cat.id,
       cycle ? (cycle === 'periodic' ? 'periodic' : 'daily') : t.cycle,
       items ? JSON.stringify(items) : t.items,
       description !== undefined ? description : t.description,
       active !== undefined ? (active ? 1 : 0) : t.active,
+      link,
       id);
   logAudit(req.user.id, 'update_inspection_type', `inspection_templates:${id}`, `更新检查类型`);
   return res.json({ ok: true, data: { id } });

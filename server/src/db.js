@@ -554,6 +554,8 @@ CREATE INDEX IF NOT EXISTS idx_payroll_snapshots_range ON payroll_snapshots(from
 // 检查模板升格为「检查类型」：增列大类 category_id、周期属性 cycle
 ensureColumn('inspection_templates', 'category_id', 'INTEGER');
 ensureColumn('inspection_templates', 'cycle', "TEXT NOT NULL DEFAULT 'daily'");
+// 检查类型是否启用「课表联动」（选日期/班级/节次自动带出课程信息）；材料类检查（备课本/听课本）无需联动，默认 1=需要
+ensureColumn('inspection_templates', 'schedule_link', 'INTEGER NOT NULL DEFAULT 1');
 // 打分维度按类型：增列 type_id
 ensureColumn('inspection_score_settings', 'type_id', 'INTEGER');
 // 检查记录增列周期标记 cycle_label（如「第 5 周」）
@@ -594,17 +596,19 @@ db.prepare('UPDATE inspection_templates SET name = TRIM(name)').run();
 }
 
 // 预置检查类型 + 各自打分维度（幂等按 name；existing 只补缺失维度）
-function seedInspectionType(name, categoryName, cycle, items, dims) {
+function seedInspectionType(name, categoryName, cycle, items, dims, scheduleLink = 1) {
   const cat = db.prepare('SELECT id FROM inspection_categories WHERE name = ?').get(categoryName);
   if (!cat) return;
-  let type = db.prepare('SELECT id, cycle FROM inspection_templates WHERE name = ?').get(name);
+  let type = db.prepare('SELECT id, cycle, schedule_link FROM inspection_templates WHERE name = ?').get(name);
   let typeId;
   if (type) {
     typeId = type.id;
     if (type.cycle !== cycle) db.prepare('UPDATE inspection_templates SET cycle = ? WHERE id = ?').run(cycle, typeId);
+    // 材料类检查（scheduleLink=0）强制无需课表联动；联动类默认 1，可自由关闭，不强制覆盖
+    if (!scheduleLink && type.schedule_link !== 0) db.prepare('UPDATE inspection_templates SET schedule_link = 0 WHERE id = ?').run(typeId);
   } else {
-    const info = db.prepare('INSERT INTO inspection_templates (name, category, category_id, cycle, items) VALUES (?,?,?,?,?)')
-      .run(name, categoryName, cat.id, cycle, JSON.stringify(items));
+    const info = db.prepare('INSERT INTO inspection_templates (name, category, category_id, cycle, items, schedule_link) VALUES (?,?,?,?,?,?)')
+      .run(name, categoryName, cat.id, cycle, JSON.stringify(items), scheduleLink ? 1 : 0);
     typeId = Number(info.lastInsertRowid);
   }
   const hasDim = db.prepare('SELECT 1 FROM inspection_score_settings WHERE type_id = ? LIMIT 1').get(typeId);
@@ -628,12 +632,12 @@ seedInspectionType('备课本检查', '教学常规', 'periodic', [{ key: 'notes
   { name: 'complete', label: '内容完整', weight: 1 },
   { name: 'reflect', label: '教学反思', weight: 1 },
   { name: 'schedule', label: '进度匹配', weight: 1 },
-]);
+], 0);
 seedInspectionType('听课本检查', '教学常规', 'periodic', [{ key: 'notes', label: '检查说明', type: 'textarea' }], [
   { name: 'record', label: '记录完整', weight: 1 },
   { name: 'comment', label: '评析质量', weight: 1 },
   { name: 'advice', label: '建议价值', weight: 1 },
-]);
+], 0);
 
 export function logAudit(userId, action, target, detail) {
   db.prepare(
