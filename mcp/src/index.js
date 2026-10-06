@@ -173,7 +173,7 @@ server.registerTool(
   'edu_export_payroll',
   {
     title: '导出课酬报表',
-    description: '导出课酬 Excel 报表到本地目录。kind=detail 导出明细表（每节课一行）；kind=financial 导出财务审核汇总表（按教师一行，含签字栏，上交给财务）。返回保存路径。',
+    description: '导出课酬 Excel 报表到本地目录。kind=detail 导出明细表（每节课一行，含来源/原教师/停课态）；kind=financial 导出财务审核汇总表（按教师一行，金额按来源分列+口径说明，上交给财务）。返回保存路径。',
     inputSchema: {
       from_date: z.string().describe('开始日期 YYYY-MM-DD'),
       to_date: z.string().describe('结束日期 YYYY-MM-DD'),
@@ -199,6 +199,77 @@ server.registerTool(
       const outPath = EXPORT_DIR + '/' + filename;
       await writeFile(outPath, buf);
       return { ok: true, data: { path: outPath, filename, kind } };
+    });
+  }
+);
+
+// 财务对账：调 /financial-check 返回勾稽结果与异常清单（文本结论），导出前先跑。
+server.registerTool(
+  'edu_financial_check',
+  {
+    title: '课酬勾稽校验',
+    description: '对指定区间的课酬做自动对账：明细逐条金额之和是否等于汇总合计，并返回异常清单（无价类型/缺课酬标准/代课计数异常/单人偏高）与按类型/年级/学科金额小计。导出财务审核包前务必先跑，发现异常先修正。',
+    inputSchema: {
+      from_date: z.string().describe('开始日期 YYYY-MM-DD'),
+      to_date: z.string().describe('结束日期 YYYY-MM-DD'),
+      term: z.string().optional().describe('时段筛选（可选）'),
+    },
+  },
+  async (args) => run(() => client.get('/api/stats/financial-check', args))
+);
+
+// 导出财务审核包：单文件多 sheet（汇总+明细+勾稽+口径说明），一键给财务。
+server.registerTool(
+  'edu_export_financial_pack',
+  {
+    title: '导出财务审核包',
+    description: '导出「财务审核包」到本地目录：单个 Excel 含财务汇总表、课酬明细、勾稽校验、口径说明四个 sheet。建议先跑 edu_financial_check 确认无异常再出包。返回保存路径。',
+    inputSchema: {
+      from_date: z.string().describe('开始日期 YYYY-MM-DD'),
+      to_date: z.string().describe('结束日期 YYYY-MM-DD'),
+      term: z.string().optional().describe('时段筛选（可选）'),
+    },
+  },
+  async (args) => {
+    const { from_date, to_date, term } = args;
+    return run(async () => {
+      const q = new URLSearchParams({ from_date, to_date });
+      if (term) q.set('term', term);
+      const res = await fetch(client.baseUrl + '/api/stats/financial-pack?' + q, {
+        headers: { Authorization: `Bearer ${client.token}` },
+      });
+      if (!res.ok) throw new Error(`导出失败（HTTP ${res.status}）`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      const filename = `课酬财务审核包_${from_date}_${to_date}.xlsx`;
+      const { mkdirSync } = await import('node:fs');
+      const { writeFile } = await import('node:fs/promises');
+      mkdirSync(EXPORT_DIR, { recursive: true });
+      const outPath = EXPORT_DIR + '/' + filename;
+      await writeFile(outPath, buf);
+      return { ok: true, data: { path: outPath, filename } };
+    });
+  }
+);
+
+// 归档固化：财务审核通过后固化快照，之后改表/重新生成不影响已归档月份。
+server.registerTool(
+  'edu_archive_payroll',
+  {
+    title: '固化课酬快照',
+    description: '把指定区间的课酬结果固化为归档快照。财务审核通过后调用，之后重新生成上课记录、改课表、改单价均不影响已归档月份。返回快照 id 与课酬合计。',
+    inputSchema: {
+      from_date: z.string().describe('开始日期 YYYY-MM-DD'),
+      to_date: z.string().describe('结束日期 YYYY-MM-DD'),
+      term: z.string().optional().describe('时段筛选（可选）'),
+      label: z.string().optional().describe('归档备注（如「2026年9月已审核」）'),
+    },
+  },
+  async (args) => {
+    const { from_date, to_date, term, label } = args;
+    return run(async () => {
+      const q = new URLSearchParams({ from_date, to_date });
+      if (term) q.set('term', term);
+      return client._req('POST', '/api/stats/snapshots?' + q, label ? { label } : {}, true);
     });
   }
 );

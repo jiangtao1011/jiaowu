@@ -534,6 +534,23 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 `);
+
+// 课酬财务快照：财务审核通过后固化区间数据，之后重新生成上课记录/改课表/改单价均不影响已归档月份。
+// snapshot JSON 存 { from_date, to_date, term, teachers, totals, typeColumns, termColumns, checked_at, checked_by }
+db.exec(`
+CREATE TABLE IF NOT EXISTS payroll_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_date TEXT NOT NULL,
+  to_date TEXT NOT NULL,
+  term TEXT,
+  label TEXT,
+  snapshot TEXT NOT NULL,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_snapshots_range ON payroll_snapshots(from_date, to_date);
+`);
+
 // 检查模板升格为「检查类型」：增列大类 category_id、周期属性 cycle
 ensureColumn('inspection_templates', 'category_id', 'INTEGER');
 ensureColumn('inspection_templates', 'cycle', "TEXT NOT NULL DEFAULT 'daily'");

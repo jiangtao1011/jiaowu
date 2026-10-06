@@ -247,6 +247,41 @@ export default function Stats() {
       URL.revokeObjectURL(a.href);
     } catch (e) { setError(errMsg(e)); }
   };
+
+  // 导出「财务审核包」：单文件多 sheet（汇总 + 明细 + 勾稽 + 口径说明），一键给财务
+  const exportFinancialPack = async () => {
+    setError('');
+    try {
+      if (mode !== 'daily') return setError('财务审核包基于「按日统计」口径，请先切换到按日统计');
+      if (!fromDate || !toDate) return setError('导出需先选择开始和结束日期');
+      const token = localStorage.getItem('edu_token');
+      const params = new URLSearchParams({ from_date: fromDate, to_date: toDate });
+      if (term) params.set('term', term);
+      const r = await fetch(`/api/stats/financial-pack?${params}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { setError('导出失败'); return; }
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `课酬财务审核包_${fromDate}_${toDate}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { setError(errMsg(e)); }
+  };
+
+  // 勾稽校验：调 /financial-check 拿对账结果与异常清单，展示给用户
+  const [checkResult, setCheckResult] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const runCheck = async () => {
+    setError(''); setCheckResult(null);
+    if (mode !== 'daily') return setError('勾稽校验基于「按日统计」口径，请先切换到按日统计');
+    if (!fromDate || !toDate) return setError('校验需先选择开始和结束日期');
+    setChecking(true);
+    try {
+      const r = await api.get('/stats/financial-check', { params: { from_date: fromDate, to_date: toDate, ...(term ? { term } : {}) } });
+      setCheckResult(r.data.data);
+    } catch (e) { setError(errMsg(e)); }
+    finally { setChecking(false); }
+  };
   const addExtra = async () => {
     setError(''); setMsg('');
     if (!extraForm.class_id || !extraForm.teacher_id || !extraForm.date) return setError('加课需选择班级、教师、日期');
@@ -486,10 +521,33 @@ export default function Stats() {
             <div className="card-head">
               <h3>教师课时汇总</h3>
               <div className="toolbar" style={{ marginBottom: 0 }}>
+                <button className="btn sm" onClick={runCheck} disabled={checking}>{checking ? '校验中…' : '勾稽校验'}</button>
                 <button className="btn primary sm" onClick={exportExcel}>导出明细 Excel</button>
                 <button className="btn sm" onClick={exportFinancialReport}>导出财务汇总表</button>
+                <button className="btn primary sm" onClick={exportFinancialPack}>导出财务审核包</button>
               </div>
             </div>
+            {checkResult && (
+              <div className="check-result" style={{ borderTop: '1px solid #eee', paddingTop: 12, marginTop: 4 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <span className={`badge ${checkResult.balanced ? '' : 'danger'}`}>
+                    {checkResult.balanced ? '✓ 金额勾稽一致' : '✗ 金额勾稽不一致'}
+                  </span>
+                  <span className="muted">明细 {checkResult.detail_pay} 元 = 汇总 {checkResult.summary_pay} 元</span>
+                </div>
+                {checkResult.issues.length > 0 && (
+                  <div className="alert warn" style={{ marginBottom: 8 }}>
+                    <strong>发现 {checkResult.issues.length} 项待复核：</strong>
+                    <ul style={{ margin: '6px 0 0 18px', padding: 0 }}>
+                      {checkResult.issues.map((it, i) => <li key={i}>{it.msg}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {checkResult.issues.length === 0 && (
+                  <p className="muted" style={{ margin: '0 0 8px' }}>未发现异常，可放心导出审核包。</p>
+                )}
+              </div>
+            )}
             <div className="table-wrap">
               <table>
                 <thead>

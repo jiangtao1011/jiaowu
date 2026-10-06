@@ -243,6 +243,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .alert { padding: 10px 14px; border-radius: 6px; font-size: 13.5px; margin-bottom: 14px; border: 1px solid; }
 .alert.error { background: var(--danger-soft); color: var(--danger); border-color: #f0d0cb; }
 .alert.success { background: var(--ok-soft); color: var(--ok); border-color: #cde7d6; }
+.alert.warn { background: #fff8e6; color: #9a6b00; border-color: #f0e0b0; }
 
 .muted { color: var(--muted); }
 .mt { margin-top: 14px; }
