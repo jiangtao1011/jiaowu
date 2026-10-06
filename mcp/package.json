@@ -1,0 +1,17 @@
+{
+  "name": "edu-admin-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "教务管理应用的 MCP 服务，供 Claude / Codex / WorkBuddy 桌面端调用",
+  "main": "src/index.js",
+  "bin": {
+    "edu-admin-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1"
+  }
+}

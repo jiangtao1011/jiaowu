@@ -1,0 +1,543 @@
+import { Router } from 'express';
+import multer from 'multer';
+import { db, logAudit } from '../db.js';
+import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { loadContext, computePay } from '../context.js';
+import * as XLSX from 'xlsx';
+import { parseSheet, keyOf, downloadTemplate } from '../template.js';
+
+const router = Router();
+router.use(authRequired);
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+const PERIOD_TYPES = ['早自习', '正课', '晚自习', '答疑'];
+const TERMS = ['常规', '夏令营', '冬令营', '全员夏令营', '全员冬令营', '节假补课'];
+
+// 本地日期 YYYY-MM-DD
+function localDate() {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// 返回「某日期生效」的过滤条件。asOf 为空表示只看当前（effective_to IS NULL）。
+// 约定：effective_to 为「结束日期」（不含），一条记录在 [effective_from, effective_to) 区间内生效。
+function activeClause(alias, asOf, params) {
+  if (!asOf) {
+    return `${alias}.effective_to IS NULL`;
+  }
+  params.push(asOf, asOf);
+  return `(${alias}.effective_from IS NULL OR ${alias}.effective_from <= ?) AND (${alias}.effective_to IS NULL OR ${alias}.effective_to > ?)`;
+}
+
+// 计算 [start, end]（含两端）内某星期几出现的次数。
+// day_of_week 用 1=周一 … 7=周日；内部转成 JS getDay() 的 0=周日 … 6=周六。
+function weekdayCount(start, end, dayOfWeek) {
+  const s = new Date(`${start}T00:00:00`);
+  const e = new Date(`${end}T00:00:00`);
+  if (s > e) return 0;
+  const jsDay = dayOfWeek === 7 ? 0 : dayOfWeek;
+  const first = new Date(s);
+  first.setDate(first.getDate() + ((jsDay - first.getDay() + 7) % 7));
+  if (first > e) return 0;
+  return Math.floor((e - first) / (7 * 86400000)) + 1;
+}
+
+// 把 exclusive 的结束日期转为 inclusive（前一天）
+function dayBefore(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() - 1);
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// 查看课表，可按班级/教师/类型/时段过滤，可指定 as_of 查看历史快照
+router.get('/', (req, res) => {
+  const { class_id, teacher_id, period_type, term, grade, as_of, include_inactive } = req.query;
+  let sql = `
+    SELECT s.*, c.name AS class_name, c.type AS class_type, c.parent_id AS class_parent_id,
+           c.subject AS class_subject, c.grade AS grade,
+           t.name AS teacher_name, t.subject AS teacher_subject
+    FROM schedules s
+    JOIN classes c ON c.id = s.class_id
+    JOIN teachers t ON t.id = s.teacher_id
+    WHERE 1=1`;
+  const params = [];
+  if (class_id) {
+    // 选中某班时，带入：自身课表 + 其分层子班课表 + 其参与的走班（合班成员）课表
+    const cid = Number(class_id);
+    sql += ` AND s.class_id IN (
+      SELECT id FROM classes WHERE id = ? OR parent_id = ?
+      UNION
+      SELECT class_id FROM class_members WHERE member_class_id = ?
+    )`;
+    params.push(cid, cid, cid);
+  }
+  if (teacher_id) { sql += ' AND s.teacher_id = ?'; params.push(Number(teacher_id)); }
+  if (period_type) { sql += ' AND s.period_type = ?'; params.push(period_type); }
+  if (term) { sql += ' AND s.term = ?'; params.push(term); }
+  if (grade) { sql += ' AND c.grade = ?'; params.push(grade); }
+  // include_inactive：是否连历史/区间课表（effective_to 非空）一起返回，供补课课表浏览用
+  if (include_inactive === '1' || include_inactive === 'true') {
+    // 不做生效过滤
+  } else {
+    sql += ` AND ${activeClause('s', as_of, params)}`;
+  }
+  sql += ' ORDER BY s.day_of_week, s.period_no, s.class_id';
+  const rows = db.prepare(sql).all(...params);
+  const ctx = loadContext();
+  return res.json({
+    ok: true,
+    data: rows.map((r) => ({ ...r, form: ctx.formOf(ctx.classMap.get(r.class_id)) })),
+  });
+});
+
+// 下载课表导入模板
+router.get('/template', (req, res) => {
+  const headers = ['班级', '星期', '节次', '类型', '时段', '课程名称', '教师'];
+  const samples = [
+    // 行政班（行政班整班上课）
+    ['1201班', '1', '1', '正课', '常规', '语文', '刘丽娟'],
+    ['1201班', '1', '5', '正课', '常规', '化学', '姜涛'],
+    // 行政班分层（同一班内分 A/B 层，班级填「分层」班名）
+    ['1201班数学A层', '1', '2', '正课', '常规', '数学', '顾俊峰'],
+    ['1201班数学B层', '1', '2', '正课', '常规', '数学', '靳旭霞'],
+    // 走班（多个行政班合班，班级填「走班」班名）
+    ['1202/1203/1204政治走班', '1', '4', '正课', '常规', '政治', '陈志红'],
+    ['1201/1203生物走班', '1', '4', '正课', '常规', '生物', '胡国胜'],
+    // 走班内再分层（走班内部再分 A/B 层，班级填「分层」班名）
+    ['1201/1203英语走班A层', '1', '3', '正课', '常规', '英语', '姜建军'],
+    ['1201/1203英语走班B层', '1', '3', '正课', '常规', '英语', '胡丽萍'],
+    // 早自习 / 晚自习 / 答疑（类型列区分）
+    ['1201班', '1', '1', '早自习', '常规', '语文', '刘丽娟'],
+    ['1201班', '1', '9', '晚自习', '常规', '数学', '靳旭霞'],
+    ['1201班', '1', '8', '答疑', '常规', '物理', '宋恭渝'],
+    // 非规时段（时段列区分）
+    ['1201班', '1', '1', '正课', '夏令营', '数学', '顾俊峰'],
+  ];
+  const notes = [
+    ['高三课表导入模板 —— 填写说明'],
+    [''],
+    ['一、表头（第1行固定，按顺序）：班级 | 星期 | 节次 | 类型 | 时段 | 课程名称 | 教师'],
+    [''],
+    ['二、各列填写规则：'],
+    ['1. 班级：填「班级信息」里已建好的班级名称，必须完全一致（含空格/符号）。'],
+    ['   - 行政班整班课：填行政班名，如 1201班'],
+    ['   - 行政班分层课：填分层班名，如 1201班数学A层'],
+    ['   - 走班（合班）课：填走班名，如 1202/1203/1204政治走班'],
+    ['   - 走班内再分层课：填分层班名，如 1201/1203英语走班A层'],
+    ['2. 星期：1=周一 … 7=周日，填数字。'],
+    ['3. 节次：第几节课，填数字（1、2、3…）。'],
+    ['4. 类型：正课 / 早自习 / 晚自习 / 答疑（正课默认，可省略）。'],
+    ['   另支持「统计配置」里自定义的按次计酬类型（如 晚读、晚练），填对应的类型名即可。'],
+    ['5. 时段：常规 / 夏令营 / 冬令营 / 全员夏令营 / 全员冬令营 / 节假补课（常规默认，可省略）。'],
+    ['6. 课程名称：这门课的名称，如 语文、数学、政治。'],
+    ['7. 教师：任课教师姓名，需与「教师信息」里的姓名完全一致。'],
+    [''],
+    ['三、要点：'],
+    ['- 系统会根据「班级名称」自动识别上课形式（行政班/分层/走班/走班分层），无需额外填形式。'],
+    ['- 同一班级、同一星期、同一节次可以有多行（分层 A/B、走班同节不同教室等），会自动合并显示在同一格。'],
+    ['- 走班的「星期/节次」填该走班上课的时间；系统会把走班课并入其合班的每个行政班课表。'],
+    ['- 导入前请先在「班级信息」建好行政班、分层、走班，在「教师信息」建好教师。'],
+    ['- 补课课表轮换：时段填「节假补课」，每个文件=一套，导入时在「套号」填 1/2/3（高一/高二两套、高三三套轮换）。'],
+    ['  之后在校历把补课周日标为「补课 + 用第几套」，系统按套号上课并按节假日标准计酬。'],
+    ['- 示例行仅供参考，导入前请删除示例行、只保留真实数据。'],
+  ];
+  downloadTemplate(res, headers, samples, '课表导入模板.xlsx', [{ name: '填写说明', rows: notes }]);
+});
+
+// 导出课表模板结构说明 + 导入
+router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ ok: false, error: '请上传课表文件' });
+
+  let rows;
+  try {
+    rows = parseSheet(req.file.buffer, req.file.originalname);
+  } catch {
+    return res.status(400).json({ ok: false, error: '无法解析文件，请使用模板的 .xlsx / .csv 格式' });
+  }
+  if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
+
+  // 替换语义：scope=append（追加，默认）只新增、不关闭旧表；all/grade/term 会先关闭选定范围旧表再写新表。
+  // effective_from / effective_to 为新记录的生效区间（可留空）。追加模式下也可带区间（如补课课表）。
+  const body = req.body || {};
+  const effectiveFrom = body.effective_from ? String(body.effective_from).trim() : null;
+  const effectiveTo = body.effective_to ? String(body.effective_to).trim() : null;
+  const scope = ['append', 'all', 'grade', 'term'].includes(body.scope) ? body.scope : 'append';
+  const scopeGrade = body.grade ? String(body.grade).trim() : null;
+  const scopeTerm = body.scope_term ? String(body.scope_term).trim() : null;
+  // 补课课表套号：导入「节假补课」时标记这是第几套（多套补课课表轮换用）。1/2/3…，留空=普通课表/旧用法。
+  const makeupSet = (body.makeup_set !== undefined && body.makeup_set !== null && String(body.makeup_set).trim() !== '')
+    ? Number(body.makeup_set)
+    : null;
+
+  if (effectiveFrom && !/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom)) {
+    return res.status(400).json({ ok: false, error: '生效日期格式应为 YYYY-MM-DD' });
+  }
+  if (effectiveTo && !/^\d{4}-\d{2}-\d{2}$/.test(effectiveTo)) {
+    return res.status(400).json({ ok: false, error: '结束日期格式应为 YYYY-MM-DD' });
+  }
+  if (effectiveFrom && effectiveTo && effectiveFrom > effectiveTo) {
+    return res.status(400).json({ ok: false, error: '生效日期不能晚于结束日期' });
+  }
+
+  const classes = db.prepare('SELECT id, name, type FROM classes').all();
+  const teachers = db.prepare('SELECT id, name FROM teachers').all();
+  const classByName = Object.fromEntries(classes.map((c) => [c.name, c.id]));
+  const teacherByName = Object.fromEntries(teachers.map((t) => [t.name, t.id]));
+  // 按次计酬字典类型（晚自习/答疑/晚练/晚读/自定义）也作为合法类型，供课表导入使用
+  const typePayNames = new Set(db.prepare('SELECT name FROM period_type_pays').all().map((r) => r.name));
+
+  // 关闭选定范围内的旧课表（仅替换模式；追加模式不动旧表）
+  if (scope !== 'append' && effectiveFrom) {
+    let closeSql = 'UPDATE schedules SET effective_to = ? WHERE effective_to IS NULL';
+    const closeParams = [effectiveFrom];
+    if (scope === 'grade' && scopeGrade) {
+      closeSql += ' AND class_id IN (SELECT id FROM classes WHERE grade = ?)';
+      closeParams.push(scopeGrade);
+    } else if (scope === 'term' && scopeTerm) {
+      closeSql += ' AND term = ?';
+      closeParams.push(scopeTerm);
+    }
+    db.prepare(closeSql).run(...closeParams);
+  }
+
+  let inserted = 0;
+  const errors = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const className = String(keyOf(row, '班级', 'class', '班级名称') ?? '').trim();
+    const teacherName = String(keyOf(row, '教师', '老师', 'teacher', '任课教师') ?? '').trim();
+    const subject = String(keyOf(row, '课程名称', '科目', '学科', 'subject') ?? '').trim();
+    const dayOfWeek = Number(keyOf(row, '星期', '周几', 'day_of_week', '星期几') ?? '');
+    const periodNo = Number(keyOf(row, '节次', 'period_no', '课节') ?? '');
+    const periodType = String(keyOf(row, '类型', 'period_type', '课型') ?? '正课').trim() || '正课';
+    const term = String(keyOf(row, '时段', 'term', '课时段') ?? '常规').trim() || '常规';
+
+    if (!className || !teacherName) {
+      errors.push(`第 ${i + 2} 行缺少班级或教师`);
+      continue;
+    }
+    const classId = classByName[className];
+    const teacherId = teacherByName[teacherName];
+    if (!classId) { errors.push(`第 ${i + 2} 行班级「${className}」不存在，请先在基本信息中创建`); continue; }
+    if (!teacherId) { errors.push(`第 ${i + 2} 行教师「${teacherName}」不存在，请先创建教师`); continue; }
+
+    const finalType = PERIOD_TYPES.includes(periodType) ? periodType : (typePayNames.has(periodType) ? periodType : '正课');
+    const finalTerm = TERMS.includes(term) ? term : '常规';
+    db.prepare(`
+      INSERT INTO schedules (class_id, teacher_id, subject, day_of_week, period_no, period_type, term, effective_from, effective_to, makeup_set)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(classId, teacherId, subject || null, Number.isFinite(dayOfWeek) ? dayOfWeek : 0, Number.isFinite(periodNo) ? periodNo : 1, finalType, finalTerm, effectiveFrom, effectiveTo, makeupSet);
+    inserted++;
+  }
+
+  logAudit(req.user.id, 'import_schedules', `schedules`, `导入课表 ${inserted} 条${scope === 'append' ? '（追加）' : `（${effectiveFrom} 起生效，范围 ${scope}${scope === 'grade' ? ':' + scopeGrade : scope === 'term' ? ':' + scopeTerm : ''}${effectiveTo ? '~' + effectiveTo : ''}）`}`);
+  return res.json({ ok: true, data: { inserted, errors, effective_from: effectiveFrom, effective_to: effectiveTo, scope } });
+});
+
+// 执行一次调课/代课/停课（快照模式）：关闭旧记录 + 插入新记录。返回新 change_id。
+// 供管理员直接 adjust 与代课申请审核通过共用。
+// 临时（to_date 非空）：三段式——原教师 [旧起, from_date) + 代课教师 [from_date, to_date) + 原教师 [to_date, 起) 自动恢复。
+// 长期（to_date 空）：原教师 [旧起, from_date) + 代课教师 [from_date, 永久)，不恢复。
+function applyAdjust({ schedule_id, change_type, to_teacher_id, from_date, to_date, reason, operator_id }) {
+  const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(Number(schedule_id));
+  if (!schedule) return { error: '课表条目不存在' };
+  const effectiveDate = from_date || localDate();
+  const endDate = to_date || null; // 左闭右开
+
+  if (change_type === '代课' || change_type === '调课') {
+    if (!to_teacher_id) return { error: '请选择目标教师' };
+    // 1. 关闭原教师记录：生效到 effectiveDate 为止
+    db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?').run(effectiveDate, Number(schedule_id));
+    // 2. 插入代课教师记录：[effectiveDate, endDate)
+    db.prepare(`
+      INSERT INTO schedules (class_id, teacher_id, subject, course_type, day_of_week, period_no, period_type, term, effective_from, effective_to, version)
+      VALUES (?,?,?,?,?,?,?,?,?, ?, ?)`)
+      .run(schedule.class_id, Number(to_teacher_id), schedule.subject, schedule.course_type ?? '行政班', schedule.day_of_week,
+        schedule.period_no, schedule.period_type, schedule.term ?? '常规', effectiveDate, endDate, schedule.version + 1);
+    // 3. 临时代课：再插入原教师「恢复段」记录 [endDate, 起)，版本再 +1
+    if (endDate && endDate > effectiveDate) {
+      db.prepare(`
+        INSERT INTO schedules (class_id, teacher_id, subject, course_type, day_of_week, period_no, period_type, term, effective_from, effective_to, version)
+        VALUES (?,?,?,?,?,?,?,?,?, NULL, ?)`)
+        .run(schedule.class_id, schedule.teacher_id, schedule.subject, schedule.course_type ?? '行政班', schedule.day_of_week,
+          schedule.period_no, schedule.period_type, schedule.term ?? '常规', endDate, schedule.version + 2);
+    }
+  } else if (change_type === '停课') {
+    db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?').run(effectiveDate, Number(schedule_id));
+  }
+
+  const info = db
+    .prepare(`INSERT INTO schedule_changes
+      (schedule_id, change_type, from_teacher_id, to_teacher_id, from_date, to_date, reason, operator_id)
+      VALUES (?,?,?,?,?,?,?,?)`)
+    .run(Number(schedule_id), change_type, schedule.teacher_id, to_teacher_id ?? null, effectiveDate, endDate, reason ?? null, operator_id);
+  logAudit(operator_id, 'adjust_schedule', `schedules:${schedule_id}`, `${change_type}：${schedule.teacher_id} -> ${to_teacher_id ?? null}（${effectiveDate}${endDate ? '~' + endDate : ' 起'}）`);
+  return { change_id: Number(info.lastInsertRowid) };
+}
+
+// 调课/代课/停课 —— 快照模式：关闭旧记录 + 插入新记录，变化前统计不受影响
+router.post('/adjust', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const { schedule_id, change_type, from_teacher_id, to_teacher_id, from_date, to_date, reason } = req.body || {};
+  if (!schedule_id || !change_type) {
+    return res.status(400).json({ ok: false, error: '缺少 schedule_id 或 change_type' });
+  }
+  if (!['调课', '代课', '停课'].includes(change_type)) {
+    return res.status(400).json({ ok: false, error: '无效的调整类型' });
+  }
+  const result = applyAdjust({ schedule_id, change_type, to_teacher_id, from_date, to_date, reason, operator_id: req.user.id });
+  if (result.error) return res.status(400).json({ ok: false, error: result.error });
+  return res.json({ ok: true, data: { change_id: result.change_id } });
+});
+
+// 汇总统计：按教师统计课时数，含早/晚自习。
+// 口径一（as_of 快照）：统计某日期生效的课表条目数
+// 口径二（from_date~to_date 时间段）：按每周重复统计区间内实际出现次数
+// 折算规则：
+//   常规时段  折算课时 = 节数 ×（课时系数 + 班额系数）（系数可在统计中心配置）
+//   非规时段（夏/冬令营等）折算课时 = 节数；课酬 = 节数 × 教师课酬标准
+
+// 取课表明细（含 count：区间内实际出现次数），供 summary 与 export 共用
+function fetchScheduleRows(asOf, term, fromDate, toDate) {
+  const params = [];
+  let base;
+  if (fromDate && toDate) {
+    base = db.prepare(`
+      SELECT s.id, s.teacher_id, t.name AS teacher_name, s.class_id, s.subject,
+             s.period_type, s.term, s.day_of_week, s.effective_from, s.effective_to,
+             t.pay_standard
+      FROM schedules s JOIN teachers t ON t.id = s.teacher_id
+      WHERE s.effective_to IS NULL`).all();
+    if (term) base = base.filter((r) => r.term === term);
+  } else {
+    const clauses = [activeClause('s', asOf, params)];
+    if (term) { clauses.push('s.term = ?'); params.push(term); }
+    base = db.prepare(`
+      SELECT s.id, s.teacher_id, t.name AS teacher_name, s.class_id, s.subject,
+             s.period_type, s.term, s.day_of_week, s.effective_from, s.effective_to,
+             t.pay_standard
+      FROM schedules s JOIN teachers t ON t.id = s.teacher_id
+      WHERE ${clauses.join(' AND ')}`).all(...params);
+  }
+
+  return base.map((r) => {
+    let count;
+    if (fromDate && toDate) {
+      const segStart = r.effective_from && r.effective_from > fromDate ? r.effective_from : fromDate;
+      const segEnd = r.effective_to && r.effective_to <= toDate ? dayBefore(r.effective_to) : toDate;
+      count = segStart > segEnd ? 0 : weekdayCount(segStart, segEnd, r.day_of_week);
+    } else {
+      count = 1;
+    }
+    return { ...r, count };
+  });
+}
+
+// 单条课表条目的折算（含 count 乘数）。与 stats.js 的按日折算规则一致。
+// 统一走 context.js 的 computePay。
+
+router.get('/summary', (req, res) => {
+  const { as_of, term, from_date, to_date } = req.query;
+  const ctx = loadContext();
+  const rows = fetchScheduleRows(as_of, term, from_date, to_date);
+
+  const map = new Map();
+  for (const r of rows) {
+    if (r.count <= 0) continue;
+    const { weighted, pay } = computePay(ctx, r);
+
+    if (!map.has(r.teacher_id)) {
+      map.set(r.teacher_id, {
+        teacher_id: r.teacher_id, teacher_name: r.teacher_name,
+        total: 0, weighted_total: 0, pay_total: 0,
+        terms: {},
+      });
+    }
+    const e = map.get(r.teacher_id);
+    e[r.period_type] = (e[r.period_type] || 0) + r.count;
+    e.total += r.count;
+    e.weighted_total += weighted;
+    e.pay_total += pay;
+    if (!e.terms[r.term]) e.terms[r.term] = { count: 0, weighted: 0 };
+    e.terms[r.term].count += r.count;
+    e.terms[r.term].weighted += weighted;
+  }
+
+  const data = [...map.values()].map((e) => ({ ...e, weighted_total: Math.round(e.weighted_total * 100) / 100, pay_total: Math.round(e.pay_total * 100) / 100 }));
+  const types = ['早自习', '正课', ...[...ctx.periodTypePays.keys()]];
+  return res.json({ ok: true, data, types });
+});
+
+// 导出课表明细（Excel）：课表当前状态或按时间段推算，每行含 count/折算课时/课酬
+router.get('/export', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const { as_of, term, from_date, to_date } = req.query;
+  const ctx = loadContext();
+  const rows = fetchScheduleRows(as_of, term, from_date, to_date).filter((r) => r.count > 0);
+
+  const classNames = new Map(db.prepare('SELECT id, name FROM classes').all().map((c) => [c.id, c.name]));
+  const headers = ['教师', '班级', '学科', '类型', '时段', '星期', '节次', '次数', '折算课时', '课酬(元)'];
+  const aoa = [headers];
+  for (const r of rows) {
+    const { weighted, pay } = computePay(ctx, r);
+    aoa.push([
+      r.teacher_name,
+      classNames.get(r.class_id) || '',
+      r.subject ?? '',
+      r.period_type,
+      r.term,
+      r.day_of_week,
+      r.period_no,
+      r.count,
+      Math.round(weighted * 100) / 100,
+      Math.round(pay * 100) / 100,
+    ]);
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = headers.map((h) => ({ wch: Math.max(8, String(h).length * 2 + 2) }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '课表明细');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent('课表明细.xlsx')}`);
+  res.send(buf);
+});
+
+// 系数配置：学科系数 + 班额系数 + 课时类型设置
+router.get('/coefficients', (req, res) => {
+  const subjects = db.prepare('SELECT id, subject, coefficient FROM subject_coefficients ORDER BY subject').all();
+  const bands = db.prepare('SELECT id, min_size, coefficient FROM size_bands ORDER BY min_size').all();
+  const periodSettings = {};
+  for (const p of db.prepare('SELECT key, value FROM period_settings').all()) periodSettings[p.key] = p.value;
+  return res.json({ ok: true, data: { subjects, bands, periods: periodSettings } });
+});
+
+router.put('/coefficients', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const { subjects = [], bands = [], periods = {} } = req.body || {};
+  // 按 id 匹配更新（改名/改档位时不产生重复）；无 id 的新记录才插入
+  const upSubj = db.prepare('UPDATE subject_coefficients SET subject = ?, coefficient = ? WHERE id = ?');
+  const insSubj = db.prepare('INSERT INTO subject_coefficients (subject, coefficient) VALUES (?,?)');
+  const existsSubjId = db.prepare('SELECT id FROM subject_coefficients WHERE id = ?');
+  for (const s of subjects) {
+    const name = String(s.subject || '').trim();
+    const coef = Number(s.coefficient);
+    if (!name || !Number.isFinite(coef)) continue;
+    if (s.id != null && existsSubjId.get(s.id)) upSubj.run(name, coef, Number(s.id));
+    else insSubj.run(name, coef);
+  }
+  const upBand = db.prepare('UPDATE size_bands SET min_size = ?, coefficient = ? WHERE id = ?');
+  const insBand = db.prepare('INSERT INTO size_bands (min_size, coefficient) VALUES (?,?)');
+  const existsBandId = db.prepare('SELECT id FROM size_bands WHERE id = ?');
+  for (const b of bands) {
+    const min = Number(b.min_size);
+    const coef = Number(b.coefficient);
+    if (!Number.isFinite(min) || !Number.isFinite(coef)) continue;
+    if (b.id != null && existsBandId.get(b.id)) upBand.run(min, coef, Number(b.id));
+    else insBand.run(min, coef);
+  }
+  const upPeriod = db.prepare(`UPDATE period_settings SET value = ?, updated_at = datetime('now','localtime') WHERE key = ?`);
+  const insPeriod = db.prepare('INSERT INTO period_settings (key, value) VALUES (?,?)');
+  for (const [key, value] of Object.entries(periods)) {
+    const v = Number(value);
+    if (!Number.isFinite(v)) continue;
+    if (db.prepare('SELECT 1 FROM period_settings WHERE key = ?').get(key)) upPeriod.run(v, key);
+    else insPeriod.run(key, v);
+  }
+  logAudit(req.user.id, 'update_coefficients', 'coefficients', '更新统计系数与课时类型设置');
+  return res.json({ ok: true, data: { updated: true } });
+});
+
+// ===== 代课/调课申请（教师发起，教务员审核） =====
+
+// 教师提交代课/调课申请（任意登录用户；teacher_id 优先取绑定档案）
+router.post('/requests', (req, res) => {
+  const { schedule_id, type, to_teacher_id, date, to_date, reason } = req.body || {};
+  if (!schedule_id) return res.status(400).json({ ok: false, error: '请选择要代/调的课' });
+  const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(Number(schedule_id));
+  if (!schedule) return res.status(404).json({ ok: false, error: '课表条目不存在' });
+  const finalType = type === '调课' ? '调课' : '代课';
+  if (finalType === '调课') {
+    if (!to_teacher_id) return res.status(400).json({ ok: false, error: '请选择目标教师' });
+  }
+  const fromTeacherId = req.user.teacher_id ?? schedule.teacher_id ?? null;
+
+  const info = db.prepare(`
+    INSERT INTO substitute_requests (schedule_id, type, from_teacher_id, to_teacher_id, date, to_date, reason, status, requested_by)
+    VALUES (?,?,?,?,?,?,?, 'pending', ?)`)
+    .run(Number(schedule_id), finalType, fromTeacherId, to_teacher_id ? Number(to_teacher_id) : null, date ?? null, to_date ?? null, reason ?? null, req.user.id);
+  logAudit(req.user.id, 'request_substitute', `substitute_requests:${info.lastInsertRowid}`, `申请${finalType}（schedule ${schedule_id}${to_date ? '，临时到 ' + to_date : ''}）`);
+  return res.json({ ok: true, data: { id: Number(info.lastInsertRowid) } });
+});
+
+// 代课/调课申请列表：管理员看全部；教师看自己发起的
+router.get('/requests', (req, res) => {
+  const isAdmin = ADMIN_ROLES.includes(req.user.role);
+  let sql = `
+    SELECT sr.*, c.name AS class_name, s.subject, s.day_of_week, s.period_no,
+           ft.name AS from_teacher_name, tt.name AS to_teacher_name,
+           ru.name AS requested_by_name
+    FROM substitute_requests sr
+    JOIN schedules s ON s.id = sr.schedule_id
+    LEFT JOIN classes c ON c.id = s.class_id
+    LEFT JOIN teachers ft ON ft.id = sr.from_teacher_id
+    LEFT JOIN teachers tt ON tt.id = sr.to_teacher_id
+    LEFT JOIN users ru ON ru.id = sr.requested_by`;
+  const params = [];
+  if (!isAdmin) { sql += ' WHERE sr.requested_by = ?'; params.push(req.user.id); }
+  sql += ' ORDER BY sr.id DESC';
+  return res.json({ ok: true, data: db.prepare(sql).all(...params) });
+});
+
+// 审核代课/调课申请（管理员）：通过才执行 adjust
+router.patch('/requests/:id/review', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const r = db.prepare('SELECT * FROM substitute_requests WHERE id = ?').get(id);
+  if (!r) return res.status(404).json({ ok: false, error: '申请不存在' });
+  if (r.status !== 'pending') return res.status(400).json({ ok: false, error: '该申请已处理' });
+  const { approved } = req.body || {};
+  const status = approved ? 'approved' : 'rejected';
+
+  if (approved) {
+    const result = applyAdjust({
+      schedule_id: r.schedule_id, change_type: r.type, to_teacher_id: r.to_teacher_id,
+      from_date: r.date, to_date: r.to_date, reason: r.reason, operator_id: req.user.id,
+    });
+    if (result.error) return res.status(400).json({ ok: false, error: result.error });
+  }
+  db.prepare("UPDATE substitute_requests SET status = ?, reviewed_by = ?, reviewed_at = datetime('now','localtime') WHERE id = ?")
+    .run(status, req.user.id, id);
+  logAudit(req.user.id, 'review_substitute_request', `substitute_requests:${id}`, `审核代课申请 ${status}`);
+  return res.json({ ok: true, data: { id, status } });
+});
+
+// 教师撤回自己的待审申请
+router.delete('/requests/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const r = db.prepare('SELECT * FROM substitute_requests WHERE id = ?').get(id);
+  if (!r) return res.status(404).json({ ok: false, error: '申请不存在' });
+  if (r.status !== 'pending') return res.status(400).json({ ok: false, error: '仅待审核的申请可撤回' });
+  if (r.requested_by !== req.user.id && !ADMIN_ROLES.includes(req.user.role)) {
+    return res.status(403).json({ ok: false, error: '无权限操作该申请' });
+  }
+  db.prepare('DELETE FROM substitute_requests WHERE id = ?').run(id);
+  return res.json({ ok: true, data: { id } });
+});
+
+// 调课/代课记录
+router.get('/changes', (req, res) => {
+  const rows = db.prepare(`
+    SELECT sc.*, u.name AS operator_name,
+           ft.name AS from_teacher_name, tt.name AS to_teacher_name
+    FROM schedule_changes sc
+    LEFT JOIN users u ON u.id = sc.operator_id
+    LEFT JOIN teachers ft ON ft.id = sc.from_teacher_id
+    LEFT JOIN teachers tt ON tt.id = sc.to_teacher_id
+    ORDER BY sc.created_at DESC`).all();
+  return res.json({ ok: true, data: rows });
+});
+
+export default router;

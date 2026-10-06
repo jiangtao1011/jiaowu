@@ -1,0 +1,21 @@
+{
+  "name": "edu-admin-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "教务管理应用后端（局域网 Web 应用）",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "seed": "node src/seed.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.4.0",
+    "xlsx": "^0.18.5"
+  }
+}

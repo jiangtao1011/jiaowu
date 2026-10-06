@@ -1,0 +1,12 @@
+node_modules/
+dist/
+server/data/
+server/uploads/*
+!server/uploads/.gitkeep
+server/backups/
+.DS_Store
+*.log
+.env
+
+# 本机 Claude 工作配置（含会话授权/历史命令，不进库）
+.claude/settings.local.json
