@@ -8,6 +8,7 @@
 // 依赖：users.teacher_id（账号↔教师）、teachers.subject、schedules(任课年级)、teacher_groups(手动/自动组)。
 import { db } from './db.js';
 import { ADMIN_ROLES } from './auth.js';
+import { listGroups } from './groups.js';
 
 // 用户 → 教师 id（无则 null）
 function teacherIdOf(user) {
@@ -114,4 +115,49 @@ export function visibleGrades(user) {
 // 是否为「管理员级」（可跨全量）角色
 export function isAdminRole(user) {
   return ADMIN_ROLES.includes(user?.role);
+}
+
+// 组级作用域：返回该用户可见的「组 key 数组」；null = 全量（管理员）
+// 依赖 ../groups.js 的 listGroups（自动 + 手动组）。
+export function visibleGroups(user) {
+  const role = user?.role;
+  if (!role) return [];
+  if (ADMIN_ROLES.includes(role)) return null;
+  const tid = teacherIdOf(user);
+
+  // 教研组长 → 本学科全部组（教研组 + 本学科各年级备课组）
+  if (role === '教研组长') {
+    const subject = subjectOf(tid);
+    if (!subject) return [];
+    return listGroups()
+      .filter((g) => g.subject === subject)
+      .map((g) => g.key);
+  }
+
+  // 备课组长 → 本学科 + 本年级（退化：本学科全部）
+  if (role === '备课组长') {
+    const subject = subjectOf(tid);
+    if (!subject) return [];
+    const grade = ledGradeOf(user);
+    return listGroups()
+      .filter((g) => g.subject === subject && (g.type === '教研组' || !grade || g.grade === grade))
+      .map((g) => g.key);
+  }
+
+  // 年级组长 → 本年级全部备课组
+  if (role === '年级组长') {
+    const grade = managedGradeOf(user);
+    if (!grade) return [];
+    return listGroups()
+      .filter((g) => g.type === '备课组' && g.grade === grade)
+      .map((g) => g.key);
+  }
+
+  // 教师 → 自己所在的备课组
+  if (tid) {
+    return listGroups()
+      .filter((g) => g.type === '备课组' && g.members.includes(tid))
+      .map((g) => g.key);
+  }
+  return [];
 }

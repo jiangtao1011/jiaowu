@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { db, logAudit, UPLOAD_DIR } from '../db.js';
 import { authRequired, roleRequired, ADMIN_ROLES, INSPECTION_CONFIG_ROLES, INSPECTION_SUBMIT_ROLES } from '../auth.js';
 import { visibleTeacherIds } from '../scope.js';
+import { autoGroups, manualGroups } from '../groups.js';
 
 const router = Router();
 router.use(authRequired);
@@ -429,40 +430,7 @@ router.get('/photos/:photoId', (req, res) => {
 });
 
 // ===== 备课组/教研组 =====
-function autoGroups() {
-  const groups = [];
-  const subjects = db.prepare("SELECT DISTINCT subject FROM teachers WHERE subject IS NOT NULL AND subject != '' ORDER BY subject").all();
-  for (const { subject } of subjects) {
-    const members = db.prepare('SELECT id FROM teachers WHERE subject = ?').all(subject).map((r) => r.id);
-    groups.push({ key: `教研组:${subject}`, name: `${subject}教研组`, type: '教研组', subject, grade: null, is_auto: true, members });
-  }
-  const rows = db.prepare(`
-    SELECT DISTINCT t.subject AS subject, c.grade AS grade
-    FROM schedules s
-    JOIN teachers t ON t.id = s.teacher_id
-    JOIN classes c ON c.id = s.class_id
-    WHERE t.subject IS NOT NULL AND t.subject != '' AND c.grade IS NOT NULL AND c.grade != ''
-    ORDER BY c.grade, t.subject`).all();
-  for (const { subject, grade } of rows) {
-    const members = db.prepare(`
-      SELECT DISTINCT t.id FROM schedules s
-      JOIN teachers t ON t.id = s.teacher_id
-      JOIN classes c ON c.id = s.class_id
-      WHERE t.subject = ? AND c.grade = ?`).all(subject, grade).map((r) => r.id);
-    groups.push({ key: `备课组:${grade}:${subject}`, name: `${grade}${subject}备课组`, type: '备课组', subject, grade, is_auto: true, members });
-  }
-  return groups;
-}
-function manualGroups() {
-  const groups = db.prepare('SELECT * FROM teacher_groups WHERE is_auto = 0 ORDER BY type, grade, subject, id').all();
-  return groups.map((g) => ({
-    ...g,
-    key: `manual:${g.id}`,
-    is_auto: false,
-    leader_name: g.leader_id ? (db.prepare('SELECT name FROM teachers WHERE id = ?').get(g.leader_id)?.name ?? null) : null,
-    members: db.prepare('SELECT teacher_id FROM teacher_group_members WHERE group_id = ?').all(g.id).map((m) => m.teacher_id),
-  }));
-}
+// autoGroups / manualGroups 已抽到 ../groups.js，此处 import 共用。
 
 router.get('/groups', (req, res) => res.json({ ok: true, data: { manual: manualGroups(), auto: autoGroups() } }));
 

@@ -551,6 +551,82 @@ CREATE TABLE IF NOT EXISTS payroll_snapshots (
 CREATE INDEX IF NOT EXISTS idx_payroll_snapshots_range ON payroll_snapshots(from_date, to_date);
 `);
 
+// ===== 教学业绩考核（2026-10-07）：考试类型字典 + 考试 + 备课组各率 + 成绩文件 + 教师档案 =====
+db.exec(`
+CREATE TABLE IF NOT EXISTS exam_types (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  weight REAL NOT NULL DEFAULT 0,
+  position INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS exams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  semester TEXT NOT NULL,
+  exam_type TEXT NOT NULL,
+  exam_date TEXT,
+  note TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS exam_scores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id INTEGER NOT NULL REFERENCES exams(id),
+  group_key TEXT NOT NULL,
+  group_name TEXT NOT NULL,
+  rate_a REAL NOT NULL DEFAULT 0,
+  rate_b REAL NOT NULL DEFAULT 0,
+  rate_c REAL NOT NULL DEFAULT 0,
+  rate_d REAL NOT NULL DEFAULT 0,
+  rate_e REAL NOT NULL DEFAULT 0,
+  total_count INTEGER,
+  avg_score REAL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  UNIQUE(exam_id, group_key)
+);
+CREATE INDEX IF NOT EXISTS idx_exam_scores_exam ON exam_scores(exam_id);
+
+CREATE TABLE IF NOT EXISTS exam_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  exam_id INTEGER NOT NULL REFERENCES exams(id),
+  group_key TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  stored_path TEXT NOT NULL,
+  uploaded_by INTEGER REFERENCES users(id),
+  uploaded_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_exam_files_exam ON exam_files(exam_id);
+
+CREATE TABLE IF NOT EXISTS teacher_assessment_records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  teacher_id INTEGER NOT NULL REFERENCES teachers(id),
+  group_key TEXT NOT NULL,
+  semester TEXT NOT NULL,
+  score REAL NOT NULL DEFAULT 0,
+  detail TEXT,
+  locked_by INTEGER REFERENCES users(id),
+  locked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  UNIQUE(teacher_id, semester, group_key)
+);
+CREATE INDEX IF NOT EXISTS idx_tar_semester ON teacher_assessment_records(semester);
+`);
+
+// 预置考试类型（幂等按 name；weight 为学期考核归一化权重，0=仅留档不参与考核）
+function seedExamType(name, weight, position) {
+  if (!db.prepare('SELECT 1 FROM exam_types WHERE name = ?').get(name)) {
+    db.prepare('INSERT INTO exam_types (name, weight, position) VALUES (?,?,?)').run(name, weight, position);
+  }
+}
+seedExamType('期末', 1.0, 0);
+seedExamType('期中', 0, 1);
+seedExamType('月考', 0, 2);
+seedExamType('学考', 0.5, 3);
+
 // 检查模板升格为「检查类型」：增列大类 category_id、周期属性 cycle
 ensureColumn('inspection_templates', 'category_id', 'INTEGER');
 ensureColumn('inspection_templates', 'cycle', "TEXT NOT NULL DEFAULT 'daily'");
