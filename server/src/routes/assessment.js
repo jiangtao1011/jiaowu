@@ -40,6 +40,12 @@ function clampRate(v) {
   return Math.max(0, Math.min(100, Math.round(n * 100) / 100));
 }
 
+// 按考试年级过滤备课组（grade 空=全校，不过滤）；传入已含 type/scope 过滤的组列表
+function filterByExamGrade(groups, examGrade) {
+  if (!examGrade) return groups;
+  return groups.filter((g) => g.grade === examGrade);
+}
+
 // 组列表（含 key/name/type/subject/grade/leader/members），供录入界面按组选择。
 // 业绩考核只关心「备课组」（type='备课组'），教研组由备课组聚合，故此处只返回备课组。
 router.get('/groups', (req, res) => {
@@ -112,16 +118,17 @@ router.get('/semesters', (req, res) => {
 });
 
 router.post('/exams', roleRequired(...ADMIN_ROLES), (req, res) => {
-  const { name, semester, exam_type, exam_date, note } = req.body || {};
+  const { name, semester, exam_type, grade, exam_date, note } = req.body || {};
   const n = String(name || '').trim();
   const sem = String(semester || '').trim();
   const type = String(exam_type || '').trim();
+  const g = grade ? String(grade).trim() : null;
   if (!n) return res.status(400).json({ ok: false, error: '考试名称必填' });
   if (!sem) return res.status(400).json({ ok: false, error: '学期必填' });
   if (!type) return res.status(400).json({ ok: false, error: '考试类型必填' });
-  const info = db.prepare('INSERT INTO exams (name, semester, exam_type, exam_date, note, created_by) VALUES (?,?,?,?,?,?)')
-    .run(n, sem, type, exam_date || null, note ?? null, req.user.id);
-  logAudit(req.user.id, 'create_exam', `exams:${info.lastInsertRowid}`, `创建考试 ${n}（${type}）`);
+  const info = db.prepare('INSERT INTO exams (name, semester, exam_type, grade, exam_date, note, created_by) VALUES (?,?,?,?,?,?,?)')
+    .run(n, sem, type, g, exam_date || null, note ?? null, req.user.id);
+  logAudit(req.user.id, 'create_exam', `exams:${info.lastInsertRowid}`, `创建考试 ${n}（${type}${g ? `，${g}` : ''}）`);
   return res.json({ ok: true, data: { id: Number(info.lastInsertRowid) } });
 });
 
@@ -129,11 +136,12 @@ router.patch('/exams/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const e = db.prepare('SELECT * FROM exams WHERE id = ?').get(id);
   if (!e) return res.status(404).json({ ok: false, error: '考试不存在' });
-  const { name, semester, exam_type, exam_date, note } = req.body || {};
-  db.prepare('UPDATE exams SET name = ?, semester = ?, exam_type = ?, exam_date = ?, note = ? WHERE id = ?')
+  const { name, semester, exam_type, grade, exam_date, note } = req.body || {};
+  db.prepare('UPDATE exams SET name = ?, semester = ?, exam_type = ?, grade = ?, exam_date = ?, note = ? WHERE id = ?')
     .run(name ? String(name).trim() : e.name,
       semester !== undefined ? String(semester).trim() : e.semester,
       exam_type !== undefined ? String(exam_type).trim() : e.exam_type,
+      grade !== undefined ? (grade ? String(grade).trim() : null) : e.grade,
       exam_date !== undefined ? exam_date : e.exam_date,
       note !== undefined ? note : e.note,
       id);
@@ -161,9 +169,10 @@ router.get('/exams/:id/scores', (req, res) => {
   if (!exam) return res.status(404).json({ ok: false, error: '考试不存在' });
 
   const scope = groupScopeSet(req);
-  const groups = listGroups()
-    .filter((g) => g.type === '备课组')
-    .filter((g) => !scope || scope.has(g.key));
+  const groups = filterByExamGrade(
+    listGroups().filter((g) => g.type === '备课组').filter((g) => !scope || scope.has(g.key)),
+    exam.grade
+  );
 
   const saved = db.prepare('SELECT * FROM exam_scores WHERE exam_id = ?').all(id);
   const savedMap = new Map(saved.map((s) => [s.group_key, s]));
@@ -186,7 +195,7 @@ router.get('/exams/:id/scores', (req, res) => {
       avg_score: s ? s.avg_score : null,
     };
   });
-  return res.json({ ok: true, data, exam_type: exam.exam_type, semester: exam.semester });
+  return res.json({ ok: true, data, exam_type: exam.exam_type, semester: exam.semester, grade: exam.grade || null });
 });
 
 // 批量保存各率（全量替换语义：body 传该考试全部要保存的组率）
@@ -230,9 +239,10 @@ router.get('/exams/:id/scores-template', (req, res) => {
   if (!exam) return res.status(404).json({ ok: false, error: '考试不存在' });
 
   const scope = groupScopeSet(req);
-  const groups = listGroups()
-    .filter((g) => g.type === '备课组')
-    .filter((g) => !scope || scope.has(g.key));
+  const groups = filterByExamGrade(
+    listGroups().filter((g) => g.type === '备课组').filter((g) => !scope || scope.has(g.key)),
+    exam.grade
+  );
   const savedMap = new Map(db.prepare('SELECT * FROM exam_scores WHERE exam_id = ?').all(id).map((s) => [s.group_key, s]));
 
   const headers = ['备课组', 'A率%', 'B率%', 'C率%', 'D率%', 'E率%', '参考人数', '均分'];
@@ -271,9 +281,9 @@ router.post('/exams/:id/scores/import', roleRequired(...ADMIN_ROLES), uploadMem.
   }
   if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
 
-  // 组名 → 组 key（备课组；教研组名也含学科，但不参与业绩考核）
+  // 组名 → 组 key（备课组；按考试年级过滤，避免其它年级组名混入）
   const groupByName = new Map();
-  for (const g of listGroups()) if (g.type === '备课组') groupByName.set(g.name, g.key);
+  for (const g of filterByExamGrade(listGroups().filter((x) => x.type === '备课组'), exam.grade)) groupByName.set(g.name, g.key);
 
   const ins = db.prepare(`INSERT INTO exam_scores (exam_id, group_key, group_name, rate_a, rate_b, rate_c, rate_d, rate_e, total_count, avg_score)
     VALUES (?,?,?,?,?,?,?,?,?,?)`);
@@ -332,6 +342,7 @@ router.post('/exams/:id/files', upload.single('file'), (req, res) => {
   const gk = String(req.body?.group_key || '').trim();
   const grp = resolveGroup(gk);
   if (!grp || grp.type !== '备课组') return res.status(400).json({ ok: false, error: '请选择有效的备课组' });
+  if (exam.grade && grp.grade !== exam.grade) return res.status(400).json({ ok: false, error: `该考试限定 ${exam.grade}，此备课组不属于该年级` });
 
   // 权限：仅管理员级或组长（教研组长=本学科、备课组长=本组）；普通教师不可上传
   const role = req.user.role;

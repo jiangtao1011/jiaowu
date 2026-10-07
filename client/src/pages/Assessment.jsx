@@ -26,6 +26,8 @@ const RATE_KEYS = [
   { key: 'e', label: 'E率' },
 ];
 
+const GRADE_OPTIONS = ['高一', '高二', '高三', '初一', '初二', '初三'];
+
 export default function Assessment() {
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const admin = isAdmin(user);
@@ -37,7 +39,7 @@ export default function Assessment() {
   const [exams, setExams] = useState([]);
   const [semesters, setSemesters] = useState([]);
   const [semesterFilter, setSemesterFilter] = useState('');
-  const [examForm, setExamForm] = useState({ name: '', semester: '', exam_type: '期末', exam_date: '', note: '' });
+  const [examForm, setExamForm] = useState({ name: '', semester: '', exam_type: '期末', grade: '', exam_date: '', note: '' });
   const [examTypes, setExamTypes] = useState([]);
   const [groups, setGroups] = useState([]);
 
@@ -81,7 +83,7 @@ export default function Assessment() {
     try {
       await api.post('/assessment/exams', examForm);
       setMsg('考试已创建');
-      setExamForm({ name: '', semester: '', exam_type: '期末', exam_date: '', note: '' });
+      setExamForm({ name: '', semester: '', exam_type: '期末', grade: '', exam_date: '', note: '' });
       load();
     } catch (err) { setError(errMsg(err)); }
   };
@@ -320,6 +322,13 @@ export default function Assessment() {
                 </select>
               </div>
               <div className="field">
+                <label>考试年级</label>
+                <select className="input" value={examForm.grade} onChange={(e) => setExamForm((f) => ({ ...f, grade: e.target.value }))}>
+                  <option value="">全校（所有年级）</option>
+                  {GRADE_OPTIONS.map((g) => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
+              <div className="field">
                 <label>考试日期</label>
                 <input type="date" className="input" value={examForm.exam_date} onChange={(e) => setExamForm((f) => ({ ...f, exam_date: e.target.value }))} />
               </div>
@@ -341,13 +350,14 @@ export default function Assessment() {
             </div>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>名称</th><th>学期</th><th>类型</th><th>日期</th><th>操作</th></tr></thead>
+                <thead><tr><th>名称</th><th>学期</th><th>类型</th><th>年级</th><th>日期</th><th>操作</th></tr></thead>
                 <tbody>
                   {filteredExams.map((e) => (
                     <tr key={e.id}>
                       <td>{e.name}</td>
                       <td>{e.semester}</td>
                       <td><span className="badge">{e.exam_type}</span></td>
+                      <td>{e.grade ? <span className="badge">{e.grade}</span> : '全校'}</td>
                       <td>{e.exam_date || '—'}</td>
                       <td>
                         <button className="btn sm" onClick={() => openExam(e)}>录入各率</button>
@@ -355,7 +365,7 @@ export default function Assessment() {
                       </td>
                     </tr>
                   ))}
-                  {filteredExams.length === 0 && <tr><td colSpan="5" className="muted" style={{ textAlign: 'center' }}>暂无考试</td></tr>}
+                  {filteredExams.length === 0 && <tr><td colSpan="6" className="muted" style={{ textAlign: 'center' }}>暂无考试</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -368,7 +378,7 @@ export default function Assessment() {
         <div>
           <div className="card-head" style={{ marginBottom: 12 }}>
             <button className="btn sm" onClick={() => setCurExam(null)}>← 返回列表</button>
-            <h3 style={{ display: 'inline', marginLeft: 8 }}>{curExam.name}（{curExam.exam_type}）</h3>
+            <h3 style={{ display: 'inline', marginLeft: 8 }}>{curExam.name}（{curExam.exam_type}）{curExam.grade ? <span className="badge" style={{ marginLeft: 8 }}>{curExam.grade}</span> : <span className="badge" style={{ marginLeft: 8 }}>全校</span>}</h3>
           </div>
 
           {/* 成绩文件留档（管理员 + 组长可传/下载） */}

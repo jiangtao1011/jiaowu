@@ -567,6 +567,7 @@ CREATE TABLE IF NOT EXISTS exams (
   name TEXT NOT NULL,
   semester TEXT NOT NULL,
   exam_type TEXT NOT NULL,
+  grade TEXT,
   exam_date TEXT,
   note TEXT,
   created_by INTEGER REFERENCES users(id),
@@ -626,6 +627,9 @@ seedExamType('期末', 1.0, 0);
 seedExamType('期中', 0, 1);
 seedExamType('月考', 0, 2);
 seedExamType('学考', 0.5, 3);
+
+// 迁移：exams 增加 grade（考试限定年级；空=全校）
+ensureColumn('exams', 'grade', 'TEXT');
 
 // 检查模板升格为「检查类型」：增列大类 category_id、周期属性 cycle
 ensureColumn('inspection_templates', 'category_id', 'INTEGER');
