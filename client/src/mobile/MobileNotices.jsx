@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import api, { errMsg } from '../api.js';
 
 const REPLY_STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回' };
@@ -116,7 +119,13 @@ export default function MobileNotices() {
           <button className="mbtn ghost" style={{ width: 'auto', padding: '8px 14px', fontSize: 14, marginBottom: 10 }} onClick={() => setOpen(null)}>‹ 返回</button>
           <div className="mcard-title">{open.title}</div>
           <div className="mitem-sub" style={{ marginBottom: 10 }}>{open.type} · {open.published_at?.slice(0, 10)}</div>
-          {open.content && <div style={{ whiteSpace: 'pre-wrap', fontSize: 14.5, lineHeight: 1.7, marginBottom: 16 }}>{open.content}</div>}
+          {open.content && (
+            <div className="mnotice-body" style={{ fontSize: 14.5, lineHeight: 1.7, marginBottom: 16 }}>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                {open.content}
+              </ReactMarkdown>
+            </div>
+          )}
           <div className="mfield">
             <label>回复</label>
             <textarea className="minput" rows={3} value={reply} onChange={(e) => setReply(e.target.value)} placeholder="填写回复（提交后待审核）" />

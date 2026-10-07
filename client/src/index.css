@@ -1355,6 +1355,23 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 /* 移动端空态 */
 .mempty { text-align: center; color: var(--muted); padding: 28px 0; font-size: 14px; }
 
+/* 移动端通知正文：Markdown 渲染，与桌面端一致 */
+.mnotice-body { word-break: break-word; }
+.mnotice-body > :first-child { margin-top: 0; }
+.mnotice-body > :last-child { margin-bottom: 0; }
+.mnotice-body p { margin: 0 0 0.7em; }
+.mnotice-body h1, .mnotice-body h2, .mnotice-body h3 { font-weight: 700; margin: 1em 0 0.4em; }
+.mnotice-body h2 { font-size: 16px; }
+.mnotice-body h3 { font-size: 15px; }
+.mnotice-body ul, .mnotice-body ol { margin: 0 0 0.7em; padding-left: 1.4em; }
+.mnotice-body blockquote { margin: 0.7em 0; padding: 6px 12px; border-left: 3px solid var(--primary); background: var(--primary-soft); border-radius: 0 6px 6px 0; }
+.mnotice-body blockquote p { margin: 0; }
+.mnotice-body hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+.mnotice-body a { color: var(--primary); }
+.mnotice-body code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; background: #f0f2f5; padding: 1px 5px; border-radius: 4px; }
+.mnotice-body table { border-collapse: collapse; margin: 0.7em 0; }
+.mnotice-body th, .mnotice-body td { border: 1px solid var(--border); padding: 4px 8px; }
+
 /* 移动壳内的申报页：去掉全屏约束，融入底部导航 */
 .mapply-embedded {
   max-width: none;
