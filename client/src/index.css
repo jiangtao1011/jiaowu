@@ -138,6 +138,10 @@ a:hover { color: var(--primary-hover); }
 .card .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
 .card .card-head h3 { margin: 0; }
 
+/* 教学业绩：年级折叠卡片头（可点击） */
+.grade-head { user-select: none; }
+.grade-head:hover { opacity: 0.82; }
+
 /* ============ 表格 ============ */
 .table-wrap { overflow-x: auto; border-radius: var(--radius); border: 1px solid var(--border); }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }

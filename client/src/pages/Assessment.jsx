@@ -46,6 +46,7 @@ export default function Assessment() {
   const [scores, setScores] = useState([]); // [{group_key, rate_a..e, ...}]
   const [examFiles, setExamFiles] = useState([]); // 当前考试的成绩文件
   const [fileGroupKey, setFileGroupKey] = useState(''); // 上传文件时选择的备课组
+  const [expandedGrades, setExpandedGrades] = useState(() => new Set()); // 展开的年级（录入界面折叠用）
   const [config, setConfig] = useState({ rate_weights: { a: 0.6, b: 0.4, c: 0, d: 0, e: 0 }, full_score: 100 });
 
   // 汇总
@@ -98,6 +99,12 @@ export default function Assessment() {
       setScores(r.data.data);
       setExamFiles([]);
       setFileGroupKey('');
+      // 默认只展开「有数据」的年级（某次月考只有个别年级时，其它年级收起）
+      const hasData = new Set();
+      for (const s of r.data.data) {
+        if ([s.rate_a, s.rate_b, s.rate_c, s.rate_d, s.rate_e].some((v) => v !== '' && v != null && Number(v) !== 0)) hasData.add(s.grade);
+      }
+      setExpandedGrades(hasData);
       // 拉取该考试已上传的成绩文件
       try { setExamFiles((await api.get(`/assessment/exams/${exam.id}/files`)).data.data); } catch { setExamFiles([]); }
     } catch (err) { setError(errMsg(err)); }
@@ -264,6 +271,20 @@ export default function Assessment() {
     });
   }, [scores]);
 
+  // 年级折叠：切换单个年级；展开/收起全部
+  const toggleGrade = (grade) => {
+    setExpandedGrades((prev) => {
+      const next = new Set(prev);
+      if (next.has(grade)) next.delete(grade); else next.add(grade);
+      return next;
+    });
+  };
+  const allGrades = scoresByGrade.map(([g]) => g);
+  const expandAll = () => setExpandedGrades(new Set(allGrades));
+  const collapseAll = () => setExpandedGrades(new Set());
+  // 某年级「已录入」的备课组数（率非空且非 0）
+  const gradeSavedCount = (list) => list.filter((s) => [s.rate_a, s.rate_b, s.rate_c, s.rate_d, s.rate_e].some((v) => v !== '' && v != null && Number(v) !== 0)).length;
+
   return (
     <div>
       <div className="page-head">
@@ -385,35 +406,55 @@ export default function Assessment() {
             </div>
           </div>
 
-          {scoresByGrade.map(([grade, list]) => (
-            <div className="card" key={grade}>
-              <div className="card-head"><h3>{grade}</h3></div>
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr><th>备课组</th><th>学科</th>
-                      {RATE_KEYS.map((r) => <th key={r.key}>{r.label}%</th>)}
-                      <th>参考人数</th><th>均分</th><th>考核分(预览)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {list.map((s) => (
-                      <tr key={s.group_key}>
-                        <td>{s.group_name}</td>
-                        <td>{s.subject}</td>
-                        {RATE_KEYS.map((r) => (
-                          <td key={r.key}><input type="number" min="0" max="100" step="0.1" className="input" style={{ width: 74 }} value={s[`rate_${r.key}`] ?? ''} onChange={(e) => setRate(s.group_key, r.key, e.target.value === '' ? '' : Number(e.target.value))} /></td>
+          <div className="toolbar" style={{ marginBottom: 12 }}>
+            <span className="muted" style={{ fontSize: 13 }}>共 {scores.length} 个备课组，默认展开已录入的年级</span>
+            <button className="btn sm" onClick={expandAll}>展开全部</button>
+            <button className="btn sm" onClick={collapseAll}>收起全部</button>
+          </div>
+
+          {scoresByGrade.map(([grade, list]) => {
+            const open = expandedGrades.has(grade);
+            const saved = gradeSavedCount(list);
+            const hasAny = saved > 0;
+            return (
+              <div className="card" key={grade}>
+                <div className="card-head grade-head" style={{ cursor: 'pointer' }} onClick={() => toggleGrade(grade)}>
+                  <h3 style={{ display: 'inline', margin: 0 }}>
+                    <span style={{ marginRight: 6 }}>{open ? '▾' : '▸'}</span>
+                    {grade}
+                    {hasAny && <span className="badge" style={{ marginLeft: 8 }}>{saved}/{list.length} 已录</span>}
+                  </h3>
+                  <span className="muted" style={{ fontSize: 12 }}>{list.length} 个备课组</span>
+                </div>
+                {open && (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr><th>备课组</th><th>学科</th>
+                          {RATE_KEYS.map((r) => <th key={r.key}>{r.label}%</th>)}
+                          <th>参考人数</th><th>均分</th><th>考核分(预览)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {list.map((s) => (
+                          <tr key={s.group_key}>
+                            <td>{s.group_name}</td>
+                            <td>{s.subject}</td>
+                            {RATE_KEYS.map((r) => (
+                              <td key={r.key}><input type="number" min="0" max="100" step="0.1" className="input" style={{ width: 74 }} value={s[`rate_${r.key}`] ?? ''} onChange={(e) => setRate(s.group_key, r.key, e.target.value === '' ? '' : Number(e.target.value))} /></td>
+                            ))}
+                            <td><input type="number" className="input" style={{ width: 74 }} value={s.total_count ?? ''} onChange={(e) => setScores((prev) => prev.map((r) => (r.group_key === s.group_key ? { ...r, total_count: e.target.value === '' ? null : Number(e.target.value) } : r)))} /></td>
+                            <td><input type="number" className="input" style={{ width: 74 }} value={s.avg_score ?? ''} onChange={(e) => setScores((prev) => prev.map((r) => (r.group_key === s.group_key ? { ...r, avg_score: e.target.value === '' ? null : Number(e.target.value) } : r)))} /></td>
+                            <td><strong>{singleScore(s).toFixed(1)}</strong></td>
+                          </tr>
                         ))}
-                        <td><input type="number" className="input" style={{ width: 74 }} value={s.total_count ?? ''} onChange={(e) => setScores((prev) => prev.map((r) => (r.group_key === s.group_key ? { ...r, total_count: e.target.value === '' ? null : Number(e.target.value) } : r)))} /></td>
-                        <td><input type="number" className="input" style={{ width: 74 }} value={s.avg_score ?? ''} onChange={(e) => setScores((prev) => prev.map((r) => (r.group_key === s.group_key ? { ...r, avg_score: e.target.value === '' ? null : Number(e.target.value) } : r)))} /></td>
-                        <td><strong>{singleScore(s).toFixed(1)}</strong></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div className="toolbar">
             <button className="btn sm" onClick={downloadTemplate}>下载模板</button>
             <label className="btn sm" style={{ cursor: 'pointer' }}>
