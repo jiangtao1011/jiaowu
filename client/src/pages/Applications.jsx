@@ -196,7 +196,7 @@ export default function Applications() {
               <button className="btn primary" onClick={importQna} disabled={!importFile}>导入</button>
               <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
             </div>
-            <p className="muted" style={{ margin: 0 }}>表头：年级、学科、类型、教师、班级、发生日期、节数、星期、节次、内容。临时填报填「发生日期」，固定排班填「星期+节次」；导入后统一待审核。</p>
+            <p className="muted" style={{ margin: 0 }}>表头：年级、学科、类型、教师、班级、发生日期、节数、星期、节次、内容。临时填报填「发生日期」，固定排班填「星期+节次」；早自习填「类型=早自习」且班级可留空（按年级折算）；导入后统一待审核。</p>
           </div>}
 
           {isAdmin && <div className="card">
@@ -223,12 +223,13 @@ export default function Applications() {
                 <div><label>节数</label><input type="number" min="1" value={qnaForm.period_count} onChange={(e) => setQnaForm({ ...qnaForm, period_count: e.target.value })} /></div>
                 <div><label>类型</label>
                   <select value={qnaForm.period_type} onChange={(e) => setQnaForm({ ...qnaForm, period_type: e.target.value })}>
+                    <option value="早自习">早自习（折算型·不计钱）</option>
                     {typePays.map((t) => <option key={t.id} value={t.name}>{t.name}（{t.pay}元/节）</option>)}
                   </select>
                 </div>
               </div>
               <div className="form-row" style={{ marginTop: 14 }}><label>内容说明</label><input value={qnaForm.content} onChange={(e) => setQnaForm({ ...qnaForm, content: e.target.value })} placeholder="如 函数专题答疑 / 晚练安排" /></div>
-              <p className="muted" style={{ marginBottom: 0 }}>说明：临时/不定期填报填「发生日期 + 节数」，审核通过后按所选类型的固定单价计酬；固定排班填报填「星期 + 节次」，审核通过后进入课表按班展开计酬。类型（晚自习/答疑/晚练/自定义）在统计中心维护。</p>
+              <p className="muted" style={{ marginBottom: 0 }}>说明：临时/不定期填报填「发生日期 + 节数」，审核通过后按所选类型的固定单价计酬（早自习除外，按「课时数 × 早自习系数」折算、不计钱）；固定排班填报填「星期 + 节次」，审核通过后进入课表按班展开计酬。按次计酬类型（晚自习/答疑/晚练/自定义）在统计中心维护，早自习为固定折算型。</p>
               <div className="mt">
                 <button className="btn primary">{editingQna ? '保存修改' : '提交填报'}</button>
                 {editingQna && <button type="button" className="btn" style={{ marginLeft: 8 }} onClick={cancelEdit}>取消</button>}
@@ -248,6 +249,7 @@ export default function Applications() {
               </select>
               <select value={qnaFilter.period_type} onChange={(e) => setQnaFilter({ ...qnaFilter, period_type: e.target.value })} style={{ width: 120 }}>
                 <option value="">全部类型</option>
+                <option value="早自习">早自习</option>
                 {typePays.map((t) => <option key={t.id} value={t.name}>{t.name}</option>)}
               </select>
               <input value={qnaFilter.grade} onChange={(e) => setQnaFilter({ ...qnaFilter, grade: e.target.value })} placeholder="年级，如 高一" style={{ width: 130 }} />

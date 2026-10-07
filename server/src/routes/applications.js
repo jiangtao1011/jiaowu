@@ -13,12 +13,19 @@ const BATCH_ROLES = [...ADMIN_ROLES, '年级组长'];
 // 可审核申报的角色：admin/教务员/教务处 + 年级组长（年级组长限本年级）
 const REVIEW_ROLES = [...ADMIN_ROLES, '年级组长'];
 
-// 校验 period_type 是否在按次计酬类型字典里；否则回退「答疑」
+// 校验 period_type 是否合法：早自习为折算型固定类型（不在按次计酬字典里），其余看字典，否则回退「答疑」
 function validPeriodType(t) {
   const name = String(t || '').trim();
   if (!name) return '答疑';
+  if (name === '早自习') return '早自习';
   const hit = db.prepare('SELECT 1 FROM period_type_pays WHERE name = ?').get(name);
   return hit ? name : '答疑';
+}
+
+// 年级级类型（早自习）未指定班级时，回填该年级虚班 id，保证审核通过能生成上课记录。
+function virtualClassIdForGrade(grade) {
+  if (!grade) return null;
+  return db.prepare('SELECT id FROM classes WHERE is_virtual = 1 AND grade = ?').get(grade)?.id ?? null;
 }
 
 // 查找「活跃」（待审核/已通过）的重复申报，返回命中记录或 null。
@@ -33,7 +40,7 @@ function findDuplicate({ teacher_id, period_type, date, day_of_week, period_no, 
   const params = [teacher_id, period_type];
   if (date) {
     conds.push('date = ?'); params.push(date);
-    if (period_type === '答疑') { conds.push('grade = ?'); params.push(grade); }
+    if (period_type === '答疑' || period_type === '早自习') { conds.push('grade = ?'); params.push(grade); }
     else if (period_type === '晚自习') { conds.push('class_id = ?'); params.push(class_id); }
     else { conds.push('grade = ?'); params.push(grade); conds.push('class_id = ?'); params.push(class_id); }
   } else if (day_of_week != null && period_no != null) {
@@ -58,22 +65,29 @@ function insertQnaPending(opts, filledBy, gradeRange) {
   if (gradeRange && grade !== gradeRange) throw new Error(`仅可申报负责年级「${gradeRange}」的课时`);
   const pt = validPeriodType(period_type);
 
+  // 早自习为年级级，未指定班级时回填该年级虚班，保证审核通过能生成上课记录
+  let resolvedClassId = class_id ? Number(class_id) : null;
+  if (pt === '早自习' && !resolvedClassId) {
+    resolvedClassId = virtualClassIdForGrade(grade);
+    if (!resolvedClassId) throw new Error(`年级「${grade}」暂无虚拟班，请先在班级管理里生成年级虚班`);
+  }
+
   const dup = findDuplicate({
     teacher_id, period_type: pt, date: date || null,
     day_of_week: day_of_week != null ? Number(day_of_week) : null,
     period_no: period_no != null ? Number(period_no) : null,
-    grade, class_id: class_id ? Number(class_id) : null,
+    grade, class_id: resolvedClassId,
   });
   if (dup) {
     const where = date ? `日期 ${date}` : `周${day_of_week} 第${period_no}节`;
-    throw new Error(`已存在重复申报（${dup.status === 'approved' ? '已通过' : '待审核'}）：${pt} ${grade}${class_id ? ' ' : ''}${where}`);
+    throw new Error(`已存在重复申报（${dup.status === 'approved' ? '已通过' : '待审核'}）：${pt} ${grade}${resolvedClassId ? ' ' : ''}${where}`);
   }
 
   const info = db
     .prepare(`INSERT INTO qna_lessons
       (grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type, status, filled_by)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(grade, subject, teacher_id, class_id ? Number(class_id) : null,
+    .run(grade, subject, teacher_id, resolvedClassId,
       day_of_week != null ? Number(day_of_week) : null, period_no != null ? Number(period_no) : null,
       content ?? null, date ?? null, Math.max(1, Number(period_count) || 1), pt, 'pending', filledBy);
   return Number(info.lastInsertRowid);
@@ -189,6 +203,7 @@ router.get('/template', authRequired, (req, res) => {
     ['高一', '数学', '答疑', '刘丽娟', '1201班', '2026-09-28', '2', '', '', '函数专题答疑'],
     ['高一', '物理', '晚练', '姜涛', '1201班', '2026-09-28', '1', '', '', '晚练'],
     ['高二', '英语', '晚自习', '陈志红', '1202班', '', '', '1', '8', '固定晚自习'],
+    ['高一', '语文', '早自习', '刘丽娟', '', '2026-09-29', '1', '', '', '早自习'],
   ];
   const notes = [
     ['答疑/按次计酬申报导入模板 —— 填写说明'],
@@ -198,7 +213,7 @@ router.get('/template', authRequired, (req, res) => {
     ['二、各列填写规则：'],
     ['1. 年级：如 高一、高二、高三。'],
     ['2. 学科：课程名称，如 数学、物理。'],
-    ['3. 类型：答疑 / 晚自习 / 晚练 / 自定义类型（需与统计中心里维护的类型名完全一致，否则按「答疑」计）。'],
+    ['3. 类型：答疑 / 晚自习 / 晚练 / 早自习 / 自定义类型（自定义需与统计中心里维护的类型名完全一致，否则按「答疑」计；早自习为折算型·不计钱，班级可留空）。'],
     ['4. 教师：教师姓名，需与「教师信息」里的姓名完全一致。'],
     ['5. 班级：班级名称，需与「班级信息」里的名称完全一致（行政班/分层/走班均可）。'],
     ['6. 发生日期：临时/不定期填报必填，格式 YYYY-MM-DD。'],
@@ -254,8 +269,13 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
     if (!grade || !subject) { errors.push(`第 ${i + 2} 行缺少年级或学科`); continue; }
     const teacherId = teacherName ? teacherByName[teacherName] : null;
     if (teacherName && !teacherId) { errors.push(`第 ${i + 2} 行教师「${teacherName}」不存在`); continue; }
-    const classId = className ? classByName[className] : null;
+    let classId = className ? classByName[className] : null;
     if (className && !classId) { errors.push(`第 ${i + 2} 行班级「${className}」不存在`); continue; }
+    // 早自习为年级级，未指定班级时回填该年级虚班
+    if (periodType === '早自习' && !classId) {
+      classId = virtualClassIdForGrade(grade);
+      if (!classId) { errors.push(`第 ${i + 2} 行年级「${grade}」暂无虚拟班`); continue; }
+    }
     // 临时填报必须有发生日期；固定排班必须有星期
     const date = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : null;
     const dow = Number.isFinite(dayOfWeek) && dayOfWeek >= 1 && dayOfWeek <= 7 ? dayOfWeek : null;
@@ -398,12 +418,17 @@ router.patch('/:id', authRequired, (req, res) => {
 
   // 计算编辑后的最终字段值，用于防重复判定（排除自身）
   const newTeacherId = teacher_id !== undefined ? (teacher_id ? Number(teacher_id) : null) : q.teacher_id;
-  const newClassId = class_id !== undefined ? (class_id ? Number(class_id) : null) : q.class_id;
+  const newType = period_type !== undefined ? validPeriodType(period_type) : q.period_type;
+  const newGrade = grade ?? q.grade;
+  let newClassId = class_id !== undefined ? (class_id ? Number(class_id) : null) : q.class_id;
+  // 早自习为年级级，未指定班级时回填该年级虚班
+  if (newType === '早自习' && !newClassId) {
+    newClassId = virtualClassIdForGrade(newGrade);
+    if (!newClassId) return res.status(400).json({ ok: false, error: `年级「${newGrade}」暂无虚拟班，请先在班级管理里生成年级虚班` });
+  }
   const newDow = day_of_week !== undefined ? (day_of_week != null && day_of_week !== '' ? Number(day_of_week) : null) : q.day_of_week;
   const newPeriodNo = period_no !== undefined ? (period_no != null && period_no !== '' ? Number(period_no) : null) : q.period_no;
   const newDate = date !== undefined ? (date || null) : q.date;
-  const newType = period_type !== undefined ? validPeriodType(period_type) : q.period_type;
-  const newGrade = grade ?? q.grade;
 
   const dup = findDuplicate({
     teacher_id: newTeacherId, period_type: newType, date: newDate,
@@ -421,16 +446,16 @@ router.patch('/:id', authRequired, (req, res) => {
       period_no = ?, content = ?, date = ?, period_count = ?, period_type = ?
     WHERE id = ?`);
   upd.run(
-    grade ?? q.grade,
+    newGrade,
     subject ?? q.subject,
-    teacher_id !== undefined ? (teacher_id ? Number(teacher_id) : null) : q.teacher_id,
-    class_id !== undefined ? (class_id ? Number(class_id) : null) : q.class_id,
-    day_of_week !== undefined ? (day_of_week != null && day_of_week !== '' ? Number(day_of_week) : null) : q.day_of_week,
-    period_no !== undefined ? (period_no != null && period_no !== '' ? Number(period_no) : null) : q.period_no,
+    newTeacherId,
+    newClassId,
+    newDow,
+    newPeriodNo,
     content !== undefined ? content : q.content,
-    date !== undefined ? (date || null) : q.date,
+    newDate,
     period_count !== undefined ? Math.max(1, Number(period_count) || 1) : q.period_count,
-    period_type !== undefined ? validPeriodType(period_type) : q.period_type,
+    newType,
     id
   );
   logAudit(req.user.id, 'update_qna_lesson', `qna_lessons:${id}`, `编辑${q.period_type} ${grade ?? q.grade}${subject ?? q.subject}`);

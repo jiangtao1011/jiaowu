@@ -4,7 +4,7 @@ import api, { errMsg } from '../api.js';
 
 const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '', withdrawn: 'info' };
-const TYPE_ICON = { 答疑: '问', 晚自习: '晚', 晚练: '练' };
+const TYPE_ICON = { 答疑: '问', 晚自习: '晚', 晚练: '练', 早自习: '早' };
 
 export default function MobileApply() {
   const location = useLocation();
@@ -13,7 +13,7 @@ export default function MobileApply() {
   const [self, setSelf] = useState(null);
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
-  const [mode, setMode] = useState(null); // '答疑' | '晚自习' | '批量' | null(首页)
+  const [mode, setMode] = useState(null); // '答疑' | '晚自习' | '早自习' | '批量' | null(首页)
   const [loading, setLoading] = useState(true);
 
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
@@ -85,12 +85,18 @@ export default function MobileApply() {
     if (!self.teacher) return setError('你的账号尚未绑定教师档案，请联系教务员绑定后再申报');
     if (mode === '答疑' && !grade) return setError('请选择年级');
     if (mode === '晚自习' && !classId) return setError('请选择班级');
+    if (mode === '早自习' && !grade) return setError('请选择年级');
     if (!date) return setError('请选择日期');
     try {
+      // 答疑/早自习为年级级（挂年级虚班）；晚自习为班级级（挂行政班）
+      const isGradeLevel = mode === '答疑' || mode === '早自习';
+      const virtualClassId = isGradeLevel
+        ? (self.qna_grades.find((g) => g.grade === grade)?.virtual_class_id ?? null)
+        : null;
       const payload = {
-        grade: mode === '答疑' ? grade : (self.evening_classes.find((c) => c.id === Number(classId))?.grade || ''),
+        grade: isGradeLevel ? grade : (self.evening_classes.find((c) => c.id === Number(classId))?.grade || ''),
         subject: self.teacher.subject,
-        class_id: mode === '答疑' ? (self.qna_grades.find((g) => g.grade === grade)?.virtual_class_id ?? null) : Number(classId),
+        class_id: isGradeLevel ? virtualClassId : Number(classId),
         date,
         period_count: periodCount,
         period_type: mode,
@@ -207,6 +213,14 @@ export default function MobileApply() {
               <div className="mapply-card-body">
                 <div className="mapply-card-title">申报晚自习</div>
                 <div className="mapply-card-desc">针对班级 · 临时某天某次</div>
+              </div>
+              <div className="mapply-card-arrow">›</div>
+            </button>
+            <button className="mapply-card" disabled={notBound} onClick={() => openMode('早自习')}>
+              <div className="mapply-card-icon early">早</div>
+              <div className="mapply-card-body">
+                <div className="mapply-card-title">申报早自习</div>
+                <div className="mapply-card-desc">针对年级 · 按课时数折算</div>
               </div>
               <div className="mapply-card-arrow">›</div>
             </button>
@@ -329,6 +343,46 @@ export default function MobileApply() {
           </div>
 
           <button className="mapply-submit" onClick={submit}>提交晚自习申报</button>
+        </div>
+      )}
+
+      {/* 早自习申报表单（年级级，挂年级虚班） */}
+      {mode === '早自习' && (
+        <div className="mapply-form">
+          <button className="mapply-back" onClick={() => setMode(null)}>‹ 返回</button>
+          <h2>申报早自习</h2>
+          <p className="mapply-form-hint">早自习针对年级，不针对具体班级。选择年级、日期与课时数即可。</p>
+
+          <div className="mapply-field">
+            <label>年级</label>
+            <div className="mapply-chips">
+              {self?.qna_grades?.map((g) => (
+                <button key={g.grade} type="button" className={`mapply-chip ${grade === g.grade ? 'on' : ''}`} onClick={() => setGrade(g.grade)}>{g.grade}</button>
+              ))}
+            </div>
+            {self?.qna_grades?.length === 0 && <p className="mapply-empty">暂无可申报的年级</p>}
+          </div>
+
+          <div className="mapply-field">
+            <label>日期</label>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </div>
+
+          <div className="mapply-field">
+            <label>课时数</label>
+            <div className="mapply-stepper">
+              <button type="button" onClick={() => setPeriodCount((n) => Math.max(1, n - 1))}>−</button>
+              <span>{periodCount}</span>
+              <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+            </div>
+          </div>
+
+          <div className="mapply-field">
+            <label>内容说明（选填）</label>
+            <textarea rows={3} value={content} onChange={(e) => setContent(e.target.value)} placeholder="如 早自习看班" />
+          </div>
+
+          <button className="mapply-submit" onClick={submit}>提交早自习申报</button>
         </div>
       )}
 
