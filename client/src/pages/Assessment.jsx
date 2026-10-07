@@ -44,6 +44,8 @@ export default function Assessment() {
   // 当前选中的考试 + 各率录入
   const [curExam, setCurExam] = useState(null);
   const [scores, setScores] = useState([]); // [{group_key, rate_a..e, ...}]
+  const [examFiles, setExamFiles] = useState([]); // 当前考试的成绩文件
+  const [fileGroupKey, setFileGroupKey] = useState(''); // 上传文件时选择的备课组
   const [config, setConfig] = useState({ rate_weights: { a: 0.6, b: 0.4, c: 0, d: 0, e: 0 }, full_score: 100 });
 
   // 汇总
@@ -94,6 +96,10 @@ export default function Assessment() {
       const r = await api.get(`/assessment/exams/${exam.id}/scores`);
       setCurExam(exam);
       setScores(r.data.data);
+      setExamFiles([]);
+      setFileGroupKey('');
+      // 拉取该考试已上传的成绩文件
+      try { setExamFiles((await api.get(`/assessment/exams/${exam.id}/files`)).data.data); } catch { setExamFiles([]); }
     } catch (err) { setError(errMsg(err)); }
   };
 
@@ -157,6 +163,45 @@ export default function Assessment() {
       openExam(curExam);
     } catch (err) { setError(errMsg(err)); }
     finally { e.target.value = ''; }
+  };
+
+  // 上传成绩文件（管理员 + 组长）
+  const uploadFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!fileGroupKey) { setError('请先选择要关联的备课组'); e.target.value = ''; return; }
+    setError(''); setMsg('');
+    try {
+      const token = localStorage.getItem('edu_token');
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('group_key', fileGroupKey);
+      const r = await fetch(`/api/assessment/exams/${curExam.id}/files`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+      const j = await r.json();
+      if (!r.ok || !j.ok) { setError(j.error || '上传失败'); return; }
+      setMsg(`已上传 ${j.data.filename}`);
+      setExamFiles((await api.get(`/assessment/exams/${curExam.id}/files`)).data.data);
+    } catch (err) { setError(errMsg(err)); }
+    finally { e.target.value = ''; }
+  };
+
+  // 下载成绩文件（管理层）
+  const downloadFile = (f) => {
+    const token = localStorage.getItem('edu_token');
+    const a = document.createElement('a');
+    a.href = `/api/assessment/files/${f.id}/download`;
+    // 用 fetch 带 token 下载，避免直接 a.href 无法带 Authorization
+    fetch(a.href, { headers: { Authorization: `Bearer ${token}` } })
+      .then((r) => { if (!r.ok) throw new Error('下载失败'); return r.blob(); })
+      .then((blob) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = f.filename;
+        link.click();
+        URL.revokeObjectURL(url);
+      })
+      .catch(() => setError('下载失败'));
   };
 
   const loadSummary = async () => {
@@ -304,6 +349,42 @@ export default function Assessment() {
             <button className="btn sm" onClick={() => setCurExam(null)}>← 返回列表</button>
             <h3 style={{ display: 'inline', marginLeft: 8 }}>{curExam.name}（{curExam.exam_type}）</h3>
           </div>
+
+          {/* 成绩文件留档（管理员 + 组长可传/下载） */}
+          <div className="card">
+            <div className="card-head"><h3>成绩文件留档</h3></div>
+            <div className="toolbar" style={{ marginBottom: 12 }}>
+              <select className="input" style={{ width: 240 }} value={fileGroupKey} onChange={(e) => setFileGroupKey(e.target.value)}>
+                <option value="">选择关联备课组</option>
+                {scores.map((s) => <option key={s.group_key} value={s.group_key}>{s.group_name}</option>)}
+              </select>
+              <label className="btn sm" style={{ cursor: 'pointer' }}>
+                上传成绩文件
+                <input type="file" style={{ display: 'none' }} onChange={uploadFile} />
+              </label>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>备课组</th><th>文件名</th><th>上传人</th><th>时间</th><th>操作</th></tr></thead>
+                <tbody>
+                  {examFiles.length === 0 && <tr><td colSpan="5" className="muted" style={{ textAlign: 'center' }}>暂无成绩文件</td></tr>}
+                  {examFiles.map((f) => {
+                    const grp = scores.find((s) => s.group_key === f.group_key);
+                    return (
+                      <tr key={f.id}>
+                        <td>{grp?.group_name || f.group_key}</td>
+                        <td>{f.filename}</td>
+                        <td>{f.uploader_name || '—'}</td>
+                        <td>{f.uploaded_at}</td>
+                        <td><button className="btn sm" onClick={() => downloadFile(f)}>下载</button></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           {scoresByGrade.map(([grade, list]) => (
             <div className="card" key={grade}>
               <div className="card-head"><h3>{grade}</h3></div>
