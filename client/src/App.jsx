@@ -14,6 +14,7 @@ import NoticeView from './pages/NoticeView.jsx';
 import Inspections from './pages/Inspections.jsx';
 import Applications from './pages/Applications.jsx';
 import Stats from './pages/Stats.jsx';
+import Assessment from './pages/Assessment.jsx';
 import MobileApply from './pages/MobileApply.jsx';
 import MobileShell from './mobile/MobileShell.jsx';
 import MobileHome from './mobile/MobileHome.jsx';
@@ -100,6 +101,7 @@ function AppRoutes() {
         <Route path="inspections" element={<Inspections />} />
         <Route path="applications" element={<Applications />} />
         <Route path="stats" element={<Stats />} />
+        <Route path="assessment" element={<Assessment />} />
         <Route path="users" element={<Users />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

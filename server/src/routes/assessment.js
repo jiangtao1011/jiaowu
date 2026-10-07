@@ -270,4 +270,152 @@ router.get('/files/:fileId/download', (req, res) => {
   res.download(path.join(UPLOAD_DIR, f.stored_path), f.filename);
 });
 
+// ===== 考核结构配置（率权重）=====
+// 存 app_settings，key=assessment_config，JSON: { rate_weights:{a,b,c,d,e}, full_score }
+function assessmentConfig() {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'assessment_config'").get();
+  let cfg = null;
+  try { cfg = row?.value ? JSON.parse(row.value) : null; } catch { cfg = null; }
+  const weights = cfg?.rate_weights || {};
+  const fullScore = Number(cfg?.full_score ?? 100);
+  return {
+    rate_weights: {
+      a: Number(weights.a ?? 0.6),
+      b: Number(weights.b ?? 0.4),
+      c: Number(weights.c ?? 0),
+      d: Number(weights.d ?? 0),
+      e: Number(weights.e ?? 0),
+    },
+    full_score: Number.isFinite(fullScore) && fullScore > 0 ? fullScore : 100,
+  };
+}
+
+router.get('/config', (req, res) => res.json({ ok: true, data: assessmentConfig() }));
+
+router.put('/config', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const { rate_weights, full_score } = req.body || {};
+  const cfg = assessmentConfig();
+  const w = rate_weights || {};
+  const next = {
+    rate_weights: {
+      a: w.a !== undefined ? Number(w.a) : cfg.rate_weights.a,
+      b: w.b !== undefined ? Number(w.b) : cfg.rate_weights.b,
+      c: w.c !== undefined ? Number(w.c) : cfg.rate_weights.c,
+      d: w.d !== undefined ? Number(w.d) : cfg.rate_weights.d,
+      e: w.e !== undefined ? Number(w.e) : cfg.rate_weights.e,
+    },
+    full_score: full_score !== undefined ? Number(full_score) : cfg.full_score,
+  };
+  if ([next.rate_weights.a, next.rate_weights.b, next.rate_weights.c, next.rate_weights.d, next.rate_weights.e].some((v) => !Number.isFinite(v) || v < 0)) {
+    return res.status(400).json({ ok: false, error: '权重需为非负数值' });
+  }
+  if (!Number.isFinite(next.full_score) || next.full_score <= 0) {
+    return res.status(400).json({ ok: false, error: '满分需为正数' });
+  }
+  db.prepare(`INSERT INTO app_settings (key, value) VALUES ('assessment_config', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')`).run(JSON.stringify(next));
+  logAudit(req.user.id, 'update_assessment_config', 'app_settings', '更新考核率权重配置');
+  return res.json({ ok: true, data: next });
+});
+
+// ===== 两层加权计算 =====
+
+// 第一层：各率 → 单次考试考核分（rate 0~100，权重可配）
+function singleExamScore(rate, cfg) {
+  const w = cfg.rate_weights;
+  const sumW = w.a + w.b + w.c + w.d + w.e;
+  if (sumW <= 0) return 0;
+  const raw = (rate.a * w.a) + (rate.b * w.b) + (rate.c * w.c) + (rate.d * w.d) + (rate.e * w.e);
+  // raw 已是 0~100 的量纲（rate 为 0~100），除以权重和得加权平均分，再按 full_score 缩放
+  return (raw / sumW) * (cfg.full_score / 100);
+}
+
+// 第二层：单次分 × 类型权重 归一化 → 学期考核分
+// types: 该组该学期参与考核的考试类型列表，各 { weight, score }
+function semesterScore(entries, cfg) {
+  const active = entries.filter((e) => e.weight > 0);
+  const sumW = active.reduce((s, e) => s + e.weight, 0);
+  if (sumW <= 0) return null; // 无参与类型 → 无学期分
+  const sum = active.reduce((s, e) => s + e.score * e.weight, 0);
+  return sum / sumW;
+}
+
+// 某学期某组的学期考核分：遍历该组该学期所有考试的率 + 对应类型权重
+function groupSemesterScore(groupKey, semester, cfg) {
+  const scores = db.prepare(`
+    SELECT es.rate_a, es.rate_b, es.rate_c, es.rate_d, es.rate_e, et.weight
+    FROM exam_scores es
+    JOIN exams e ON e.id = es.exam_id
+    LEFT JOIN exam_types et ON et.name = e.exam_type
+    WHERE es.group_key = ? AND e.semester = ?`).all(groupKey, semester);
+  if (!scores.length) return null;
+  const entries = scores.map((s) => ({ weight: Number(s.weight ?? 0), score: singleExamScore({ a: s.rate_a, b: s.rate_b, c: s.rate_c, d: s.rate_d, e: s.rate_e }, cfg) }));
+  return semesterScore(entries, cfg);
+}
+
+// ===== 考核汇总（备课组 / 教师 / 教研组 三层）=====
+
+router.get('/summary', (req, res) => {
+  const { semester } = req.query;
+  if (!semester) return res.status(400).json({ ok: false, error: '请提供 semester' });
+  const cfg = assessmentConfig();
+  const scope = groupScopeSet(req);
+
+  // 备课组层：该学期有成绩、且在本作用域内的备课组
+  const groups = listGroups()
+    .filter((g) => g.type === '备课组')
+    .filter((g) => !scope || scope.has(g.key));
+  const groupRows = groups.map((g) => {
+    const score = groupSemesterScore(g.key, semester, cfg);
+    // 参与考试详情（各类型单次分）
+    const detail = db.prepare(`
+      SELECT e.exam_type, e.name AS exam_name, es.rate_a, es.rate_b, es.rate_c, es.rate_d, es.rate_e, et.weight
+      FROM exam_scores es
+      JOIN exams e ON e.id = es.exam_id
+      LEFT JOIN exam_types et ON et.name = e.exam_type
+      WHERE es.group_key = ? AND e.semester = ? ORDER BY et.position, e.exam_date`).all(g.key, semester);
+    const examDetail = detail.map((d) => ({
+      exam_type: d.exam_type, exam_name: d.exam_name, weight: Number(d.weight ?? 0),
+      score: singleExamScore({ a: d.rate_a, b: d.rate_b, c: d.rate_c, d: d.rate_d, e: d.rate_e }, cfg),
+    }));
+    return {
+      group_key: g.key, group_name: g.name, subject: g.subject, grade: g.grade,
+      score: score == null ? null : Math.round(score * 100) / 100,
+      exams: examDetail,
+      member_count: g.members.length,
+    };
+  }).filter((r) => r.exams.length > 0);
+
+  // 教研组层：该学科下各备课组学期分的均值
+  const subjectMap = new Map();
+  for (const r of groupRows) {
+    if (!subjectMap.has(r.subject)) subjectMap.set(r.subject, []);
+    subjectMap.get(r.subject).push(r.score);
+  }
+  const subjectRows = [...subjectMap.entries()].map(([subject, scores]) => {
+    const valid = scores.filter((v) => v != null);
+    return { subject, group_count: scores.length, score: valid.length ? Math.round((valid.reduce((a, b) => a + b, 0) / valid.length) * 100) / 100 : null };
+  });
+
+  // 教师层：教师所属各备课组学期分的均值
+  const teacherMap = new Map();
+  for (const g of groupRows) {
+    const grp = resolveGroup(g.group_key);
+    for (const tid of grp?.members || []) {
+      if (!teacherMap.has(tid)) teacherMap.set(tid, { teacher_id: tid, scores: [] });
+      if (g.score != null) teacherMap.get(tid).scores.push(g.score);
+    }
+  }
+  const teacherRows = [...teacherMap.values()].map((t) => {
+    const tinfo = db.prepare('SELECT name, subject FROM teachers WHERE id = ?').get(t.teacher_id);
+    return {
+      teacher_id: t.teacher_id, teacher_name: tinfo?.name ?? '未知', subject: tinfo?.subject ?? null,
+      group_count: t.scores.length,
+      score: t.scores.length ? Math.round((t.scores.reduce((a, b) => a + b, 0) / t.scores.length) * 100) / 100 : null,
+    };
+  });
+
+  return res.json({ ok: true, data: { groups: groupRows, teachers: teacherRows, subjects: subjectRows, config: cfg } });
+});
+
 export default router;

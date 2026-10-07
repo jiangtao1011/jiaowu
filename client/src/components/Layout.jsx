@@ -18,6 +18,7 @@ const GROUPS = [
     label: '统计与资料',
     items: [
       { to: '/stats', label: '统计中心' },
+      { to: '/assessment', label: '教学业绩' },
       { to: '/notices', label: '通知' },
       { to: '/uploads', label: '教学计划上传' },
     ],
