@@ -67,6 +67,7 @@ export default function MobileMe({ onLogout }) {
         <div className="mcard-title">快捷入口</div>
         <Link to="/m/timetable" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课表</div><div className="mitem-sub">查看本周课表</div></div><span className="mitem-side">›</span></div></Link>
         <Link to="/m/stats" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课时</div><div className="mitem-sub">查看课时与课酬</div></div><span className="mitem-side">›</span></div></Link>
+        <Link to="/m/assessment" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的业绩</div><div className="mitem-sub">查看学期考核分档案</div></div><span className="mitem-side">›</span></div></Link>
         <Link to="/m/substitute" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">代课调课</div><div className="mitem-sub">发起代课/调课申请</div></div><span className="mitem-side">›</span></div></Link>
         {isAdmin && (
           <Link to="/m/inspection" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">常规检查</div><div className="mitem-sub">选课打分、拍照上传</div></div><span className="mitem-side">›</span></div></Link>

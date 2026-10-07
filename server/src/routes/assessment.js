@@ -418,4 +418,100 @@ router.get('/summary', (req, res) => {
   return res.json({ ok: true, data: { groups: groupRows, teachers: teacherRows, subjects: subjectRows, config: cfg } });
 });
 
+// ===== 教师档案固化（学期级，手动）=====
+
+// 某学期某组的完整快照（学期分 + 各考试类型原始率 + 固化时配置），供固化与追溯复用
+function groupSemesterSnapshot(groupKey, semester, cfg) {
+  const detail = db.prepare(`
+    SELECT e.exam_type, e.name AS exam_name, es.rate_a, es.rate_b, es.rate_c, es.rate_d, es.rate_e, et.weight
+    FROM exam_scores es
+    JOIN exams e ON e.id = es.exam_id
+    LEFT JOIN exam_types et ON et.name = e.exam_type
+    WHERE es.group_key = ? AND e.semester = ? ORDER BY et.position, e.exam_date`).all(groupKey, semester);
+  if (!detail.length) return null;
+  const exams = detail.map((d) => ({
+    exam_type: d.exam_type, exam_name: d.exam_name, weight: Number(d.weight ?? 0),
+    score: Math.round(singleExamScore({ a: d.rate_a, b: d.rate_b, c: d.rate_c, d: d.rate_d, e: d.rate_e }, cfg) * 100) / 100,
+    rate_a: d.rate_a, rate_b: d.rate_b, rate_c: d.rate_c, rate_d: d.rate_d, rate_e: d.rate_e,
+  }));
+  const entries = exams.map((e) => ({ weight: e.weight, score: e.score }));
+  const score = semesterScore(entries, cfg);
+  const grp = resolveGroup(groupKey);
+  return {
+    group_key: groupKey,
+    group_name: grp?.name ?? groupKey,
+    subject: grp?.subject ?? null,
+    grade: grp?.grade ?? null,
+    score: score == null ? null : Math.round(score * 100) / 100,
+    exams,
+    members: grp?.members ?? [],
+    config: { rate_weights: cfg.rate_weights, full_score: cfg.full_score },
+  };
+}
+
+// 列出某学期已固化的教师档案（管理员/教务处）
+router.get('/records', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const { semester } = req.query;
+  if (!semester) return res.status(400).json({ ok: false, error: '请提供 semester' });
+  const rows = db.prepare(`
+    SELECT r.*, t.name AS teacher_name, t.subject
+    FROM teacher_assessment_records r
+    JOIN teachers t ON t.id = r.teacher_id
+    WHERE r.semester = ? ORDER BY t.subject, r.group_key, t.name`).all(semester);
+  return res.json({ ok: true, data: rows });
+});
+
+// 教师查看自己的业绩档案（可按学期筛选；无 teacher_id 绑定则空）
+router.get('/my-record', (req, res) => {
+  const { semester } = req.query;
+  const tid = req.user.teacher_id ? Number(req.user.teacher_id) : null;
+  if (!tid) return res.json({ ok: true, data: [] });
+  const rows = semester
+    ? db.prepare('SELECT * FROM teacher_assessment_records WHERE teacher_id = ? AND semester = ? ORDER BY id DESC').all(tid, semester)
+    : db.prepare('SELECT * FROM teacher_assessment_records WHERE teacher_id = ? ORDER BY semester DESC, id DESC').all(tid);
+  return res.json({ ok: true, data: rows });
+});
+
+// 固化某学期档案：按当前数据算两层加权，把每位教师（所属各备课组）的学期分快照进档案
+function doArchive(semester, userId) {
+  const cfg = assessmentConfig();
+  const groupKeys = db.prepare(`
+    SELECT DISTINCT es.group_key FROM exam_scores es
+    JOIN exams e ON e.id = es.exam_id WHERE e.semester = ?`).all(semester).map((r) => r.group_key);
+  if (!groupKeys.length) return { error: '该学期还没有录入任何成绩，无法固化' };
+
+  db.prepare('DELETE FROM teacher_assessment_records WHERE semester = ?').run(semester);
+  const ins = db.prepare(`INSERT INTO teacher_assessment_records (teacher_id, group_key, semester, score, detail, locked_by, locked_at)
+    VALUES (?,?,?,?,?,?,datetime('now','localtime'))`);
+  let count = 0;
+  for (const gk of groupKeys) {
+    const snap = groupSemesterSnapshot(gk, semester, cfg);
+    if (!snap || snap.score == null) continue;
+    for (const tid of snap.members) {
+      ins.run(tid, gk, semester, snap.score, JSON.stringify(snap), userId);
+      count++;
+    }
+  }
+  return { records: count, groups: groupKeys.length };
+}
+
+router.post('/semesters/:semester/archive', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const semester = String(req.params.semester || '').trim();
+  if (!semester) return res.status(400).json({ ok: false, error: '请提供学期' });
+  const r = doArchive(semester, req.user.id);
+  if (r.error) return res.status(400).json({ ok: false, error: r.error });
+  logAudit(req.user.id, 'archive_assessment', `semester:${semester}`, `固化教学业绩档案 ${r.records} 条（${r.groups} 个备课组）`);
+  return res.json({ ok: true, data: r });
+});
+
+// 重新固化 = 删旧重建（与 archive 同逻辑，供录错后重来）
+router.post('/semesters/:semester/rearchive', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const semester = String(req.params.semester || '').trim();
+  if (!semester) return res.status(400).json({ ok: false, error: '请提供学期' });
+  const r = doArchive(semester, req.user.id);
+  if (r.error) return res.status(400).json({ ok: false, error: r.error });
+  logAudit(req.user.id, 'rearchive_assessment', `semester:${semester}`, `重固化教学业绩档案 ${r.records} 条`);
+  return res.json({ ok: true, data: r });
+});
+
 export default router;

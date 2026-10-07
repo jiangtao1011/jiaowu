@@ -24,6 +24,7 @@ import MobileMe from './mobile/MobileMe.jsx';
 import MobileTimetable from './mobile/MobileTimetable.jsx';
 import MobileSubstitute from './mobile/MobileSubstitute.jsx';
 import MobileInspection from './mobile/MobileInspection.jsx';
+import MobileAssessment from './mobile/MobileAssessment.jsx';
 
 function AuthGuard({ children }) {
   const token = localStorage.getItem('edu_token');
@@ -80,6 +81,7 @@ function AppRoutes() {
         <Route path="timetable" element={<MobileTimetable />} />
         <Route path="substitute" element={<MobileSubstitute />} />
         <Route path="inspection" element={<MobileInspection />} />
+        <Route path="assessment" element={<MobileAssessment />} />
         <Route path="notices" element={<MobileNotices />} />
         <Route path="me" element={<MobileMe onLogout={logout} />} />
       </Route>

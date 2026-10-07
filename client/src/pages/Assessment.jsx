@@ -29,7 +29,7 @@ const RATE_KEYS = [
 export default function Assessment() {
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const admin = isAdmin(user);
-  const [tab, setTab] = useState('exams'); // exams | summary | config
+  const [tab, setTab] = useState('exams'); // exams | summary | config | records
   const [error, setError] = useState('');
   const [msg, setMsg] = useState('');
 
@@ -141,6 +141,29 @@ export default function Assessment() {
     } catch (err) { setError(errMsg(err)); }
   };
 
+  // 固化 + 档案
+  const [records, setRecords] = useState([]);
+  const [recordsSemester, setRecordsSemester] = useState('');
+
+  const archiveSemester = async (semester) => {
+    setError(''); setMsg('');
+    if (!semester) return setError('请先选择学期');
+    if (!window.confirm(`确认固化「${semester}」的教师业绩档案？固化后改率/改权重不影响已归档档案。`)) return;
+    try {
+      const r = await api.post(`/assessment/semesters/${encodeURIComponent(semester)}/archive`);
+      setMsg(`已固化 ${r.data.data.records} 条档案（${r.data.data.groups} 个备课组）`);
+    } catch (err) { setError(errMsg(err)); }
+  };
+
+  const loadRecords = async () => {
+    setError('');
+    if (!recordsSemester) return setError('请选择学期');
+    try {
+      const r = await api.get('/assessment/records', { params: { semester: recordsSemester } });
+      setRecords(r.data.data);
+    } catch (err) { setError(errMsg(err)); }
+  };
+
   const setWeight = (key, val) => setConfig((c) => ({ ...c, rate_weights: { ...c.rate_weights, [key]: val } }));
 
   // 按年级+学科分组展示各率（复用折叠思路的简化版：按年级分组）
@@ -167,6 +190,7 @@ export default function Assessment() {
         <div className="toolbar">
           <button className={`btn sm ${tab === 'exams' ? 'primary' : ''}`} onClick={() => setTab('exams')}>考试与成绩</button>
           <button className={`btn sm ${tab === 'summary' ? 'primary' : ''}`} onClick={() => setTab('summary')}>考核汇总</button>
+          {admin && <button className={`btn sm ${tab === 'records' ? 'primary' : ''}`} onClick={() => setTab('records')}>教师档案</button>}
           {admin && <button className={`btn sm ${tab === 'config' ? 'primary' : ''}`} onClick={() => setTab('config')}>考核配置</button>}
         </div>
       </div>
@@ -291,6 +315,7 @@ export default function Assessment() {
                   {semesters.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
                 <button className="btn primary sm" onClick={loadSummary}>查询</button>
+                {admin && <button className="btn sm" onClick={() => archiveSemester(summarySemester)}>固化本学期档案</button>}
               </div>
             </div>
           </div>
@@ -369,6 +394,44 @@ export default function Assessment() {
           </div>
           <button className="btn primary" onClick={saveConfig}>保存配置</button>
           <p className="muted" style={{ marginTop: 12 }}>提示：考试类型权重（期末/学考等）在「考试类型」字典中配置，见考试录入时类型选择。</p>
+        </div>
+      )}
+
+      {/* ===== Tab3 教师档案 ===== */}
+      {tab === 'records' && admin && (
+        <div>
+          <div className="card">
+            <div className="card-head">
+              <h3>教师业绩档案</h3>
+              <div className="toolbar" style={{ marginBottom: 0 }}>
+                <select className="input" style={{ width: 220 }} value={recordsSemester} onChange={(e) => setRecordsSemester(e.target.value)}>
+                  <option value="">选择学期</option>
+                  {semesters.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <button className="btn primary sm" onClick={loadRecords}>查询</button>
+              </div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>教师</th><th>学科</th><th>学期</th><th>备课组</th><th>学期考核分</th><th>固化时间</th></tr></thead>
+                <tbody>
+                  {records.map((r) => (
+                    <tr key={r.id}>
+                      <td>{r.teacher_name}</td>
+                      <td>{r.subject}</td>
+                      <td>{r.semester}</td>
+                      <td>{(() => { try { return JSON.parse(r.detail)?.group_name || r.group_key; } catch { return r.group_key; } })()}</td>
+                      <td><strong>{r.score}</strong></td>
+                      <td>{r.locked_at || '—'}</td>
+                    </tr>
+                  ))}
+                  {records.length === 0 && <tr><td colSpan="6" className="muted" style={{ textAlign: 'center' }}>该学期暂无已固化档案</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
     </div>
