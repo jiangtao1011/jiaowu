@@ -118,7 +118,7 @@ export default function Dashboard() {
               </div>
               <div className="todo-list">
                 <Link to="/applications" className="todo-item">
-                  <span className="todo-name">按次计酬申报</span>
+                  <span className="todo-name">课时申报</span>
                   <span className={`todo-num${data.todo.qna ? ' on' : ''}`}>{data.todo.qna}</span>
                 </Link>
                 <Link to="/applications" className="todo-item">

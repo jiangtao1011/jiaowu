@@ -684,7 +684,7 @@ export default function Stats() {
             </table>
             <button type="button" className="btn sm" style={{ marginTop: 8 }} onClick={addTypePay}>+ 添加类型</button>
             <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
-              这些类型用于「答疑/按次计酬申报」与「手工加课」：每节按此固定课酬计，不参与学科/班额折算。已被记录引用的类型无法删除（避免历史计酬突变），可将其单价改为 0 以停用。
+              这些类型用于「课时申报」（晚自习/答疑/晚练等按次计酬）与「手工加课」：每节按此固定课酬计，不参与学科/班额折算。早自习为固定折算型，不在此字典中。已被记录引用的类型无法删除（避免历史计酬突变），可将其单价改为 0 以停用。
             </p>
           </div>
         </>

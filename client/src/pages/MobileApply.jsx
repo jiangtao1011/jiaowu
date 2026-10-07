@@ -197,7 +197,7 @@ export default function MobileApply() {
         <>
           <div className="mapply-hero">
             <h1>老师好，今天要申报什么课务？</h1>
-            <p>提交后由教务处审核，通过即按次计酬。</p>
+            <p>提交后由教务处审核，通过即计酬（答疑/晚自习按次计酬，早自习按课时折算）。</p>
           </div>
           <div className="mapply-cards">
             <button className="mapply-card" disabled={notBound} onClick={() => openMode('答疑')}>

@@ -15,7 +15,7 @@ export default function Applications() {
   // 可审核申报的角色：admin/教务员/教务处 + 年级组长（年级组长限本年级，后端已过滤）
   const canReview = isAdmin || isGradeLeader;
 
-  // 按次计酬申报状态
+  // 课时申报状态（晚自习/答疑/晚练等按次计酬 + 早自习折算）
   const [qnaList, setQnaList] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [classes, setClasses] = useState([]);
@@ -104,7 +104,7 @@ export default function Applications() {
       const blob = await r.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = '按次计酬申报导入模板.xlsx';
+      a.download = '课务申报导入模板.xlsx';
       a.click();
       URL.revokeObjectURL(a.href);
     } catch (e) { setError(errMsg(e)); }
@@ -166,7 +166,7 @@ export default function Applications() {
         <div className="page-head">
           <h2 className="page-title">课务申报</h2>
         </div>
-        <div className="alert error">无权限：课务申报仅教务员/教务处/年级组长可用，请使用「自主申报」提交按次计酬课时。</div>
+        <div className="alert error">无权限：课务申报仅教务员/教务处/年级组长可用，请使用「自主申报」提交课时申报。</div>
       </div>
     );
   }
@@ -175,18 +175,18 @@ export default function Applications() {
     <div>
       <div className="page-head">
         <h2 className="page-title">课务申报</h2>
-        <p className="page-sub">按次计酬申报（晚自习/答疑/晚练等，审核后进入课表）· 竞赛课/私人定制课申报</p>
+        <p className="page-sub">课时申报（晚自习/答疑/晚练等按次计酬 + 早自习折算，审核后进入课表）· 竞赛课/私人定制课申报</p>
       </div>
 
       {error && <div className="alert error">{error}</div>}
       {msg && <div className="alert success">{msg}</div>}
 
       <div className="toolbar">
-        <button className={`btn ${tab === 'qna' ? 'primary' : ''}`} onClick={() => setTab('qna')}>按次计酬申报</button>
+        <button className={`btn ${tab === 'qna' ? 'primary' : ''}`} onClick={() => setTab('qna')}>课时申报</button>
         {isAdmin && <button className={`btn ${tab === 'tasks' ? 'primary' : ''}`} onClick={() => setTab('tasks')}>课程申报</button>}
       </div>
 
-      {/* 按次计酬申报 */}
+      {/* 课时申报 */}
       {tab === 'qna' && (
         <>
           {isAdmin && <div className="card">

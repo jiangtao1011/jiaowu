@@ -55,7 +55,7 @@ function findDuplicate({ teacher_id, period_type, date, day_of_week, period_no, 
   return db.prepare(sql).get(...params) ?? null;
 }
 
-// 插入一条待审核的按次计酬申报（校验类型 + 防重复 + 写库），返回 { id } 或抛错。
+// 插入一条待审核的课时申报（校验类型 + 防重复 + 写库），返回 { id } 或抛错。
 // 供单条填报 POST / 与批量申报 POST /batch 共用。
 // opts: { grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type }
 // gradeRange: 年级组长限定负责年级时传其年级名，非本年级直接抛错。
@@ -94,7 +94,7 @@ function insertQnaPending(opts, filledBy, gradeRange) {
 }
 
 // 答疑课：填报/列表/审核（审核通过后进入课表展示）
-// 注：已泛化为「按次计酬申报」——类型可为晚自习/答疑/晚练/自定义（来自 period_type_pays 字典）
+// 注：已泛化为「课时申报」——按次计酬类型（晚自习/答疑/晚练/自定义，来自 period_type_pays 字典）+ 折算型「早自习」
 
 // 当前登录教师的自主申报聚合数据：身份、学科、可选答疑年级（含年级虚班 id）、
 // 可选晚自习班级（代课年级的行政班）、我的申报记录。
@@ -206,7 +206,7 @@ router.get('/template', authRequired, (req, res) => {
     ['高一', '语文', '早自习', '刘丽娟', '', '2026-09-29', '1', '', '', '早自习'],
   ];
   const notes = [
-    ['答疑/按次计酬申报导入模板 —— 填写说明'],
+    ['课时申报导入模板 —— 填写说明'],
     [''],
     ['一、表头（第1行固定，按顺序）：年级 | 学科 | 类型 | 教师 | 班级 | 发生日期 | 节数 | 星期 | 节次 | 内容'],
     [''],
@@ -219,15 +219,15 @@ router.get('/template', authRequired, (req, res) => {
     ['6. 发生日期：临时/不定期填报必填，格式 YYYY-MM-DD。'],
     ['7. 节数：本次实际节数，默认 1。'],
     ['8. 星期 / 节次：固定排班填报填（星期 1-7，节次数字）；临时填报这两列留空。'],
-    ['9. 内容：答疑内容，可留空。'],
+    ['9. 内容：申报内容，可留空。'],
     [''],
     ['三、要点：'],
-    ['- 临时填报（填发生日期）审核通过后按「类型单价 × 节数」计酬。'],
+    ['- 临时填报（填发生日期）审核通过后，按次计酬类型按「类型单价 × 节数」计酬；早自习按「课时数 × 早自习系数」折算、不计钱。'],
     ['- 固定排班（填星期+节次，不填日期）审核通过后进入课表，按班展开计酬。'],
     ['- 导入后统一为「待审核」状态，由教务处逐条审核。'],
     ['- 示例行仅供参考，导入前请删除示例行、只保留真实数据。'],
   ];
-  downloadTemplate(res, headers, samples, '答疑申报导入模板.xlsx', [{ name: '填写说明', rows: notes }]);
+  downloadTemplate(res, headers, samples, '课时申报导入模板.xlsx', [{ name: '填写说明', rows: notes }]);
 });
 
 // 批量导入答疑申报（任意登录用户；导入后统一待审核）
@@ -321,7 +321,7 @@ router.get('/batch-context', authRequired, (req, res) => {
   return res.json({ ok: true, data: { role: req.user.role, managed_grade, grades, teachers, classes, typePays } });
 });
 
-// 批量申报（教务员/教务处/admin/年级组长）：一次提交多条按次计酬课时，统一待审核。
+// 批量申报（教务员/教务处/admin/年级组长）：一次提交多条课时申报，统一待审核。
 // body: { items: [{ grade, subject, teacher_id, class_id, date, period_count, period_type, content }] }
 router.post('/batch', authRequired, roleRequired(...BATCH_ROLES), (req, res) => {
   const { items } = req.body || {};

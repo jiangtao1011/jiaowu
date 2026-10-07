@@ -159,7 +159,7 @@ export default function MobileHome() {
           <div className="mcard-title">待办审核</div>
           <div className="mstat-row">
             <Link to="/applications" className="mstat" style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div className="mstat-v">{dash.todo.qna}</div><div className="mstat-l">按次计酬申报</div>
+              <div className="mstat-v">{dash.todo.qna}</div><div className="mstat-l">课时申报</div>
             </Link>
             <Link to="/applications" className="mstat" style={{ textDecoration: 'none', color: 'inherit' }}>
               <div className="mstat-v">{dash.todo.applications}</div><div className="mstat-l">课程申报</div>
