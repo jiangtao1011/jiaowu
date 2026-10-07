@@ -54,6 +54,7 @@ export default function Stats() {
   const [extraForm, setExtraForm] = useState({ class_id: '', teacher_id: '', subject: '', date: '', period_no: '1', period_type: '正课', term: '常规' });
   const [instFilter, setInstFilter] = useState({ date: '', class_id: '', teacher_id: '' });
   const [typePays, setTypePays] = useState([]); // 按次计酬类型字典
+  const [typeCoefs, setTypeCoefs] = useState([]); // 折算类型字典
   const [summaryTypes, setSummaryTypes] = useState([]); // 汇总表动态列
 
   // 分页 + 折叠
@@ -74,7 +75,7 @@ export default function Stats() {
         params.from_date = fromDate;
         params.to_date = toDate;
       }
-      const jobs = [api.get('/schedules/changes'), api.get('/schedules/coefficients'), api.get('/teachers'), api.get('/classes'), api.get('/stats/type-pays')];
+      const jobs = [api.get('/schedules/changes'), api.get('/schedules/coefficients'), api.get('/teachers'), api.get('/classes'), api.get('/stats/type-pays'), api.get('/stats/type-coefficients')];
       if (mode === 'daily') {
         const instParams = {};
         if (fromDate) instParams.from_date = fromDate;
@@ -86,12 +87,13 @@ export default function Stats() {
         jobs.push(api.get('/schedules/summary', { params }));
       }
 
-      const [ch, cf, tc, cc, tp, ...rest] = await Promise.all(jobs);
+      const [ch, cf, tc, cc, tp, tco, ...rest] = await Promise.all(jobs);
       setChanges(ch.data.data);
       setCoefs(cf.data.data);
       setTeachers(tc.data.data);
       setClasses(cc.data.data);
       setTypePays(tp.data.data);
+      setTypeCoefs(tco.data.data);
       if (mode === 'daily') {
         const [ins, cal, sm] = rest;
         setInstances(ins.data.data);
@@ -123,7 +125,6 @@ export default function Stats() {
     next[i] = { ...next[i], coefficient: v };
     setCoefs({ ...coefs, subjects: next });
   };
-  const setPeriod = (k, v) => setCoefs({ ...coefs, periods: { ...coefs.periods, [k]: v } });
   const addSubj = () => setCoefs({ ...coefs, subjects: [...coefs.subjects, { subject: '', coefficient: 1.0 }] });
   const addBand = () => setCoefs({ ...coefs, bands: [...coefs.bands, { min_size: '', coefficient: 1.0 }] });
 
@@ -145,6 +146,26 @@ export default function Stats() {
   const delTypePay = async (id) => {
     if (id == null) { setTypePays(typePays.filter((t) => t.id != null || t.name)); return; }
     try { await api.delete(`/stats/type-pays/${id}`); setMsg('已删除该类型'); load(); } catch (e) { setError(errMsg(e)); }
+  };
+
+  // ===== 折算类型字典（早自习等，节数×系数） =====
+  const setTypeCoef = (i, field, v) => {
+    const next = [...typeCoefs];
+    next[i] = { ...next[i], [field]: v };
+    setTypeCoefs(next);
+  };
+  const addTypeCoef = () => setTypeCoefs([...typeCoefs, { name: '', coefficient: 0.5 }]);
+  const saveTypeCoefs = async () => {
+    setError(''); setMsg('');
+    try {
+      await api.put('/stats/type-coefficients', { items: typeCoefs });
+      setMsg('折算类型字典已保存');
+      load();
+    } catch (e) { setError(errMsg(e)); }
+  };
+  const delTypeCoef = async (id) => {
+    if (id == null) { setTypeCoefs(typeCoefs.filter((t) => t.id != null || t.name)); return; }
+    try { await api.delete(`/stats/type-coefficients/${id}`); setMsg('已删除该折算类型'); load(); } catch (e) { setError(errMsg(e)); }
   };
 
   // ===== 校历 =====
@@ -443,7 +464,8 @@ export default function Stats() {
                   <input type="date" value={extraForm.date} onChange={(e) => setExtraForm({ ...extraForm, date: e.target.value })} style={{ width: 150 }} />
                   <input type="number" value={extraForm.period_no} onChange={(e) => setExtraForm({ ...extraForm, period_no: e.target.value })} placeholder="节次" style={{ width: 70 }} />
                   <select value={extraForm.period_type} onChange={(e) => setExtraForm({ ...extraForm, period_type: e.target.value })} style={{ width: 100 }}>
-                    <option>正课</option><option>早自习</option>
+                    <option>正课</option>
+                    {typeCoefs.map((t) => <option key={t.id || t.name} value={t.name}>{t.name}</option>)}
                     {typePays.map((t) => <option key={t.id || t.name} value={t.name}>{t.name}</option>)}
                   </select>
                   <select value={extraForm.term} onChange={(e) => setExtraForm({ ...extraForm, term: e.target.value })} style={{ width: 100 }}>
@@ -580,7 +602,7 @@ export default function Stats() {
             </div>
             <Pagination page={summaryPage} total={summary.length} onPage={setSummaryPage} />
             <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
-              折算课时：正课 = 节数 ×（课时系数 + 班额系数）；早自习 = 节数 × 早自习系数；按次计酬类型（晚自习/答疑/晚练/自定义）= 固定单价 × 节数（不计折算课时）；夏/冬令营 = 节数（课酬另按教师课酬标准 × 节数计）。走班班额 = 合班各行政班人数之和。
+              折算课时：正课 = 节数 ×（课时系数 + 班额系数）；折算类型（早自习等）= 节数 × 折算系数；按次计酬类型（晚自习/答疑/晚练/自定义）= 固定单价 × 节数（不计折算课时）；夏/冬令营 = 节数（课酬另按教师课酬标准 × 节数计）。走班班额 = 合班各行政班人数之和。
             </p>
           </div>
 
@@ -620,18 +642,6 @@ export default function Stats() {
             <div className="card-head"><h3>折算系数</h3><button className="btn primary sm" onClick={saveCoefs}>保存系数</button></div>
             <div className="form-grid">
               <div>
-                <label>课时类型设置</label>
-                <table className="coef-table">
-                  <thead><tr><th>项目</th><th className="num">数值</th></tr></thead>
-                  <tbody>
-                    <tr>
-                      <td>早自习折算系数</td>
-                      <td className="num"><input type="number" step="0.1" value={coefs.periods.early_coefficient ?? 0.5} onChange={(e) => setPeriod('early_coefficient', e.target.value)} style={{ width: 90 }} /></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div>
                 <label>课时系数（正课折算用）</label>
                 <table className="coef-table">
                   <thead><tr><th>学科</th><th className="num">系数</th></tr></thead>
@@ -645,6 +655,23 @@ export default function Stats() {
                   </tbody>
                 </table>
                 <button type="button" className="btn sm" style={{ marginTop: 8 }} onClick={addSubj}>+ 添加学科</button>
+              </div>
+              <div>
+                <label>折算类型（早自习等，节数 × 系数）</label>
+                <table className="coef-table">
+                  <thead><tr><th>类型名称</th><th className="num">系数</th><th style={{ width: 70 }}>操作</th></tr></thead>
+                  <tbody>
+                    {typeCoefs.map((t, i) => (
+                      <tr key={t.id ?? i}>
+                        <td><input value={t.name} onChange={(e) => setTypeCoef(i, 'name', e.target.value)} /></td>
+                        <td className="num"><input type="number" step="0.1" value={t.coefficient} onChange={(e) => setTypeCoef(i, 'coefficient', e.target.value)} style={{ width: 80 }} /></td>
+                        <td><button className="btn sm danger" onClick={() => delTypeCoef(t.id)}>删除</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <button type="button" className="btn sm" style={{ marginTop: 8 }} onClick={addTypeCoef}>+ 添加折算类型</button>
+                <button type="button" className="btn sm" style={{ marginTop: 8, marginLeft: 8 }} onClick={saveTypeCoefs}>保存折算类型</button>
               </div>
             </div>
             <div className="mt">
@@ -684,7 +711,7 @@ export default function Stats() {
             </table>
             <button type="button" className="btn sm" style={{ marginTop: 8 }} onClick={addTypePay}>+ 添加类型</button>
             <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
-              这些类型用于「课时申报」（晚自习/答疑/晚练等按次计酬）与「手工加课」：每节按此固定课酬计，不参与学科/班额折算。早自习为固定折算型，不在此字典中。已被记录引用的类型无法删除（避免历史计酬突变），可将其单价改为 0 以停用。
+              这些类型用于「课时申报」（晚自习/答疑/晚练等按次计酬）与「手工加课」：每节按此固定课酬计，不参与学科/班额折算。折算类型（早自习等，节数 × 系数）在上方「折算系数」卡片单独维护。已被记录引用的类型无法删除（避免历史计酬突变），可将其单价改为 0 以停用。
             </p>
           </div>
         </>

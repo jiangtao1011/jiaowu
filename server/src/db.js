@@ -294,6 +294,13 @@ CREATE TABLE IF NOT EXISTS period_type_pays (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS period_type_coefficients (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  coefficient REAL NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 CREATE TABLE IF NOT EXISTS application_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
@@ -474,6 +481,14 @@ function seedPeriodTypePay(name, key, fallback) {
 }
 seedPeriodTypePay('晚自习', 'late_pay', 40);
 seedPeriodTypePay('答疑', 'qa_pay', 30);
+
+// 折算类型字典：把 period_settings 里的早自习折算系数迁移进来（幂等）
+function seedPeriodTypeCoef(name, key, fallback) {
+  if (db.prepare('SELECT 1 FROM period_type_coefficients WHERE name = ?').get(name)) return;
+  const v = Number(db.prepare('SELECT value FROM period_settings WHERE key = ?').get(key)?.value ?? fallback);
+  db.prepare('INSERT INTO period_type_coefficients (name, coefficient) VALUES (?,?)').run(name, Number.isFinite(v) ? v : fallback);
+}
+seedPeriodTypeCoef('早自习', 'early_coefficient', 0.5);
 
 // 年级虚拟班：为每个年级建一个「走班」虚班（is_virtual=1），成员挂该年级所有行政班。
 // 用途：答疑「针对年级、不针对班」，而 lesson_instances.class_id 是 NOT NULL，答疑计酬挂到年级虚班，

@@ -27,9 +27,9 @@ export function computePay(ctx, r) {
   const subjCoef = ctx.subjCoef.get(subj) ?? 1.0;
   const sizeCoef = ctx.sizeCoefOf(size);
 
-  if (r.period_type === '早自习') {
-    // 早自习：折算课时 = 节数 × 早自习系数，无课酬
-    return { weighted: count * (ctx.periodSettings.early_coefficient ?? 0.5), pay: 0 };
+  if (ctx.periodTypeCoefs.has(r.period_type)) {
+    // 折算类型（早自习等）：折算课时 = 节数 × 折算系数，无课酬
+    return { weighted: count * (ctx.periodTypeCoefs.get(r.period_type) ?? 0.5), pay: 0 };
   }
   if (ctx.periodTypePays.has(r.period_type)) {
     // 按次计酬类型（晚自习/答疑/晚练/自定义）：折算 0，课酬 = 单价 × 节数
@@ -68,6 +68,11 @@ export function loadContext() {
     db.prepare('SELECT name, pay FROM period_type_pays').all()
       .map((r) => [r.name, r.pay])
   );
+  // 折算类型字典：类型名 -> 折算系数（早自习等）
+  const periodTypeCoefs = new Map(
+    db.prepare('SELECT name, coefficient FROM period_type_coefficients').all()
+      .map((r) => [r.name, r.coefficient])
+  );
 
   return {
     classMap,
@@ -75,6 +80,7 @@ export function loadContext() {
     sizeBands,
     periodSettings,
     periodTypePays,
+    periodTypeCoefs,
     // 统计班额：走班默认=合班成员班额之和，若手动填了人数（student_count>0）则以手动值为准；其余=自身班额
     effSize(cid) {
       const c = classMap.get(cid);

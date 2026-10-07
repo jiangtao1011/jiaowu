@@ -385,22 +385,23 @@ function queryRows(from_date, to_date, term, teacher_id, includeCancelled = fals
 }
 
 // 非规时段（有课酬标准的时段）：pay_standard 的五档 + 节假补课。
-// 与 computePay 的分支顺序保持一致：早自习 → 按次计酬类型 → 非规时段 → 常规正课。
+// 与 computePay 的分支顺序保持一致：折算类型 → 按次计酬类型 → 非规时段 → 常规正课。
 const NON_REGULAR_TERMS = ['夏令营', '冬令营', '全员夏令营', '全员冬令营', '节假补课'];
 
-// 把区间内上课记录聚合成「财务口径」：钱 = 按次计酬类型金额 + 非规时段金额；正课/早自习只出折算课时不计钱。
-// 返回 { teachers, typeColumns, termColumns, totals }，供财务汇总表与勾稽校验共用。
+// 把区间内上课记录聚合成「财务口径」：钱 = 按次计酬类型金额 + 非规时段金额；正课/折算类型只出折算课时不计钱。
+// 返回 { teachers, coefColumns, typeColumns, termColumns, totals }，供财务汇总表与勾稽校验共用。
 // rows 来自 queryRows（含 pay_standard / parent_teacher_name），cancelled 记录默认跳过（单独统计）。
 function buildFinancial(rows, ctx) {
-  const typeColumns = [...ctx.periodTypePays.keys()];
+  const coefColumns = [...ctx.periodTypeCoefs.keys()]; // 折算类型（早自习等）
+  const typeColumns = [...ctx.periodTypePays.keys()];  // 按次计酬类型
   const termColumns = NON_REGULAR_TERMS;
 
   const mkEntry = (tid, name) => ({
     teacher_id: tid, teacher_name: name,
-    core_count: 0, core_weighted: 0,   // 常规正课（不计钱）
-    early_count: 0, early_weighted: 0, // 早自习（不计钱）
-    typeCounts: {}, typePays: {},      // 按次计酬类型：节数 / 金额
-    termCounts: {}, termPays: {},      // 非规时段：节数 / 金额
+    core_count: 0, core_weighted: 0,      // 常规正课（不计钱）
+    coefCounts: {}, coefWeighted: {},      // 折算类型：节数 / 折算课时
+    typeCounts: {}, typePays: {},          // 按次计酬类型：节数 / 金额
+    termCounts: {}, termPays: {},          // 非规时段：节数 / 金额
     weighted_total: 0, pay_total: 0,
   });
   const teachers = new Map();
@@ -413,8 +414,9 @@ function buildFinancial(rows, ctx) {
     e.weighted_total += weighted;
     e.pay_total += pay;
 
-    if (r.period_type === '早自习') {
-      e.early_count += 1; e.early_weighted += weighted;
+    if (ctx.periodTypeCoefs.has(r.period_type)) {
+      e.coefCounts[r.period_type] = (e.coefCounts[r.period_type] || 0) + 1;
+      e.coefWeighted[r.period_type] = (e.coefWeighted[r.period_type] || 0) + weighted;
     } else if (ctx.periodTypePays.has(r.period_type)) {
       e.typeCounts[r.period_type] = (e.typeCounts[r.period_type] || 0) + 1;
       e.typePays[r.period_type] = (e.typePays[r.period_type] || 0) + pay;
@@ -430,7 +432,8 @@ function buildFinancial(rows, ctx) {
   const sum = (fn) => list.reduce((s, e) => s + (fn(e) || 0), 0);
   const totals = {
     core_count: sum((e) => e.core_count), core_weighted: sum((e) => e.core_weighted),
-    early_count: sum((e) => e.early_count), early_weighted: sum((e) => e.early_weighted),
+    coefCounts: Object.fromEntries(coefColumns.map((t) => [t, sum((e) => e.coefCounts[t])])),
+    coefWeighted: Object.fromEntries(coefColumns.map((t) => [t, sum((e) => e.coefWeighted[t])])),
     typeCounts: Object.fromEntries(typeColumns.map((t) => [t, sum((e) => e.typeCounts[t])])),
     typePays: Object.fromEntries(typeColumns.map((t) => [t, sum((e) => e.typePays[t])])),
     termCounts: Object.fromEntries(termColumns.map((t) => [t, sum((e) => e.termCounts[t])])),
@@ -438,7 +441,7 @@ function buildFinancial(rows, ctx) {
     weighted_total: sum((e) => e.weighted_total),
     pay_total: sum((e) => e.pay_total),
   };
-  return { teachers: list, typeColumns, termColumns, totals };
+  return { teachers: list, coefColumns, typeColumns, termColumns, totals };
 }
 
 router.get('/summary', (req, res) => {
@@ -478,8 +481,8 @@ router.get('/summary', (req, res) => {
     weighted_total: Math.round(e.weighted_total * 100) / 100,
     pay_total: Math.round(e.pay_total * 100) / 100,
   }));
-  // 汇总表列：折算型（早自习、正课）+ 按次计酬类型字典里的所有类型
-  const types = ['早自习', '正课', ...[...ctx.periodTypePays.keys()]];
+  // 汇总表列：折算类型字典 + 正课 + 按次计酬类型字典
+  const types = [...ctx.periodTypeCoefs.keys(), '正课', ...ctx.periodTypePays.keys()];
   return res.json({ ok: true, data, types });
 });
 
@@ -535,7 +538,57 @@ router.delete('/type-pays/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
   return res.json({ ok: true, data: { deleted: true } });
 });
 
-// 导出课酬明细（Excel）：每节课一行，含折算课时与课酬。
+// ===== 折算类型字典（早自习等，节数 × 折算系数，不计钱） =====
+
+// 列出折算类型字典（名称 + 折算系数）
+router.get('/type-coefficients', (req, res) => {
+  const rows = db.prepare('SELECT id, name, coefficient FROM period_type_coefficients ORDER BY id').all();
+  return res.json({ ok: true, data: rows });
+});
+
+// 批量保存折算类型字典（按 id 更新，无 id 新增；name 为空则跳过）
+router.put('/type-coefficients', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const { items = [] } = req.body || {};
+  if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items 需为数组' });
+  const up = db.prepare('UPDATE period_type_coefficients SET name = ?, coefficient = ? WHERE id = ?');
+  const ins = db.prepare('INSERT INTO period_type_coefficients (name, coefficient) VALUES (?,?)');
+  const existsId = db.prepare('SELECT id FROM period_type_coefficients WHERE id = ?');
+  for (const it of items) {
+    const name = String(it.name || '').trim();
+    const coefficient = Number(it.coefficient);
+    if (!name || !Number.isFinite(coefficient)) continue;
+    if (it.id != null && existsId.get(it.id)) up.run(name, coefficient, Number(it.id));
+    else {
+      // 同名则更新（避免重复）
+      const dup = db.prepare('SELECT id FROM period_type_coefficients WHERE name = ?').get(name);
+      if (dup) up.run(name, coefficient, dup.id);
+      else ins.run(name, coefficient);
+    }
+  }
+  logAudit(req.user.id, 'update_type_coefficients', 'period_type_coefficients', '更新折算类型字典');
+  return res.json({ ok: true, data: { updated: true } });
+});
+
+// 删除某折算类型（仅删除字典项；若已被上课记录/课表/申报引用则拒绝，避免历史计酬突变）
+router.delete('/type-coefficients/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare('SELECT * FROM period_type_coefficients WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ ok: false, error: '折算类型不存在' });
+
+  const inst = db.prepare('SELECT COUNT(*) AS n FROM lesson_instances WHERE period_type = ?').get(row.name);
+  const sched = db.prepare('SELECT COUNT(*) AS n FROM schedules WHERE period_type = ?').get(row.name);
+  const qna = db.prepare('SELECT COUNT(*) AS n FROM qna_lessons WHERE period_type = ?').get(row.name);
+  const used = inst.n + sched.n + qna.n;
+  if (used > 0) {
+    return res.status(400).json({
+      ok: false,
+      error: `「${row.name}」已被 ${used} 条记录引用（上课记录 ${inst.n}、课表 ${sched.n}、申报 ${qna.n}），无法删除。请先处理这些记录，或将系数改为 0 以停用。`,
+    });
+  }
+  db.prepare('DELETE FROM period_type_coefficients WHERE id = ?').run(id);
+  logAudit(req.user.id, 'delete_type_coefficient', `period_type_coefficients:${id}`, `删除折算类型 ${row.name}`);
+  return res.json({ ok: true, data: { deleted: true } });
+});
 // 财务口径：保留已停课/代课双方全貌（includeCancelled），停课课酬计 0 并标「已停课」，
 // 代课记录标来源与原教师，便于财务把每笔钱对应到原始课务动作。
 router.get('/export', roleRequired(...ADMIN_ROLES), (req, res) => {
@@ -584,13 +637,14 @@ router.get('/financial-report', roleRequired(...ADMIN_ROLES), (req, res) => {
   if (!from_date || !to_date) return res.status(400).json({ ok: false, error: '请提供 from_date 与 to_date' });
   const ctx = loadContext();
   const rows = queryRows(from_date, to_date, term, teacher_id);
-  const { teachers, typeColumns, termColumns, totals } = buildFinancial(rows, ctx);
+  const { teachers, coefColumns, typeColumns, termColumns, totals } = buildFinancial(rows, ctx);
 
   const round2 = (v) => Math.round((v || 0) * 100) / 100;
 
   const header = [
     '序号', '教师姓名',
-    '正课节数', '正课折算课时(不计钱)', '早自习节数', '早自习折算课时(不计钱)',
+    '正课节数', '正课折算课时(不计钱)',
+    ...coefColumns.flatMap((t) => [`${t}节数`, `${t}折算课时(不计钱)`]),
     ...typeColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
     ...termColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
     '折算课时合计', '课酬合计(元)', '备注',
@@ -599,7 +653,8 @@ router.get('/financial-report', roleRequired(...ADMIN_ROLES), (req, res) => {
   teachers.forEach((e, i) => {
     aoa.push([
       i + 1, e.teacher_name,
-      e.core_count, round2(e.core_weighted), e.early_count, round2(e.early_weighted),
+      e.core_count, round2(e.core_weighted),
+      ...coefColumns.flatMap((t) => [e.coefCounts[t] || 0, round2(e.coefWeighted[t])]),
       ...typeColumns.flatMap((t) => [e.typeCounts[t] || 0, round2(e.typePays[t])]),
       ...termColumns.flatMap((t) => [e.termCounts[t] || 0, round2(e.termPays[t])]),
       round2(e.weighted_total), round2(e.pay_total), '',
@@ -609,7 +664,8 @@ router.get('/financial-report', roleRequired(...ADMIN_ROLES), (req, res) => {
   // 合计行
   aoa.push([
     '合计', '',
-    totals.core_count, round2(totals.core_weighted), totals.early_count, round2(totals.early_weighted),
+    totals.core_count, round2(totals.core_weighted),
+    ...coefColumns.flatMap((t) => [totals.coefCounts[t] || 0, round2(totals.coefWeighted[t])]),
     ...typeColumns.flatMap((t) => [totals.typeCounts[t] || 0, round2(totals.typePays[t])]),
     ...termColumns.flatMap((t) => [totals.termCounts[t] || 0, round2(totals.termPays[t])]),
     round2(totals.weighted_total), round2(totals.pay_total), '',
@@ -636,7 +692,7 @@ router.get('/financial-report', roleRequired(...ADMIN_ROLES), (req, res) => {
     [],
     ['一、课酬（钱）口径'],
     ['· 课酬合计 = 按次计酬类型金额 + 非规时段金额。'],
-    ['· 常规正课、早自习只出「折算课时」，不计钱（供教学业绩考核用）。'],
+    ['· 常规正课、折算类型（早自习等）只出「折算课时」，不计钱（供教学业绩考核用）。'],
     [],
     ['二、按次计酬类型（元 = 单价 × 节数）'],
     ...typeColumns.map((t) => [`· ${t}：${ctx.periodTypePays.get(t) ?? 0} 元/节`]),
@@ -645,8 +701,9 @@ router.get('/financial-report', roleRequired(...ADMIN_ROLES), (req, res) => {
     ['· 各教师课酬标准见「教师信息」模块的 pay_standard 字段（按时段分档）。'],
     ['· 时段：' + termColumns.join(' / ')],
     [],
-    ['四、折算课时系数（仅正课/早自习，不计钱）'],
-    [`· 正课折算 = 节数 ×（学科系数 + 班额系数）；早自习折算 = 节数 × 早自习系数(${ctx.periodSettings.early_coefficient ?? 0.5})。`],
+    ['四、折算课时系数（仅正课/折算类型，不计钱）'],
+    [`· 正课折算 = 节数 ×（学科系数 + 班额系数）。`],
+    ...coefColumns.map((t) => [`· ${t}折算 = 节数 × 折算系数(${ctx.periodTypeCoefs.get(t) ?? 0.5})。`]),
     ['· 学科系数：' + [...ctx.subjCoef.entries()].map(([s, c]) => `${s}${c}`).join('，')],
     ['· 班额分档系数：' + ctx.sizeBands.map((b) => `≥${b.min_size}人×${b.coefficient}`).join('，')],
     [],
@@ -689,11 +746,11 @@ router.get('/financial-check', roleRequired(...ADMIN_ROLES), (req, res) => {
   const summaryPay = round2(fin.totals.pay_total);
 
   // 3) 异常清单
-  // 3a) 无价类型：period_type 既非正课/早自习，也不在按次计酬字典，且非非规时段（这类 computePay 会当正课算，金额 0，可能是类型名打错）
+  // 3a) 无价类型：period_type 既非正课/折算类型，也不在按次计酬字典，且非非规时段（这类 computePay 会当正课算，金额 0，可能是类型名打错）
   const untyped = new Set();
   for (const r of rows) {
     if (r.cancelled) continue;
-    if (r.period_type !== '正课' && r.period_type !== '早自习' && !ctx.periodTypePays.has(r.period_type) && r.term === '常规') {
+    if (r.period_type !== '正课' && !ctx.periodTypeCoefs.has(r.period_type) && !ctx.periodTypePays.has(r.period_type) && r.term === '常规') {
       untyped.add(r.period_type);
     }
   }
@@ -813,7 +870,8 @@ router.post('/snapshots', roleRequired(...ADMIN_ROLES), (req, res) => {
     teachers: fin.teachers.map((e) => ({
       teacher_id: e.teacher_id, teacher_name: e.teacher_name,
       core_count: e.core_count, core_weighted: round2(e.core_weighted),
-      early_count: e.early_count, early_weighted: round2(e.early_weighted),
+      coefCounts: Object.fromEntries(fin.coefColumns.map((t) => [t, e.coefCounts[t] || 0])),
+      coefWeighted: Object.fromEntries(fin.coefColumns.map((t) => [t, round2(e.coefWeighted[t])])),
       typePays: Object.fromEntries(fin.typeColumns.map((t) => [t, round2(e.typePays[t])])),
       termPays: Object.fromEntries(fin.termColumns.map((t) => [t, round2(e.termPays[t])])),
       weighted_total: round2(e.weighted_total), pay_total: round2(e.pay_total),
@@ -824,6 +882,7 @@ router.post('/snapshots', roleRequired(...ADMIN_ROLES), (req, res) => {
       typePays: Object.fromEntries(fin.typeColumns.map((t) => [t, round2(fin.totals.typePays[t])])),
       termPays: Object.fromEntries(fin.termColumns.map((t) => [t, round2(fin.totals.termPays[t])])),
     },
+    coefColumns: fin.coefColumns,
     typeColumns: fin.typeColumns,
     termColumns: fin.termColumns,
   };
@@ -850,7 +909,8 @@ router.get('/financial-pack', roleRequired(...ADMIN_ROLES), (req, res) => {
   // Sheet1 财务汇总表（复用 L1 结构）
   const header = [
     '序号', '教师姓名',
-    '正课节数', '正课折算课时(不计钱)', '早自习节数', '早自习折算课时(不计钱)',
+    '正课节数', '正课折算课时(不计钱)',
+    ...fin.coefColumns.flatMap((t) => [`${t}节数`, `${t}折算课时(不计钱)`]),
     ...fin.typeColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
     ...fin.termColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
     '折算课时合计', '课酬合计(元)', '备注',
@@ -859,7 +919,8 @@ router.get('/financial-pack', roleRequired(...ADMIN_ROLES), (req, res) => {
   fin.teachers.forEach((e, i) => {
     aoa.push([
       i + 1, e.teacher_name,
-      e.core_count, round2(e.core_weighted), e.early_count, round2(e.early_weighted),
+      e.core_count, round2(e.core_weighted),
+      ...fin.coefColumns.flatMap((t) => [e.coefCounts[t] || 0, round2(e.coefWeighted[t])]),
       ...fin.typeColumns.flatMap((t) => [e.typeCounts[t] || 0, round2(e.typePays[t])]),
       ...fin.termColumns.flatMap((t) => [e.termCounts[t] || 0, round2(e.termPays[t])]),
       round2(e.weighted_total), round2(e.pay_total), '',
@@ -867,7 +928,8 @@ router.get('/financial-pack', roleRequired(...ADMIN_ROLES), (req, res) => {
   });
   aoa.push([
     '合计', '',
-    fin.totals.core_count, round2(fin.totals.core_weighted), fin.totals.early_count, round2(fin.totals.early_weighted),
+    fin.totals.core_count, round2(fin.totals.core_weighted),
+    ...fin.coefColumns.flatMap((t) => [fin.totals.coefCounts[t] || 0, round2(fin.totals.coefWeighted[t])]),
     ...fin.typeColumns.flatMap((t) => [fin.totals.typeCounts[t] || 0, round2(fin.totals.typePays[t])]),
     ...fin.termColumns.flatMap((t) => [fin.totals.termCounts[t] || 0, round2(fin.totals.termPays[t])]),
     round2(fin.totals.weighted_total), round2(fin.totals.pay_total), '',
@@ -937,7 +999,7 @@ router.get('/financial-pack', roleRequired(...ADMIN_ROLES), (req, res) => {
     [],
     ['一、课酬（钱）口径'],
     ['· 课酬合计 = 按次计酬类型金额 + 非规时段金额。'],
-    ['· 常规正课、早自习只出「折算课时」，不计钱（供教学业绩考核用）。'],
+    ['· 常规正课、折算类型（早自习等）只出「折算课时」，不计钱（供教学业绩考核用）。'],
     [],
     ['二、按次计酬类型（元 = 单价 × 节数）'],
     ...fin.typeColumns.map((t) => [`· ${t}：${ctx.periodTypePays.get(t) ?? 0} 元/节`]),
@@ -946,8 +1008,9 @@ router.get('/financial-pack', roleRequired(...ADMIN_ROLES), (req, res) => {
     ['· 各教师课酬标准见「教师信息」模块（按时段分档）。'],
     ['· 时段：' + fin.termColumns.join(' / ')],
     [],
-    ['四、折算课时系数（仅正课/早自习，不计钱）'],
-    [`· 正课折算 = 节数 ×（学科系数 + 班额系数）；早自习折算 = 节数 × 早自习系数(${ctx.periodSettings.early_coefficient ?? 0.5})。`],
+    ['四、折算课时系数（仅正课/折算类型，不计钱）'],
+    [`· 正课折算 = 节数 ×（学科系数 + 班额系数）。`],
+    ...fin.coefColumns.map((t) => [`· ${t}折算 = 节数 × 折算系数(${ctx.periodTypeCoefs.get(t) ?? 0.5})。`]),
   ];
   const ws4 = XLSX.utils.aoa_to_sheet(notes);
   ws4['!cols'] = [{ wch: 120 }];
