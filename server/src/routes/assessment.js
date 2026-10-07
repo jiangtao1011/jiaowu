@@ -6,6 +6,7 @@ import { db, logAudit, UPLOAD_DIR } from '../db.js';
 import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
 import { visibleGroups } from '../scope.js';
 import { listGroups, resolveGroup } from '../groups.js';
+import { parseSheet, keyOf, downloadTemplate } from '../template.js';
 
 const router = Router();
 router.use(authRequired);
@@ -18,6 +19,8 @@ const storage = multer.diskStorage({
   },
 });
 const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024 } });
+// 导入解析用（内存缓冲，不落盘）
+const uploadMem = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 // busboy/multer 默认按 latin1 解码 multipart 文件名，中文需转回 UTF-8
 function decodeName(name) {
@@ -28,6 +31,13 @@ function decodeName(name) {
 function groupScopeSet(req) {
   const scope = visibleGroups(req.user);
   return scope ? new Set(scope) : null;
+}
+
+// 率值收敛到 0~100，保留两位小数
+function clampRate(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(100, Math.round(n * 100) / 100));
 }
 
 // 组列表（含 key/name/type/subject/grade/leader/members），供录入界面按组选择。
@@ -188,12 +198,6 @@ router.put('/exams/:id/scores', roleRequired(...ADMIN_ROLES), (req, res) => {
   const { items = [] } = req.body || {};
   if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items 需为数组' });
 
-  // 校验：group_key 必须能解析为备课组；rate 0~100
-  const clampRate = (v) => {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(0, Math.min(100, Math.round(n * 100) / 100));
-  };
   const ins = db.prepare(`INSERT INTO exam_scores (exam_id, group_key, group_name, rate_a, rate_b, rate_c, rate_d, rate_e, total_count, avg_score)
     VALUES (?,?,?,?,?,?,?,?,?,?)`);
   const upd = db.prepare(`UPDATE exam_scores SET group_name = ?, rate_a = ?, rate_b = ?, rate_c = ?, rate_d = ?, rate_e = ?, total_count = ?, avg_score = ?
@@ -217,6 +221,94 @@ router.put('/exams/:id/scores', roleRequired(...ADMIN_ROLES), (req, res) => {
   }
   logAudit(req.user.id, 'save_exam_scores', `exams:${id}`, `保存 ${savedCount} 个备课组各率`);
   return res.json({ ok: true, data: { saved: savedCount } });
+});
+
+// 下载各率导入模板（含当前考试全部备课组 + 已录率预填）
+router.get('/exams/:id/scores-template', (req, res) => {
+  const id = Number(req.params.id);
+  const exam = db.prepare('SELECT * FROM exams WHERE id = ?').get(id);
+  if (!exam) return res.status(404).json({ ok: false, error: '考试不存在' });
+
+  const scope = groupScopeSet(req);
+  const groups = listGroups()
+    .filter((g) => g.type === '备课组')
+    .filter((g) => !scope || scope.has(g.key));
+  const savedMap = new Map(db.prepare('SELECT * FROM exam_scores WHERE exam_id = ?').all(id).map((s) => [s.group_key, s]));
+
+  const headers = ['备课组', 'A率%', 'B率%', 'C率%', 'D率%', 'E率%', '参考人数', '均分'];
+  const sampleRows = groups.map((g) => {
+    const s = savedMap.get(g.key);
+    return [
+      g.name,
+      s ? s.rate_a : '',
+      s ? s.rate_b : '',
+      s ? s.rate_c : '',
+      s ? s.rate_d : '',
+      s ? s.rate_e : '',
+      s ? s.total_count : '',
+      s ? s.avg_score : '',
+    ];
+  });
+  downloadTemplate(
+    res,
+    headers,
+    sampleRows,
+    `${exam.name}-各率导入模板.xlsx`,
+    [{ name: '填写说明', rows: [['「备课组」列需与系统备课组名一致（如「高一化学备课组」）；各率为百分数 0~100；只导入文件中出现的行，未出现的备课组保持不变。']] }]
+  );
+});
+
+// 批量导入各率（按备课组名匹配 upsert，不影响文件中未出现的组）
+router.post('/exams/:id/scores/import', roleRequired(...ADMIN_ROLES), uploadMem.single('file'), (req, res) => {
+  const id = Number(req.params.id);
+  const exam = db.prepare('SELECT * FROM exams WHERE id = ?').get(id);
+  if (!exam) return res.status(404).json({ ok: false, error: '考试不存在' });
+  if (!req.file) return res.status(400).json({ ok: false, error: '请上传文件' });
+
+  let rows;
+  try { rows = parseSheet(req.file.buffer, req.file.originalname); } catch {
+    return res.status(400).json({ ok: false, error: '无法解析文件，请使用模板的 .xlsx / .csv 格式' });
+  }
+  if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
+
+  // 组名 → 组 key（备课组；教研组名也含学科，但不参与业绩考核）
+  const groupByName = new Map();
+  for (const g of listGroups()) if (g.type === '备课组') groupByName.set(g.name, g.key);
+
+  const ins = db.prepare(`INSERT INTO exam_scores (exam_id, group_key, group_name, rate_a, rate_b, rate_c, rate_d, rate_e, total_count, avg_score)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  const upd = db.prepare(`UPDATE exam_scores SET group_name = ?, rate_a = ?, rate_b = ?, rate_c = ?, rate_d = ?, rate_e = ?, total_count = ?, avg_score = ?
+    WHERE exam_id = ? AND group_key = ?`);
+  const existing = new Set(db.prepare('SELECT group_key FROM exam_scores WHERE exam_id = ?').all(id).map((r) => r.group_key));
+
+  let imported = 0;
+  const errors = [];
+  const seen = new Set();
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const gname = String(keyOf(row, '备课组', '备课组名', 'group_name', '组名') ?? '').trim();
+    if (!gname) { errors.push(`第 ${i + 2} 行缺少备课组名`); continue; }
+    const gk = groupByName.get(gname);
+    if (!gk) { errors.push(`第 ${i + 2} 行「${gname}」不是有效备课组`); continue; }
+    if (seen.has(gk)) { errors.push(`第 ${i + 2} 行「${gname}」重复`); continue; }
+    seen.add(gk);
+
+    const ra = clampRate(keyOf(row, 'A率%', 'A率', 'a率') ?? 0);
+    const rb = clampRate(keyOf(row, 'B率%', 'B率', 'b率') ?? 0);
+    const rc = clampRate(keyOf(row, 'C率%', 'C率', 'c率') ?? 0);
+    const rd = clampRate(keyOf(row, 'D率%', 'D率', 'd率') ?? 0);
+    const re = clampRate(keyOf(row, 'E率%', 'E率', 'e率') ?? 0);
+    const tcRaw = keyOf(row, '参考人数', '人数');
+    const tc = tcRaw !== '' && tcRaw != null ? Number(tcRaw) : null;
+    const asRaw = keyOf(row, '均分', '平均分');
+    const as = asRaw !== '' && asRaw != null ? Number(asRaw) : null;
+
+    if (existing.has(gk)) upd.run(gname, ra, rb, rc, rd, re, tc, as, id, gk);
+    else ins.run(id, gk, gname, ra, rb, rc, rd, re, tc, as);
+    imported++;
+  }
+  logAudit(req.user.id, 'import_exam_scores', `exams:${id}`, `批量导入各率 ${imported} 条${errors.length ? `，异常 ${errors.length} 条` : ''}`);
+  return res.json({ ok: true, data: { imported, errors } });
 });
 
 // ===== 成绩文件（考试 × 备课组） =====

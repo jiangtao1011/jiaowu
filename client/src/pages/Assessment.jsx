@@ -123,6 +123,42 @@ export default function Assessment() {
     } catch (err) { setError(errMsg(err)); }
   };
 
+  // 下载各率导入模板
+  const downloadTemplate = async () => {
+    setError('');
+    try {
+      const token = localStorage.getItem('edu_token');
+      const r = await fetch(`/api/assessment/exams/${curExam.id}/scores-template`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) { setError('下载模板失败'); return; }
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${curExam.name}-各率导入模板.xlsx`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (err) { setError(errMsg(err)); }
+  };
+
+  // 批量导入各率
+  const importScores = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(''); setMsg('');
+    try {
+      const token = localStorage.getItem('edu_token');
+      const fd = new FormData();
+      fd.append('file', file);
+      const r = await fetch(`/api/assessment/exams/${curExam.id}/scores/import`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+      const j = await r.json();
+      if (!r.ok || !j.ok) { setError(j.error || '导入失败'); return; }
+      const { imported, errors } = j.data;
+      setMsg(`已导入 ${imported} 个备课组各率${errors?.length ? `，${errors.length} 行异常` : ''}`);
+      if (errors?.length) setError(errors.join('；'));
+      openExam(curExam);
+    } catch (err) { setError(errMsg(err)); }
+    finally { e.target.value = ''; }
+  };
+
   const loadSummary = async () => {
     setError('');
     if (!summarySemester) return setError('请选择学期');
@@ -298,6 +334,11 @@ export default function Assessment() {
             </div>
           ))}
           <div className="toolbar">
+            <button className="btn sm" onClick={downloadTemplate}>下载模板</button>
+            <label className="btn sm" style={{ cursor: 'pointer' }}>
+              批量导入
+              <input type="file" accept=".xlsx,.csv" style={{ display: 'none' }} onChange={importScores} />
+            </label>
             <button className="btn primary" onClick={saveScores}>保存各率</button>
           </div>
         </div>
