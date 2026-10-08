@@ -447,7 +447,7 @@ export default function Applications() {
                     <td>{t.title}</td>
                     <td>{t.grade || '-'}</td>
                     <td>{t.subject || '-'}</td>
-                    <td>{t.pay_mode === '折算' ? `${t.period_type}（折算）` : `${t.period_type}（${t.pay_rate ?? '按字典'}元/节）`}</td>
+                    <td>{t.period_type ? (t.pay_mode === '折算' ? `${t.period_type}（折算）` : `${t.period_type}（${t.pay_rate ?? '按字典'}元/节）`) : '-'}</td>
                     <td><span className="badge">{t.apply_count ?? 0} 人</span></td>
                     <td>{t.deadline || '-'}</td>
                     <td>
