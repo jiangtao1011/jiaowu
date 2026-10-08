@@ -1,8 +1,10 @@
 import { Router } from 'express';
+import crypto from 'node:crypto';
 import multer from 'multer';
 import { db, logAudit } from '../db.js';
 import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
+import { publicBase } from '../share.js';
 
 const router = Router();
 
@@ -491,46 +493,106 @@ router.patch('/:id/withdraw', authRequired, roleRequired(...ADMIN_ROLES), (req, 
   return res.json({ ok: true, data: { id, status: 'withdrawn', removed_instances: removed.changes } });
 });
 
-// ===== 课程申报（竞赛课 / 私人定制课） =====
+// ===== 课程申报（自定义表单 + 分享填报 + 审核计酬） =====
 
-// 申报任务列表
+// 校验课程计酬配置合法，返回 { ok, error } 或 { ok, period_type }。
+// 按次计酬：period_type 需命中 period_type_pays；折算：需命中 period_type_coefficients。
+function validatePayConfig(pay_mode, period_type) {
+  if (!period_type) return { ok: false, error: '请选择计酬类型' };
+  if (pay_mode === '折算') {
+    const hit = db.prepare('SELECT 1 FROM period_type_coefficients WHERE name = ?').get(period_type);
+    return hit ? { ok: true } : { ok: false, error: `折算类型「${period_type}」不在折算字典里，请先在统计配置中添加` };
+  }
+  // 默认按次计酬
+  const hit = db.prepare('SELECT 1 FROM period_type_pays WHERE name = ?').get(period_type);
+  return hit ? { ok: true } : { ok: false, error: `按次计酬类型「${period_type}」不在类型字典里，请先在统计配置中添加` };
+}
+
+// 取年级虚班 id（课程计酬挂虚班，满足 lesson_instances.class_id NOT NULL）
+// 注：复用前文早自习申报的 virtualClassIdForGrade（定义于文件头部）
+
+// 解析任务/填报里的 JSON 字段，容错
+function parseJSON(v, fallback) {
+  if (v == null) return fallback;
+  if (typeof v === 'object') return v;
+  try { return JSON.parse(v); } catch { return fallback; }
+}
+
+// 序列化课程的分享信息（share_url 由 publicBase 拼）
+function courseShare(req, task) {
+  return {
+    share_token: task.share_token,
+    share_url: task.share_token ? `${publicBase(req)}/course/${task.share_token}` : '',
+  };
+}
+
+// 申报任务列表（含填报人数）
 router.get('/tasks', authRequired, (req, res) => {
-  const rows = db.prepare('SELECT * FROM application_tasks ORDER BY id DESC').all();
-  return res.json({ ok: true, data: rows });
+  const rows = db.prepare(`
+    SELECT t.*, (SELECT COUNT(*) FROM applications a WHERE a.task_id = t.id) AS apply_count
+    FROM application_tasks t ORDER BY t.id DESC`).all();
+  return res.json({ ok: true, data: rows.map((t) => ({ ...t, form_schema: parseJSON(t.form_schema, []) })) });
 });
 
-// 创建申报任务（教务员设置明细）
+// 创建课程（教务员：自定义字段 + 计酬配置 + 分享）
 router.post('/tasks', authRequired, roleRequired(...ADMIN_ROLES), (req, res) => {
-  const { title, type, course_type, time_desc, duration, content_desc, deadline, filler_role } = req.body || {};
-  if (!title) return res.status(400).json({ ok: false, error: '任务标题必填' });
-  const info = db
-    .prepare(`INSERT INTO application_tasks
-      (title, type, course_type, time_desc, duration, content_desc, deadline, filler_role, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(title, type || '私人定制课', course_type ?? null, time_desc ?? null, duration ?? null,
-      content_desc ?? null, deadline ?? null, filler_role ?? '教师', req.user.id);
-  logAudit(req.user.id, 'create_application_task', `application_tasks:${info.lastInsertRowid}`, `创建申报任务 ${title}`);
-  return res.json({ ok: true, data: { id: Number(info.lastInsertRowid) } });
+  const { title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade } = req.body || {};
+  if (!title) return res.status(400).json({ ok: false, error: '课程标题必填' });
+
+  const mode = pay_mode === '折算' ? '折算' : '按次计酬';
+  const v = validatePayConfig(mode, period_type);
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+
+  const schema = Array.isArray(form_schema) ? form_schema : [];
+  const share_token = crypto.randomBytes(12).toString('hex');
+  const info = db.prepare(`
+    INSERT INTO application_tasks
+      (title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade, share_token, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(title, deadline ?? null, filler_role ?? '教师', JSON.stringify(schema),
+      mode, String(period_type).trim(), subject ?? null, grade ?? null, share_token, req.user.id);
+
+  const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(info.lastInsertRowid);
+  logAudit(req.user.id, 'create_application_task', `application_tasks:${info.lastInsertRowid}`, `创建课程 ${title}（${mode}·${period_type}）`);
+  return res.json({ ok: true, data: { id: Number(info.lastInsertRowid), ...courseShare(req, task) } });
 });
 
-// 申报填报（竞赛课由教务处填报，私人定制课由教师填报）
+// 课程详情（按 id，供桌面端编辑查看）
+router.get('/tasks/:taskId', authRequired, (req, res) => {
+  const taskId = Number(req.params.taskId);
+  const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(taskId);
+  if (!task) return res.status(404).json({ ok: false, error: '课程不存在' });
+  return res.json({ ok: true, data: { ...task, form_schema: parseJSON(task.form_schema, []) } });
+});
+
+// 课程详情（按分享 token，供手机端分享页；需登录识别身份）
+router.get('/course/:token', authRequired, (req, res) => {
+  const task = db.prepare('SELECT * FROM application_tasks WHERE share_token = ?').get(req.params.token);
+  if (!task) return res.status(404).json({ ok: false, error: '课程不存在或链接已失效' });
+  return res.json({ ok: true, data: { ...task, form_schema: parseJSON(task.form_schema, []) } });
+});
+
+// 教师填报课程（手机端分享页）。teacher_id 优先取登录账号绑定的教师档案。
 router.post('/tasks/:taskId/apply', authRequired, (req, res) => {
   const taskId = Number(req.params.taskId);
   const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(taskId);
-  if (!task) return res.status(404).json({ ok: false, error: '申报任务不存在' });
+  if (!task) return res.status(404).json({ ok: false, error: '课程不存在' });
 
-  const { teacher_id, course_name, course_content, schedule_time, duration, remark } = req.body || {};
-  const info = db
-    .prepare(`INSERT INTO applications
-      (task_id, teacher_id, course_name, course_content, schedule_time, duration, remark, status, filled_by)
-      VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(taskId, teacher_id ? Number(teacher_id) : null, course_name ?? null, course_content ?? null,
-      schedule_time ?? null, duration ?? task.duration ?? null, remark ?? null, 'pending', req.user.id);
-  logAudit(req.user.id, 'apply_course', `applications:${info.lastInsertRowid}`, `申报课程（任务 ${task.title}）`);
+  const { form_data, period_count, date } = req.body || {};
+  const teacherId = req.user.teacher_id ?? null;
+  if (!teacherId) return res.status(400).json({ ok: false, error: '你的账号尚未绑定教师档案，无法申报，请联系教务员绑定' });
+  if (!date) return res.status(400).json({ ok: false, error: '请填写上课日期' });
+  const count = Math.max(1, Number(period_count) || 1);
+
+  const info = db.prepare(`
+    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, status, filled_by)
+    VALUES (?,?,?,?,?,?,?)`)
+    .run(taskId, teacherId, form_data != null ? JSON.stringify(form_data) : null, count, date, 'pending', req.user.id);
+  logAudit(req.user.id, 'apply_course', `applications:${info.lastInsertRowid}`, `申报课程（${task.title}）`);
   return res.json({ ok: true, data: { id: Number(info.lastInsertRowid) } });
 });
 
-// 某任务下的申报记录
+// 某课程下的填报记录
 router.get('/tasks/:taskId/applications', authRequired, (req, res) => {
   const taskId = Number(req.params.taskId);
   const rows = db.prepare(`
@@ -541,20 +603,71 @@ router.get('/tasks/:taskId/applications', authRequired, (req, res) => {
     LEFT JOIN users ru ON ru.id = a.reviewed_by
     WHERE a.task_id = ?
     ORDER BY a.id DESC`).all(taskId);
-  return res.json({ ok: true, data: rows });
+  return res.json({ ok: true, data: rows.map((a) => ({ ...a, form_data: parseJSON(a.form_data, {}) })) });
 });
 
-// 审核申报（教务处/管理员 + 年级组长，年级组长限本年级）
+// 审核课程申报：通过后生成 lesson_instances（source='course'），按课程计酬配置进统计中心。
 router.patch('/applications/:id/review', authRequired, roleRequired(...REVIEW_ROLES), (req, res) => {
   const id = Number(req.params.id);
-  const a = db.prepare('SELECT * FROM applications WHERE id = ?').get(id);
+  const a = db.prepare(`
+    SELECT a.*, t.period_type, t.pay_mode, t.subject, t.grade AS task_grade
+    FROM applications a JOIN application_tasks t ON t.id = a.task_id
+    WHERE a.id = ?`).get(id);
   if (!a) return res.status(404).json({ ok: false, error: '申报记录不存在' });
   const { approved } = req.body || {};
   const status = approved ? 'approved' : 'rejected';
+
   db.prepare('UPDATE applications SET status = ?, reviewed_by = ?, reviewed_at = datetime(\'now\',\'localtime\') WHERE id = ?')
     .run(status, req.user.id, id);
-  logAudit(req.user.id, 'review_application', `applications:${id}`, `审核申报 ${status}`);
-  return res.json({ ok: true, data: { id, status } });
+
+  // 审核通过：生成上课记录计酬
+  let created = 0;
+  if (approved) {
+    const classId = virtualClassIdForGrade(a.task_grade);
+    if (!classId) {
+      return res.status(400).json({ ok: false, error: `课程年级「${a.task_grade || '未设置'}」暂无虚拟班，请先设置课程年级` });
+    }
+    if (!a.date) {
+      return res.status(400).json({ ok: false, error: '该申报缺少上课日期，无法计酬' });
+    }
+    const count = Math.max(1, Number(a.period_count) || 1);
+    const insert = db.prepare(`
+      INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
+      VALUES (?,?,?,?,?,?, '常规', 'course', ?, ?)`);
+    for (let i = 0; i < count; i++) {
+      insert.run(classId, a.teacher_id, a.subject ?? null, a.date, (a.period_no || 1) + i, a.period_type, a.id, a.course_name ?? null);
+    }
+    created = count;
+  }
+
+  logAudit(req.user.id, 'review_application', `applications:${id}`, `审核课程申报 ${status}${created ? `，生成上课记录 ${created} 条` : ''}`);
+  return res.json({ ok: true, data: { id, status, created_instances: created } });
+});
+
+// 撤回已通过的课程申报：状态置 withdrawn，联动删除已生成上课记录
+router.patch('/applications/:id/withdraw', authRequired, roleRequired(...ADMIN_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const a = db.prepare('SELECT * FROM applications WHERE id = ?').get(id);
+  if (!a) return res.status(404).json({ ok: false, error: '申报记录不存在' });
+  if (a.status !== 'approved') return res.status(400).json({ ok: false, error: '仅已通过的记录可撤回' });
+
+  const removed = db.prepare('DELETE FROM lesson_instances WHERE source = ? AND source_id = ?').run('course', id);
+  db.prepare('UPDATE applications SET status = \'withdrawn\', reviewed_by = ?, reviewed_at = datetime(\'now\',\'localtime\') WHERE id = ?')
+    .run(req.user.id, id);
+  logAudit(req.user.id, 'withdraw_application', `applications:${id}`, `撤回课程申报（联动删除上课记录 ${removed.changes} 条）`);
+  return res.json({ ok: true, data: { id, status: 'withdrawn', removed_instances: removed.changes } });
+});
+
+// 删除课程申报：联动删除已生成的上课记录
+router.delete('/applications/:id', authRequired, roleRequired(...ADMIN_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const a = db.prepare('SELECT * FROM applications WHERE id = ?').get(id);
+  if (!a) return res.status(404).json({ ok: false, error: '申报记录不存在' });
+
+  const removed = db.prepare('DELETE FROM lesson_instances WHERE source = ? AND source_id = ?').run('course', id);
+  db.prepare('DELETE FROM applications WHERE id = ?').run(id);
+  logAudit(req.user.id, 'delete_application', `applications:${id}`, `删除课程申报（联动删除上课记录 ${removed.changes} 条）`);
+  return res.json({ ok: true, data: { id, removed_instances: removed.changes } });
 });
 
 export default router;

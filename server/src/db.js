@@ -425,6 +425,18 @@ ensureColumn('substitute_requests', 'to_date', 'TEXT');
 // 迁移：classes 增加 is_virtual（年级虚拟班标记，答疑「年级级计酬」用）
 ensureColumn('classes', 'is_virtual', 'INTEGER NOT NULL DEFAULT 0');
 
+// 迁移：课程申报改造（自定义表单 + 分享填报 + 审核计酬）
+ensureColumn('application_tasks', 'form_schema', 'TEXT');           // JSON 自定义字段定义 [{key,label,type,required,options}]
+ensureColumn('application_tasks', 'pay_mode', "TEXT NOT NULL DEFAULT '按次计酬'"); // 按次计酬 | 折算
+ensureColumn('application_tasks', 'pay_rate', 'REAL');             // 按次计酬=单价(元/节)，折算=系数（冗余快照，实际以字典为准）
+ensureColumn('application_tasks', 'period_type', 'TEXT');          // 计酬类型名（命中 period_type_pays 或 period_type_coefficients）
+ensureColumn('application_tasks', 'subject', 'TEXT');              // 学科
+ensureColumn('application_tasks', 'grade', 'TEXT');                // 年级（计酬挂年级虚班 + 统计归类）
+ensureColumn('application_tasks', 'share_token', 'TEXT');          // 分享 token
+ensureColumn('applications', 'form_data', 'TEXT');                 // JSON 教师填报值
+ensureColumn('applications', 'period_count', 'INTEGER NOT NULL DEFAULT 1'); // 课时数
+ensureColumn('applications', 'date', 'TEXT');                      // 上课日期（计酬必需）
+
 // 迁移：school_calendar 支持「年级级停课」——加 grade 列，并把唯一约束从 date 改为 (date, grade)。
 // 旧表是 date UNIQUE，需重建（该表本次会话刚建、生产无真实数据，重建安全）。
 if (!db.prepare(`PRAGMA table_info(school_calendar)`).all().some((c) => c.name === 'grade')) {
