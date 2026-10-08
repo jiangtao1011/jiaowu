@@ -20,7 +20,7 @@
 #   ./start.sh dev-stop           # 停止开发模式
 #
 # 访问地址（启动后按 status 显示的为准）：
-#   固定（mDNS）: http://<本机名>.local:4000
+#   固定（mDNS）: http://<本机名>.local:4000   —— 手机/桌面都收藏这个，IP 变了不受影响
 #   本机调试:     http://localhost:4000
 # =============================================================================
 
@@ -139,9 +139,9 @@ show_status() {
   local hp; hp="$(host_name)"
   local ip; ip="$(lan_ip)"
   echo ""
-  echo "  固定地址（mDNS）: http://${hp}.local:${SERVER_PORT}"
-  [ -n "$ip" ] && echo "  局域网 IP:        http://${ip}:${SERVER_PORT}"
-  echo "  本机调试:         http://localhost:${SERVER_PORT}"
+  echo "  ★ 固定访问地址: http://${hp}.local:${SERVER_PORT}   （手机/桌面都填这个，IP 变了也不受影响）"
+  [ -n "$ip" ] && echo "    （临时直连备用：http://${ip}:${SERVER_PORT}，IP 会变，不建议收藏）"
+  echo "    本机调试:     http://localhost:${SERVER_PORT}"
   echo ""
   local spid cpid
   spid="$(pid_of_port "$SERVER_PORT")"
