@@ -531,7 +531,11 @@ router.get('/tasks', authRequired, (req, res) => {
   const rows = db.prepare(`
     SELECT t.*, (SELECT COUNT(*) FROM applications a WHERE a.task_id = t.id) AS apply_count
     FROM application_tasks t ORDER BY t.id DESC`).all();
-  return res.json({ ok: true, data: rows.map((t) => ({ ...t, form_schema: parseJSON(t.form_schema, []) })) });
+  return res.json({ ok: true, data: rows.map((t) => ({
+    ...t,
+    form_schema: parseJSON(t.form_schema, []),
+    ...(t.share_token ? { share_url: `${publicBase(req)}/course/${t.share_token}` } : {}),
+  })) });
 });
 
 // 创建课程（教务员：自定义字段 + 计酬配置 + 分享）
@@ -562,7 +566,7 @@ router.get('/tasks/:taskId', authRequired, (req, res) => {
   const taskId = Number(req.params.taskId);
   const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(taskId);
   if (!task) return res.status(404).json({ ok: false, error: '课程不存在' });
-  return res.json({ ok: true, data: { ...task, form_schema: parseJSON(task.form_schema, []) } });
+  return res.json({ ok: true, data: { ...task, form_schema: parseJSON(task.form_schema, []), ...courseShare(req, task) } });
 });
 
 // 课程详情（按分享 token，供手机端分享页；需登录识别身份）
