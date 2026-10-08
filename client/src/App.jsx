@@ -16,6 +16,7 @@ import Applications from './pages/Applications.jsx';
 import Stats from './pages/Stats.jsx';
 import Assessment from './pages/Assessment.jsx';
 import MobileApply from './pages/MobileApply.jsx';
+import CourseApply from './pages/CourseApply.jsx';
 import MobileShell from './mobile/MobileShell.jsx';
 import MobileHome from './mobile/MobileHome.jsx';
 import MobileStats from './mobile/MobileStats.jsx';
@@ -72,6 +73,8 @@ function AppRoutes() {
       <Route path="/n/:token" element={<NoticeView />} />
       {/* 手机自主申报页：独立全屏（无侧边栏），教师手机直达 /apply */}
       <Route path="/apply" element={<AuthGuard><MobileApply /></AuthGuard>} />
+      {/* 课程申报分享填报页：老师手机扫码/点链接打开 */}
+      <Route path="/course/:token" element={<AuthGuard><CourseApply /></AuthGuard>} />
 
       {/* 移动端（统一壳 + 底部导航） */}
       <Route path="/m" element={<AuthGuard><MobileShell user={user} unread={unread} onUnreadChange={setUnread} onLogout={logout} /></AuthGuard>}>

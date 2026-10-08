@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 import api, { errMsg } from '../api.js';
 
 const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
@@ -28,10 +29,16 @@ export default function Applications() {
 
   // 申报状态
   const [tasks, setTasks] = useState([]);
-  const [taskForm, setTaskForm] = useState({ title: '', type: '私人定制课', course_type: '', time_desc: '', duration: '', content_desc: '', deadline: '', filler_role: '教师' });
+  const [typeCoefs, setTypeCoefs] = useState([]); // 折算类型字典
+  const [grades, setGrades] = useState([]);       // 年级枚举
+  // 课程创建表单
+  const [taskForm, setTaskForm] = useState({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
+  const [fieldList, setFieldList] = useState([]); // 自定义字段 [{key,label,type,required,options}]
   const [openTask, setOpenTask] = useState(null);
   const [apps, setApps] = useState([]);
-  const [applyForm, setApplyForm] = useState({ teacher_id: '', course_name: '', course_content: '', schedule_time: '', duration: '', remark: '' });
+  const [linkModal, setLinkModal] = useState(null); // 分享弹层
+  const [qrDataUrl, setQrDataUrl] = useState('');
+  const [copied, setCopied] = useState(false);
 
   const loadQna = async (filter = qnaFilter) => {
     try {
@@ -45,7 +52,13 @@ export default function Applications() {
     } catch (e) { setError(errMsg(e)); }
   };
   const loadTasks = async () => {
-    try { setTasks((await api.get('/applications/tasks')).data.data); } catch (e) { setError(errMsg(e)); }
+    try {
+      const [tk, tc, gs] = await Promise.all([api.get('/applications/tasks'), api.get('/stats/type-coefficients'), api.get('/classes')]);
+      setTasks(tk.data.data);
+      setTypeCoefs(tc.data.data);
+      const gradeSet = new Set(gs.data.data.map((c) => c.grade).filter((g) => g && g.trim()));
+      setGrades([...gradeSet].sort());
+    } catch (e) { setError(errMsg(e)); }
   };
   useEffect(() => { if (canReview) { loadQna(); loadTasks(); } }, []);
 
@@ -131,11 +144,25 @@ export default function Applications() {
 
   const submitTask = async (e) => {
     e.preventDefault();
-    setError('');
+    setError(''); setMsg('');
     try {
-      await api.post('/applications/tasks', taskForm);
-      setTaskForm({ title: '', type: '私人定制课', course_type: '', time_desc: '', duration: '', content_desc: '', deadline: '', filler_role: '教师' });
+      const res = await api.post('/applications/tasks', {
+        title: taskForm.title,
+        deadline: taskForm.deadline || null,
+        filler_role: taskForm.filler_role,
+        pay_mode: taskForm.pay_mode,
+        period_type: taskForm.period_type,
+        subject: taskForm.subject || null,
+        grade: taskForm.grade || null,
+        form_schema: fieldList.filter((f) => f.label && f.key),
+      });
+      const created = res.data.data;
+      setTaskForm({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
+      setFieldList([]);
+      setMsg('课程已创建');
       loadTasks();
+      // 自动打开分享弹层
+      if (created.share_token) openLinkModal(created);
     } catch (e) { setError(errMsg(e)); }
   };
 
@@ -144,19 +171,65 @@ export default function Applications() {
     try { setApps((await api.get(`/applications/tasks/${task.id}/applications`)).data.data); } catch (e) { setError(errMsg(e)); }
   };
 
-  const submitApply = async (e) => {
-    e.preventDefault();
-    setError(''); setMsg('');
-    try {
-      await api.post(`/applications/tasks/${openTask.id}/apply`, { ...applyForm, teacher_id: applyForm.teacher_id || null });
-      setApplyForm({ teacher_id: '', course_name: '', course_content: '', schedule_time: '', duration: '', remark: '' });
-      setMsg('申报已提交');
-      openApps(openTask);
-    } catch (e) { setError(errMsg(e)); }
-  };
-
   const reviewApp = async (id, approved) => {
     try { await api.patch(`/applications/applications/${id}/review`, { approved }); setMsg('已审核'); openApps(openTask); } catch (e) { setError(errMsg(e)); }
+  };
+
+  const withdrawApp = async (id) => {
+    if (!window.confirm('确定撤回该已通过的申报？其已生成的上课记录（计酬）将一并删除。')) return;
+    try { await api.patch(`/applications/applications/${id}/withdraw`); setMsg('已撤回'); openApps(openTask); } catch (e) { setError(errMsg(e)); }
+  };
+
+  const deleteApp = async (id) => {
+    if (!window.confirm('确定删除该申报记录？若已通过，其已生成的上课记录（计酬）将一并删除。')) return;
+    try { await api.delete(`/applications/applications/${id}`); setMsg('已删除'); openApps(openTask); } catch (e) { setError(errMsg(e)); }
+  };
+
+  // ===== 字段定义器 =====
+  const addField = () => setFieldList([...fieldList, { key: `f${Date.now()}`, label: '', type: 'text', required: false, options: '' }]);
+  const setField = (i, k, v) => { const n = [...fieldList]; n[i] = { ...n[i], [k]: v }; setFieldList(n); };
+  const delField = (i) => setFieldList(fieldList.filter((_, idx) => idx !== i));
+
+  // ===== 分享二维码 =====
+  const copyToClipboard = async (text) => {
+    if (navigator.clipboard?.writeText) {
+      try { await navigator.clipboard.writeText(text); return true; } catch { /* 回退 */ }
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch { return false; }
+  };
+  const openLinkModal = async (task) => {
+    setLinkModal(task);
+    setCopied(false);
+    setQrDataUrl('');
+    const url = task.share_url || `${window.location.origin}/course/${task.share_token}`;
+    try {
+      const dataUrl = await QRCode.toDataURL(url, { width: 320, margin: 1, errorCorrectionLevel: 'M' });
+      setQrDataUrl(dataUrl);
+    } catch { /* 二维码生成失败则隐藏 */ }
+  };
+  const copyLink = async () => {
+    const url = linkModal.share_url || `${window.location.origin}/course/${linkModal.share_token}`;
+    const ok = await copyToClipboard(url);
+    setCopied(ok);
+    setMsg(ok ? '分享链接已复制' : '复制失败，请手动复制链接');
+    if (ok) setTimeout(() => setCopied(false), 1500);
+  };
+  const downloadQr = () => {
+    if (!qrDataUrl) return;
+    const a = document.createElement('a');
+    a.href = qrDataUrl;
+    a.download = `课程二维码_${linkModal?.title || '课程'}.png`;
+    a.click();
   };
 
   // 课务申报：admin/教务员/教务处 全权；年级组长仅审核本年级申报
@@ -301,42 +374,91 @@ export default function Applications() {
       {/* 课程申报 */}
       {tab === 'tasks' && isAdmin && (
         <>
-          {isAdmin && (
-            <div className="card">
-              <h3>新建申报任务（教务员设置明细）</h3>
-              <form onSubmit={submitTask}>
-                <div className="form-grid">
-                  <div><label>任务标题</label><input value={taskForm.title} onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })} required /></div>
-                  <div><label>类型</label>
-                    <select value={taskForm.type} onChange={(e) => setTaskForm({ ...taskForm, type: e.target.value })}>
-                      <option>私人定制课</option><option>竞赛课</option>
-                    </select>
-                  </div>
-                  <div><label>课型</label><input value={taskForm.course_type} onChange={(e) => setTaskForm({ ...taskForm, course_type: e.target.value })} placeholder="如 一对一辅导" /></div>
-                  <div><label>时长</label><input value={taskForm.duration} onChange={(e) => setTaskForm({ ...taskForm, duration: e.target.value })} placeholder="如 每节40分钟" /></div>
-                  <div><label>上课时间</label><input value={taskForm.time_desc} onChange={(e) => setTaskForm({ ...taskForm, time_desc: e.target.value })} placeholder="如 周三第8节" /></div>
-                  <div><label>截止时间</label><input type="datetime-local" value={taskForm.deadline} onChange={(e) => setTaskForm({ ...taskForm, deadline: e.target.value })} /></div>
+          <div className="card">
+            <h3>新建课程（自定义申报字段 + 计酬方式 + 分享填报）</h3>
+            <form onSubmit={submitTask}>
+              <div className="form-grid">
+                <div><label>课程标题</label><input value={taskForm.title} onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })} required placeholder="如 2026 秋季竞赛辅导" /></div>
+                <div><label>年级</label>
+                  <select value={taskForm.grade} onChange={(e) => setTaskForm({ ...taskForm, grade: e.target.value })}>
+                    <option value="">请选择</option>
+                    {grades.map((g) => <option key={g} value={g}>{g}</option>)}
+                  </select>
                 </div>
-                <div className="form-row" style={{ marginTop: 14 }}><label>内容要求</label><input value={taskForm.content_desc} onChange={(e) => setTaskForm({ ...taskForm, content_desc: e.target.value })} /></div>
-                <div className="mt"><button className="btn primary">创建任务</button></div>
-              </form>
-            </div>
-          )}
+                <div><label>学科</label><input value={taskForm.subject} onChange={(e) => setTaskForm({ ...taskForm, subject: e.target.value })} placeholder="如 数学" /></div>
+                <div><label>截止日期</label><input type="date" value={taskForm.deadline} onChange={(e) => setTaskForm({ ...taskForm, deadline: e.target.value })} /></div>
+                <div><label>计酬方式</label>
+                  <select value={taskForm.pay_mode} onChange={(e) => setTaskForm({ ...taskForm, pay_mode: e.target.value, period_type: '' })}>
+                    <option value="按次计酬">按次计酬（单价 × 节数）</option>
+                    <option value="折算">折算（节数 × 系数，不计钱）</option>
+                  </select>
+                </div>
+                <div><label>{taskForm.pay_mode === '折算' ? '折算类型' : '按次计酬类型'}</label>
+                  <select value={taskForm.period_type} onChange={(e) => setTaskForm({ ...taskForm, period_type: e.target.value })}>
+                    <option value="">请选择</option>
+                    {taskForm.pay_mode === '折算'
+                      ? typeCoefs.map((t) => <option key={t.id} value={t.name}>{t.name}（系数 {t.coefficient}）</option>)
+                      : typePays.map((t) => <option key={t.id} value={t.name}>{t.name}（{t.pay}元/节）</option>)}
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt">
+                <div className="toolbar" style={{ marginBottom: 8 }}>
+                  <label style={{ margin: 0 }}>自定义申报字段（教师填报时需填写）</label>
+                  <span className="spacer" />
+                  <button type="button" className="btn sm" onClick={addField}>+ 添加字段</button>
+                </div>
+                {fieldList.length === 0 && <p className="muted">尚未添加自定义字段；教师填报时只需填「课时数 + 上课日期」。</p>}
+                {fieldList.map((f, i) => (
+                  <div key={i} className="form-grid" style={{ marginBottom: 8 }}>
+                    <div><label>字段名</label><input value={f.label} onChange={(e) => setField(i, 'label', e.target.value)} placeholder="如 辅导专题" /></div>
+                    <div><label>类型</label>
+                      <select value={f.type} onChange={(e) => setField(i, 'type', e.target.value)}>
+                        <option value="text">文本</option>
+                        <option value="textarea">多行文本</option>
+                        <option value="number">数字</option>
+                        <option value="date">日期</option>
+                        <option value="select">下拉</option>
+                      </select>
+                    </div>
+                    {f.type === 'select' && (
+                      <div><label>下拉选项（逗号分隔）</label><input value={f.options} onChange={(e) => setField(i, 'options', e.target.value)} placeholder="如 高一,高二,高三" /></div>
+                    )}
+                    <div><label>必填</label>
+                      <input type="checkbox" checked={!!f.required} onChange={(e) => setField(i, 'required', e.target.checked)} />
+                    </div>
+                    <div><button type="button" className="btn sm danger" onClick={() => delField(i)}>删除</button></div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt"><button className="btn primary">创建课程并生成分享</button></div>
+            </form>
+          </div>
 
           <div className="card">
-            <h3>申报任务列表</h3>
+            <h3>课程列表</h3>
             <table>
-              <thead><tr><th>标题</th><th>类型</th><th>截止时间</th><th>操作</th></tr></thead>
+              <thead><tr><th>标题</th><th>年级</th><th>学科</th><th>计酬</th><th>填报</th><th>截止</th><th>操作</th></tr></thead>
               <tbody>
                 {tasks.map((t) => (
                   <tr key={t.id}>
                     <td>{t.title}</td>
-                    <td><span className="badge">{t.type}</span></td>
+                    <td>{t.grade || '-'}</td>
+                    <td>{t.subject || '-'}</td>
+                    <td>{t.pay_mode === '折算' ? `${t.period_type}（折算）` : `${t.period_type}（${t.pay_rate ?? '按字典'}元/节）`}</td>
+                    <td><span className="badge">{t.apply_count ?? 0} 人</span></td>
                     <td>{t.deadline || '-'}</td>
-                    <td><button className="btn sm" onClick={() => openApps(t)}>填报/查看</button></td>
+                    <td>
+                      <div className="toolbar" style={{ marginBottom: 0 }}>
+                        <button className="btn sm" onClick={() => openApps(t)}>审核</button>
+                        <button className="btn sm" onClick={() => openLinkModal(t)}>分享</button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
-                {tasks.length === 0 && <tr><td colSpan={4} className="muted">暂无申报任务</td></tr>}
+                {tasks.length === 0 && <tr><td colSpan={7} className="muted">暂无课程</td></tr>}
               </tbody>
             </table>
           </div>
@@ -345,57 +467,83 @@ export default function Applications() {
             <div className="card" style={{ borderColor: 'var(--primary)' }}>
               <div className="toolbar">
                 <h3 style={{ margin: 0 }}>{openTask.title}</h3>
-                <span className="badge">{openTask.type}</span>
+                <span className="badge">{openTask.pay_mode === '折算' ? '折算' : '按次计酬'}</span>
                 <span className="spacer" />
+                <button className="btn sm" onClick={() => openLinkModal(openTask)}>分享</button>
                 <button className="btn sm" onClick={() => setOpenTask(null)}>关闭</button>
               </div>
-              <p className="muted">{openTask.course_type ? `课型：${openTask.course_type} · ` : ''}{openTask.duration ? `时长：${openTask.duration}` : ''}</p>
-              {openTask.content_desc && <p className="muted">内容要求：{openTask.content_desc}</p>}
-
-              <div className="card" style={{ border: '1px dashed var(--border)' }}>
-                <h3>填报申报</h3>
-                <form onSubmit={submitApply}>
-                  <div className="form-grid">
-                    <div><label>教师</label>
-                      <select value={applyForm.teacher_id} onChange={(e) => setApplyForm({ ...applyForm, teacher_id: e.target.value })}>
-                        <option value="">请选择</option>
-                        {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                      </select>
-                    </div>
-                    <div><label>课程名称</label><input value={applyForm.course_name} onChange={(e) => setApplyForm({ ...applyForm, course_name: e.target.value })} required /></div>
-                    <div><label>上课时间</label><input value={applyForm.schedule_time} onChange={(e) => setApplyForm({ ...applyForm, schedule_time: e.target.value })} /></div>
-                    <div><label>时长</label><input value={applyForm.duration} onChange={(e) => setApplyForm({ ...applyForm, duration: e.target.value })} /></div>
-                  </div>
-                  <div className="form-row" style={{ marginTop: 14 }}><label>课程内容</label><textarea rows={3} value={applyForm.course_content} onChange={(e) => setApplyForm({ ...applyForm, course_content: e.target.value })} /></div>
-                  <div className="mt"><button className="btn primary">提交申报</button></div>
-                </form>
-              </div>
+              <p className="muted">
+                {openTask.grade ? `年级：${openTask.grade} · ` : ''}
+                {openTask.subject ? `学科：${openTask.subject} · ` : ''}
+                计酬：{openTask.period_type}（{openTask.pay_mode === '折算' ? '折算·不计钱' : '按次计酬'}）
+              </p>
 
               <table className="mt">
-                <thead><tr><th>课程</th><th>教师</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
+                <thead><tr><th>教师</th><th>日期</th><th>课时数</th><th>填报内容</th><th>状态</th><th>操作</th></tr></thead>
                 <tbody>
                   {apps.map((a) => (
                     <tr key={a.id}>
-                      <td>{a.course_name}</td>
                       <td>{a.teacher_name || '-'}</td>
-                      <td>{a.schedule_time || '-'}</td>
+                      <td>{a.date || '-'}</td>
+                      <td>{a.period_count || 1} 节</td>
+                      <td>{(() => {
+                        try { return Object.values(a.form_data || {}).join(' / '); } catch { return '-'; }
+                      })()}</td>
                       <td><span className={`badge ${STATUS_CLS[a.status]}`}>{STATUS[a.status]}</span></td>
                       <td>
-                        {isAdmin && a.status === 'pending' && (
-                          <>
-                            <button className="btn sm primary" onClick={() => reviewApp(a.id, true)}>通过</button>{' '}
-                            <button className="btn sm danger" onClick={() => reviewApp(a.id, false)}>驳回</button>
-                          </>
-                        )}
+                        <div className="toolbar" style={{ marginBottom: 0 }}>
+                          {isAdmin && a.status === 'pending' && (
+                            <>
+                              <button className="btn sm primary" onClick={() => reviewApp(a.id, true)}>通过</button>
+                              <button className="btn sm danger" onClick={() => reviewApp(a.id, false)}>驳回</button>
+                            </>
+                          )}
+                          {isAdmin && a.status === 'approved' && (
+                            <button className="btn sm danger" onClick={() => withdrawApp(a.id)}>撤回</button>
+                          )}
+                          {isAdmin && (
+                            <button className="btn sm danger" onClick={() => deleteApp(a.id)}>删除</button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
-                  {apps.length === 0 && <tr><td colSpan={5} className="muted">暂无申报</td></tr>}
+                  {apps.length === 0 && <tr><td colSpan={6} className="muted">暂无申报记录</td></tr>}
                 </tbody>
               </table>
             </div>
           )}
         </>
+      )}
+
+      {/* 分享二维码弹层 */}
+      {linkModal && (
+        <div className="modal-overlay" onClick={() => setLinkModal(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>分享课程填报</h3>
+            <p className="muted">{linkModal.title}</p>
+            <div className="share-body">
+              <div className="share-qr">
+                {qrDataUrl
+                  ? <img src={qrDataUrl} alt="课程二维码" className="share-qr-img" />
+                  : <div className="share-qr-placeholder">二维码生成中…</div>}
+                <div className="share-qr-label">老师手机扫码填报</div>
+              </div>
+              <div className="share-link-col">
+                <label className="share-label">分享链接</label>
+                <div className="link-box">{linkModal.share_url || `${window.location.origin}/course/${linkModal.share_token}`}</div>
+                <div className="toolbar" style={{ marginTop: 8 }}>
+                  <button className="btn primary sm" onClick={copyLink}>{copied ? '已复制' : '复制链接'}</button>
+                  <button className="btn sm" onClick={downloadQr} disabled={!qrDataUrl}>下载二维码</button>
+                </div>
+              </div>
+            </div>
+            <div className="toolbar" style={{ marginTop: 12 }}>
+              <span className="spacer" />
+              <button className="btn" onClick={() => setLinkModal(null)}>关闭</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
