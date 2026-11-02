@@ -16,6 +16,7 @@ import Inspections from './pages/Inspections.jsx';
 import Applications from './pages/Applications.jsx';
 import Stats from './pages/Stats.jsx';
 import Assessment from './pages/Assessment.jsx';
+import Admin from './pages/Admin.jsx';
 import MobileApply from './pages/MobileApply.jsx';
 import CourseApply from './pages/CourseApply.jsx';
 import MobileShell from './mobile/MobileShell.jsx';
@@ -109,6 +110,7 @@ function AppRoutes() {
         <Route path="stats" element={<Stats />} />
         <Route path="assessment" element={<Assessment />} />
         <Route path="users" element={<Users />} />
+        <Route path="admin" element={<Admin />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

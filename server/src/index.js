@@ -18,6 +18,7 @@ import statsRoutes from './routes/stats.js';
 import workplanRoutes from './routes/workplan.js';
 import dashboardRoutes from './routes/dashboard.js';
 import assessmentRoutes from './routes/assessment.js';
+import adminRoutes from './routes/admin.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -47,6 +48,7 @@ app.use('/api/stats', statsRoutes);
 app.use('/api/workplan', workplanRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/assessment', assessmentRoutes);
+app.use('/api/admin', adminRoutes);
 
 // 404
 app.use('/api', (req, res) => res.status(404).json({ ok: false, error: '接口不存在' }));

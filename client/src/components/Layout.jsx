@@ -29,6 +29,7 @@ const GROUPS = [
       { to: '/teachers', label: '教师信息' },
       { to: '/classes', label: '班级信息' },
       { to: '/users', label: '账号管理', editOnly: true },
+      { to: '/admin', label: '数据库管理', dbAdminOnly: true },
     ],
   },
 ];
@@ -46,6 +47,7 @@ const ROLE_LABELS = {
 export default function Layout({ user, onLogout }) {
   const initial = (user?.name || user?.username || '?').charAt(0);
   const isAdmin = ['admin', '教务员', '教务处'].includes(user?.role);
+  const isDbAdmin = user?.role === 'admin';
   const showUsers = canEditUser(user);
   const [scanQr, setScanQr] = useState(null);
   const [scanUrl, setScanUrl] = useState('');
@@ -76,7 +78,7 @@ export default function Layout({ user, onLogout }) {
           {GROUPS.map((g) => (
             <React.Fragment key={g.label}>
               <div className="group">{g.label}</div>
-              {g.items.filter((n) => (!n.adminOnly || isAdmin) && (!n.editOnly || showUsers)).map((n) => (
+              {g.items.filter((n) => (!n.adminOnly || isAdmin) && (!n.dbAdminOnly || isDbAdmin) && (!n.editOnly || showUsers)).map((n) => (
                 <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? 'active' : '')}>
                   <span className="dot" />
                   {n.label}

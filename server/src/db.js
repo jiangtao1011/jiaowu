@@ -11,6 +11,23 @@ const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+// 应用管理员上传的「待恢复备份」（恢复操作写入 edu.db.restore，重启后在此生效）。
+// 先校验其确为含 users 表的有效 SQLite 库，通过后把当前库另存为 pre-restore 备份再替换。
+const RESTORE_PENDING = path.join(DATA_DIR, 'edu.db.restore');
+if (fs.existsSync(RESTORE_PENDING)) {
+  try {
+    const probe = new DatabaseSync(RESTORE_PENDING, { readOnly: true });
+    const ok = probe.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get();
+    probe.close();
+    if (ok) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      fs.copyFileSync(DB_PATH, path.join(DATA_DIR, `edu.db.pre-restore-${stamp}`));
+      fs.copyFileSync(RESTORE_PENDING, DB_PATH);
+    }
+  } catch { /* 无效文件则忽略，不动当前库 */ }
+  fs.rmSync(RESTORE_PENDING, { force: true });
+}
+
 export const db = new DatabaseSync(DB_PATH);
 
 db.exec('PRAGMA foreign_keys = ON;');
@@ -773,4 +790,4 @@ export function logAudit(userId, action, target, detail) {
   ).run(userId ?? null, action, target ?? null, detail ?? null);
 }
 
-export { UPLOAD_DIR };
+export { UPLOAD_DIR, DB_PATH, DATA_DIR };

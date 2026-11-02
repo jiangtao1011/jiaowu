@@ -7,6 +7,7 @@
 | 文件 | 用途 |
 |------|------|
 | `setup.sh` | 一键部署脚本（装环境 → 装依赖 → 起服务 → 配 Nginx → 配备份） |
+| `update.sh` | 更新脚本（拉代码 → 装依赖 → 重建前端 → 重启服务，更新前自动备份） |
 | `edu-admin.service` | systemd 服务单元，让后端进程常驻、开机自启 |
 | `nginx.conf` | Nginx 反代配置模板（80 → 后端 4000） |
 | `backup.sh` | 备份脚本（SQLite 数据库 + 上传文件，保留 14 天） |
@@ -86,10 +87,28 @@ sudo APP_DIR=/opt/edu-admin \
 systemctl status edu-admin      # 看状态
 systemctl restart edu-admin     # 重启
 journalctl -u edu-admin -f      # 实时看日志
+```
 
-# 改前端代码后重新部署：
-cd /opt/edu-admin && git pull
+## 更新代码
+
+首次部署用 `setup.sh`，之后日常更新用 `update.sh`（会自动先备份数据库、再拉代码、重建前端、重启服务）：
+
+```bash
+sudo bash /opt/edu-admin/deploy/update.sh
+```
+
+只改了后端/脚本、前端没动时，可跳过前端重建加快更新：
+
+```bash
+sudo SKIP_BUILD=1 bash /opt/edu-admin/deploy/update.sh
+```
+
+手动更新（等价步骤，排查问题时用）：
+
+```bash
+cd /opt/edu-admin && git pull --ff-only
 (cd client && npm install && npm run build)
+chown -R www-data:www-data /opt/edu-admin
 systemctl restart edu-admin
 ```
 
