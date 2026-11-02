@@ -91,24 +91,30 @@ journalctl -u edu-admin -f      # 实时看日志
 
 ## 更新代码
 
-首次部署用 `setup.sh`，之后日常更新用 `update.sh`（会自动先备份数据库、再拉代码、重建前端、重启服务）：
+首次部署用 `setup.sh`，之后日常更新用 `update.sh`（会自动先备份数据库、再拉代码、重建前端、重启服务）。
+
+`update.sh` 会自动按自身所在目录定位应用根目录，所以**必须从代码实际所在路径运行**（`/opt/edu-admin` 只是文档里的示例路径，换成你的真实目录）：
 
 ```bash
-sudo bash /opt/edu-admin/deploy/update.sh
+cd /实际/部署/路径        # 例如 cd /opt/edu-admin 或 cd /root/edu-admin
+sudo bash deploy/update.sh
 ```
 
 只改了后端/脚本、前端没动时，可跳过前端重建加快更新：
 
 ```bash
-sudo SKIP_BUILD=1 bash /opt/edu-admin/deploy/update.sh
+sudo SKIP_BUILD=1 bash deploy/update.sh
 ```
+
+> 找不到代码装在哪？在服务器上执行 `find / -name "update.sh" -path "*/deploy/*" 2>/dev/null`，
+> 或 `systemctl cat edu-admin | grep WorkingDirectory` 查看服务的实际工作目录。
 
 手动更新（等价步骤，排查问题时用）：
 
 ```bash
-cd /opt/edu-admin && git pull --ff-only
+cd /实际/部署/路径 && git pull --ff-only
 (cd client && npm install && npm run build)
-chown -R www-data:www-data /opt/edu-admin
+chown -R www-data:www-data /实际/部署/路径
 systemctl restart edu-admin
 ```
 

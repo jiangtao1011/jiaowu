@@ -5,18 +5,23 @@
 # 用于把已部署的服务器更新到最新代码：拉取代码 → 装依赖 → 重建前端 → 重启服务。
 # 与 setup.sh 分工：setup.sh 负责「首次部署」，本脚本负责「日常更新」。
 #
-# 用法（在服务器上以 root 执行）：
-#   sudo bash deploy/update.sh
+# 用法：把本脚本放到应用根目录（或其 deploy/ 子目录），在服务器上以 root 执行：
+#   sudo bash /实际/部署路径/deploy/update.sh
+#   或先 cd 到应用根目录，再：  sudo bash deploy/update.sh
 #
+# APP_DIR 无需指定——脚本会自动按「自身所在目录的上一级」定位应用根。
 # 可选环境变量：
-#   APP_DIR   安装目录，默认 /opt/edu-admin
+#   APP_DIR   应用安装目录（默认 = 脚本上一级，一般无需设置）
 #   SERVICE   systemd 服务名，默认 edu-admin
 #   SKIP_BUILD 任意非空值则跳过前端重建（仅后端/脚本改动时可用，加快更新）
 # =============================================================================
 
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/edu-admin}"
+# 应用根目录：默认取「脚本所在目录的上一级」（update.sh 位于 deploy/ 下，其父目录即应用根）。
+# 这样无论代码部署在哪个路径，只要按实际路径运行本脚本就能自动定位，无需硬编码。
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+APP_DIR="${APP_DIR:-$(dirname "$SCRIPT_DIR")}"
 SERVICE="${SERVICE:-edu-admin}"
 SKIP_BUILD="${SKIP_BUILD:-}"
 BACKUP_DIR="${BACKUP_DIR:-/opt/edu-backups}"
