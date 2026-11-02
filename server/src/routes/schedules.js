@@ -464,24 +464,31 @@ router.post('/changes/:id/revert', roleRequired(...ADMIN_ROLES), (req, res) => {
 // 取课表明细（含 count：区间内实际出现次数），供 summary 与 export 共用
 function fetchScheduleRows(asOf, term, fromDate, toDate) {
   const params = [];
+  const SELECT = `
+    SELECT s.id, s.teacher_id, t.name AS teacher_name, s.class_id, s.subject,
+           s.period_type, s.term, s.day_of_week, s.effective_from, s.effective_to,
+           s.makeup_set, c.grade AS class_grade,
+           t.pay_standard
+    FROM schedules s JOIN teachers t ON t.id = s.teacher_id
+    JOIN classes c ON c.id = s.class_id`;
   let base;
   if (fromDate && toDate) {
-    base = db.prepare(`
-      SELECT s.id, s.teacher_id, t.name AS teacher_name, s.class_id, s.subject,
-             s.period_type, s.term, s.day_of_week, s.effective_from, s.effective_to,
-             t.pay_standard
-      FROM schedules s JOIN teachers t ON t.id = s.teacher_id
-      WHERE s.effective_to IS NULL`).all();
+    base = db.prepare(`${SELECT} WHERE s.effective_to IS NULL`).all();
     if (term) base = base.filter((r) => r.term === term);
   } else {
     const clauses = [activeClause('s', asOf, params)];
     if (term) { clauses.push('s.term = ?'); params.push(term); }
-    base = db.prepare(`
-      SELECT s.id, s.teacher_id, t.name AS teacher_name, s.class_id, s.subject,
-             s.period_type, s.term, s.day_of_week, s.effective_from, s.effective_to,
-             t.pay_standard
-      FROM schedules s JOIN teachers t ON t.id = s.teacher_id
-      WHERE ${clauses.join(' AND ')}`).all(...params);
+    base = db.prepare(`${SELECT} WHERE ${clauses.join(' AND ')}`).all(...params);
+  }
+
+  // 套号型补课课表（term=节假补课 + makeup_set 非空）的 day_of_week=0 是「哨兵值」，
+  // 表示一整套独立课表、不看星期，只在被校历指定「补课 + 用第 N 套」的补课日上课。
+  // 因此在 range 口径下不能按星期重复推算，而应按校历补课日精确计数。
+  let makeupCal = null;
+  if (fromDate && toDate) {
+    makeupCal = db.prepare(
+      `SELECT date, make_up_set, grade FROM school_calendar WHERE type = '补课' AND make_up_set IS NOT NULL`
+    ).all();
   }
 
   return base.map((r) => {
@@ -489,7 +496,20 @@ function fetchScheduleRows(asOf, term, fromDate, toDate) {
     if (fromDate && toDate) {
       const segStart = r.effective_from && r.effective_from > fromDate ? r.effective_from : fromDate;
       const segEnd = r.effective_to && r.effective_to <= toDate ? dayBefore(r.effective_to) : toDate;
-      count = segStart > segEnd ? 0 : weekdayCount(segStart, segEnd, r.day_of_week);
+      if (segStart > segEnd) {
+        count = 0;
+      } else if (r.term === '节假补课' && r.makeup_set != null) {
+        // 套号型补课：统计区间内该套号（+该年级）的补课日数
+        count = 0;
+        for (const c of makeupCal) {
+          if (Number(c.make_up_set) !== Number(r.makeup_set)) continue;
+          if (c.date < segStart || c.date > segEnd) continue;
+          // 年级级补课日只对该年级生效；全校级（grade 空）对所有年级生效
+          if (c.grade == null || c.grade === r.class_grade) count++;
+        }
+      } else {
+        count = weekdayCount(segStart, segEnd, r.day_of_week);
+      }
     } else {
       count = 1;
     }
