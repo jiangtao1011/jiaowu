@@ -482,6 +482,7 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
   margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid var(--primary);
 }
 .makeup-set-count { font-size: 12.5px; font-weight: 600; color: var(--primary); background: var(--primary-soft); border-radius: 999px; padding: 2px 10px; }
+.makeup-set-del { margin-left: auto; }
 
 /* 补课课表：按节次纵向列 */
 .makeup-periods { display: flex; flex-direction: column; gap: 6px; }

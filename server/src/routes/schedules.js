@@ -174,6 +174,9 @@ router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req
   const makeupSet = (body.makeup_set !== undefined && body.makeup_set !== null && String(body.makeup_set).trim() !== '')
     ? Number(body.makeup_set)
     : null;
+  if (makeupSet != null && (!Number.isInteger(makeupSet) || makeupSet < 1)) {
+    return res.status(400).json({ ok: false, error: '补课课表套号应为正整数（1/2/3…）' });
+  }
 
   if (effectiveFrom && !/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom)) {
     return res.status(400).json({ ok: false, error: '生效日期格式应为 YYYY-MM-DD' });
@@ -207,7 +210,13 @@ router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req
   }
 
   let inserted = 0;
+  let skippedDup = 0;
   const errors = [];
+  // 补课课表幂等去重：同一套号、同一班、同一节次即「这门课」，重复导入时跳过，避免叠加重复计酬。
+  // 只匹配「当前生效」的记录（effective_to IS NULL）；替换模式会先关闭旧记录，故不会误跳过新导入。
+  const existsMakeup = makeupSet != null
+    ? db.prepare(`SELECT id FROM schedules WHERE term = '节假补课' AND makeup_set = ? AND class_id = ? AND period_no = ? AND effective_to IS NULL`)
+    : null;
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const className = String(keyOf(row, '班级', 'class', '班级名称') ?? '').trim();
@@ -229,6 +238,13 @@ router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req
 
     const finalType = PERIOD_TYPES.includes(periodType) ? periodType : (typePayNames.has(periodType) ? periodType : '正课');
     const finalTerm = TERMS.includes(term) ? term : '常规';
+
+    // 补课课表（节假补课 + 套号）幂等：同套号同班同节次已存在则跳过，防止重复导入叠加。
+    if (finalTerm === '节假补课' && existsMakeup && existsMakeup.get(makeupSet, classId, periodNo)) {
+      skippedDup++;
+      continue;
+    }
+
     db.prepare(`
       INSERT INTO schedules (class_id, teacher_id, subject, day_of_week, period_no, period_type, term, effective_from, effective_to, makeup_set)
       VALUES (?,?,?,?,?,?,?,?,?,?)`)
@@ -236,8 +252,58 @@ router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req
     inserted++;
   }
 
-  logAudit(req.user.id, 'import_schedules', `schedules`, `导入课表 ${inserted} 条${scope === 'append' ? '（追加）' : `（${effectiveFrom} 起生效，范围 ${scope}${scope === 'grade' ? ':' + scopeGrade : scope === 'term' ? ':' + scopeTerm : ''}${effectiveTo ? '~' + effectiveTo : ''}）`}`);
-  return res.json({ ok: true, data: { inserted, errors, effective_from: effectiveFrom, effective_to: effectiveTo, scope } });
+  logAudit(req.user.id, 'import_schedules', `schedules`, `导入课表 ${inserted} 条${skippedDup ? `，跳过重复 ${skippedDup} 条` : ''}${scope === 'append' ? '（追加）' : `（${effectiveFrom} 起生效，范围 ${scope}${scope === 'grade' ? ':' + scopeGrade : scope === 'term' ? ':' + scopeTerm : ''}${effectiveTo ? '~' + effectiveTo : ''}）`}`);
+  return res.json({ ok: true, data: { inserted, skippedDup, errors, effective_from: effectiveFrom, effective_to: effectiveTo, scope } });
+});
+
+// 删除补课课表（仅管理员）。按套号 + 可选年级删除整套「节假补课」课表。
+// 同时删除这些课表已展开的上课记录（lesson_instances），避免残留孤儿计酬。
+router.delete('/makeup', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const { makeup_set, grade } = req.body || {};
+  const setNum = Number(makeup_set);
+  if (!Number.isInteger(setNum) || setNum < 1) {
+    return res.status(400).json({ ok: false, error: '请指定要删除的补课课表套号（正整数）' });
+  }
+
+  // 定位该套号（+可选年级）下的补课课表记录
+  let sql = `SELECT s.id FROM schedules s JOIN classes c ON c.id = s.class_id
+             WHERE s.term = '节假补课' AND s.makeup_set = ?`;
+  const params = [setNum];
+  if (grade) {
+    sql += ' AND c.grade = ?';
+    params.push(grade);
+  }
+  const schedIds = db.prepare(sql).all(...params).map((r) => r.id);
+  if (!schedIds.length) {
+    return res.status(404).json({ ok: false, error: grade ? `第 ${setNum} 套「${grade}」无补课课表` : `第 ${setNum} 套无补课课表` });
+  }
+
+  // 统计受影响范围，供确认信息展示
+  let countSql = `SELECT COUNT(DISTINCT s.class_id) AS classes FROM schedules s JOIN classes c ON c.id = s.class_id
+                  WHERE s.term = '节假补课' AND s.makeup_set = ?`;
+  const countParams = [setNum];
+  if (grade) { countSql += ' AND c.grade = ?'; countParams.push(grade); }
+  const classCount = db.prepare(countSql).get(...countParams).classes;
+  const instCount = db.prepare(`SELECT COUNT(*) AS n FROM lesson_instances WHERE schedule_id IN (${schedIds.map(() => '?').join(',')})`).get(...schedIds).n;
+
+  db.prepare('BEGIN').run();
+  try {
+    // 1. 删除已展开的上课记录
+    for (const sid of schedIds) {
+      db.prepare('DELETE FROM lesson_instances WHERE schedule_id = ?').run(sid);
+    }
+    // 2. 删除课表记录
+    for (const sid of schedIds) {
+      db.prepare('DELETE FROM schedules WHERE id = ?').run(sid);
+    }
+    db.prepare('COMMIT').run();
+  } catch (e) {
+    db.prepare('ROLLBACK').run();
+    return res.status(500).json({ ok: false, error: '删除失败：' + e.message });
+  }
+
+  logAudit(req.user.id, 'delete_makeup_schedule', 'schedules', `删除第 ${setNum} 套补课课表${grade ? '（' + grade + '）' : ''}，共 ${schedIds.length} 条课表、${instCount} 条上课记录`);
+  return res.json({ ok: true, data: { deleted: schedIds.length, classes: classCount, instances: instCount } });
 });
 
 // 执行一次调课/代课/停课（快照模式）：关闭旧记录 + 插入新记录。返回新 change_id。

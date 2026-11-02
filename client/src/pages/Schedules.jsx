@@ -104,6 +104,19 @@ export default function Schedules() {
   };
   useEffect(() => { if (view === 'makeup') loadMakeup(); }, [view]);
 
+  // 删除补课课表：按套号（+可选年级）删除整套
+  const deleteMakeupSet = async (set) => {
+    if (!(await toast.confirm(
+      `确定删除第 ${set} 套补课课表？将同时删除其已展开的上课记录，不可撤销。`,
+      { danger: true }
+    ))) return;
+    try {
+      const r = await api.delete('/schedules/makeup', { data: { makeup_set: set } });
+      toast.success(`已删除第 ${set} 套补课课表（${r.data.data.deleted} 条课表、${r.data.data.instances} 条上课记录）`);
+      loadMakeup();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+
   const loadSchedules = async () => {
     try {
       const params = {};
@@ -395,7 +408,13 @@ export default function Schedules() {
           const setTitle = set == null ? '补课课表 · 未标记套号' : `第 ${set} 套补课课表${setGrade.length ? ' · ' + setGrade.join('/') : ''}`;
           return (
             <div key={String(set)} className="makeup-set">
-              <div className="makeup-set-title">{setTitle}<span className="makeup-set-count">{adminClasses.length} 个班</span></div>
+              <div className="makeup-set-title">
+                <span>{setTitle}</span>
+                <span className="makeup-set-count">{adminClasses.length} 个班</span>
+                {set != null && (
+                  <button className="btn sm danger makeup-set-del" onClick={() => deleteMakeupSet(set)}>删除本套</button>
+                )}
+              </div>
               <div className="grids">
                 {adminClasses.map((ac) => renderClassCard(ac, setRows))}
               </div>
