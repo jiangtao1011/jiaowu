@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const TYPES = ['行政班', '分层', '走班'];
 const EMPTY = { name: '', type: '行政班', student_count: '', grade: '', parent_id: '', subject: '' };
@@ -7,7 +8,7 @@ const EMPTY = { name: '', type: '行政班', student_count: '', grade: '', paren
 export default function Classes() {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
+  const toast = useToast();
   const [keyword, setKeyword] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [form, setForm] = useState(EMPTY);
@@ -24,7 +25,7 @@ export default function Classes() {
 
   const adminClasses = rows.filter((c) => c.type === '行政班');
 
-  const openAdd = () => { setEditingId(null); setForm(EMPTY); setMemberIds([]); setError(''); setMsg(''); setShowForm(true); };
+  const openAdd = () => { setEditingId(null); setForm(EMPTY); setMemberIds([]); setError(''); setShowForm(true); };
 
   const startEdit = (c) => {
     setEditingId(c.id);
@@ -37,7 +38,7 @@ export default function Classes() {
       subject: c.subject || '',
     });
     setMemberIds((c.members || []).map((m) => m.id));
-    setError(''); setMsg('');
+    setError('');
     setShowForm(true);
   };
 
@@ -52,10 +53,10 @@ export default function Classes() {
       else body.member_ids = memberIds;
       if (editingId) await api.patch(`/classes/${editingId}`, body);
       else await api.post('/classes', body);
-      setMsg(editingId ? '班级信息已更新' : '班级已新增');
+      toast.success(editingId ? '班级信息已更新' : '班级已新增');
       closeForm();
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const downloadTemplate = async () => {
@@ -72,20 +73,28 @@ export default function Classes() {
   };
 
   const importFile = async () => {
-    if (!file) return setError('请先选择班级文件（.xlsx / .csv）');
-    setError(''); setMsg('');
+    if (!file) return toast.error('请先选择班级文件（.xlsx / .csv）');
     const fd = new FormData();
     fd.append('file', file);
     try {
       const { inserted, skipped, errors } = (await api.post('/classes/import', fd)).data.data;
-      setMsg(`导入成功 ${inserted} 条${skipped ? `，跳过已存在 ${skipped} 条` : ''}${errors.length ? `，${errors.length} 条未导入` : ''}`);
+      toast.success(`导入成功 ${inserted} 条${skipped ? `，跳过已存在 ${skipped} 条` : ''}${errors.length ? `，${errors.length} 条未导入` : ''}`);
       setFile(null);
       setShowImport(false);
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const toggleMember = (id) => setMemberIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+
+  const removeClass = async (c) => {
+    if (!(await toast.confirm(`确定删除班级「${c.name}」？`, { danger: true }))) return;
+    try {
+      await api.delete(`/classes/${c.id}`);
+      toast.success('班级已删除');
+      load();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const filtered = rows.filter((c) => {
     const kw = keyword.trim().toLowerCase();
@@ -105,7 +114,6 @@ export default function Classes() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       <div className="card">
         <div className="toolbar" style={{ marginBottom: 14 }}>
@@ -120,7 +128,7 @@ export default function Classes() {
             {TYPES.map((t) => <option key={t}>{t}</option>)}
           </select>
           <span className="spacer" />
-          <button className="btn" onClick={() => { setError(''); setMsg(''); setFile(null); setShowImport(true); }}>批量导入</button>
+          <button className="btn" onClick={() => { setError(''); setFile(null); setShowImport(true); }}>批量导入</button>
           <button className="btn primary" onClick={openAdd}>新增班级</button>
         </div>
 
@@ -143,7 +151,12 @@ export default function Classes() {
                         ? (r.members?.map((m) => m.name).join('、') || '-')
                         : (r.children?.length ? `分层：${r.children.map((c) => c.name).join('、')}` : '-')}
                   </td>
-                  <td><button className="btn sm" onClick={() => startEdit(r)}>编辑</button></td>
+                  <td>
+                    <div className="toolbar" style={{ marginBottom: 0 }}>
+                      <button className="btn sm" onClick={() => startEdit(r)}>编辑</button>
+                      <button className="btn sm danger" onClick={() => removeClass(r)}>删除</button>
+                    </div>
+                  </td>
                 </tr>
               ))}
               {filtered.length === 0 && (

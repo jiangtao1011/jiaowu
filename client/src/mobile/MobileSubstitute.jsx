@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回' };
 const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '' };
 
 export default function MobileSubstitute() {
+  const toast = useToast();
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const [tab, setTab] = useState('apply'); // apply | mine
   const [myLessons, setMyLessons] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [requests, setRequests] = useState([]);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
 
   // 表单
   const [scheduleId, setScheduleId] = useState('');
@@ -39,12 +40,12 @@ export default function MobileSubstitute() {
   useEffect(() => { load(); }, []);
 
   const submit = async () => {
-    setError(''); setMsg('');
-    if (!scheduleId) return setError('请选择要代/调的课');
-    if (type === '调课' && !toTeacherId) return setError('请选择目标教师');
-    if (!date) return setError('请选择开始日期');
-    if (duration === 'range' && !toDate) return setError('请选择结束日期');
-    if (duration === 'range' && toDate <= date) return setError('结束日期须晚于开始日期');
+    setError('');
+    if (!scheduleId) return toast.error('请选择要代/调的课');
+    if (type === '调课' && !toTeacherId) return toast.error('请选择目标教师');
+    if (!date) return toast.error('请选择开始日期');
+    if (duration === 'range' && !toDate) return toast.error('请选择结束日期');
+    if (duration === 'range' && toDate <= date) return toast.error('结束日期须晚于开始日期');
     try {
       const payload = {
         schedule_id: scheduleId, type, to_teacher_id: toTeacherId || null,
@@ -54,15 +55,15 @@ export default function MobileSubstitute() {
         reason: reason || null,
       };
       await api.post('/schedules/requests', payload);
-      setMsg('申请已提交，待教务处审核');
+      toast.success('申请已提交，待教务处审核');
       setScheduleId(''); setToTeacherId(''); setDate(''); setToDate(''); setReason(''); setDuration('day');
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const withdraw = async (id) => {
-    if (!window.confirm('确定撤回该申请？')) return;
-    try { await api.delete(`/schedules/requests/${id}`); load(); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('确定撤回该申请？', { danger: true }))) return;
+    try { await api.delete(`/schedules/requests/${id}`); load(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
@@ -93,7 +94,6 @@ export default function MobileSubstitute() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       <div className="mcard" style={{ padding: 10 }}>
         <div className="mstat-row">

@@ -97,7 +97,11 @@ start_prod() {
   info "==> 启动后端（含前端静态托管，端口 $SERVER_PORT）..."
   mkdir -p "$LOG_DIR"
   # 直接 node 启动（避免 npm 包裹层导致 PID 不准确）
-  (cd server && nohup node src/index.js > "../$LOG_DIR/server.log" 2>&1 & echo $! > "../$PID_SERVER")
+  (
+    cd server
+    nohup node src/index.js > "../$LOG_DIR/server.log" 2>&1 &
+    echo $! > "../$PID_SERVER"
+  )
   sleep 1.5
 
   if [ -z "$(pid_of_port "$SERVER_PORT")" ]; then
@@ -111,14 +115,22 @@ start_prod() {
 start_dev() {
   if [ -z "$(pid_of_port "$SERVER_PORT")" ]; then
     info "==> 启动后端（端口 $SERVER_PORT）..."
-    (cd server && nohup node src/index.js > "../$LOG_DIR/server.log" 2>&1 & echo $! > "../$PID_SERVER")
+    (
+      cd server
+      nohup node src/index.js > "../$LOG_DIR/server.log" 2>&1 &
+      echo $! > "../$PID_SERVER"
+    )
   else
     info "后端已在运行（端口 $SERVER_PORT）"
   fi
 
   if [ -z "$(pid_of_port "$CLIENT_PORT")" ]; then
     info "==> 启动前端 vite（端口 $CLIENT_PORT，热更新）..."
-    (cd client && nohup npm run dev > "../$LOG_DIR/client.log" 2>&1 & echo $! > "../$PID_CLIENT")
+    (
+      cd client
+      nohup npm run dev > "../$LOG_DIR/client.log" 2>&1 &
+      echo $! > "../$PID_CLIENT"
+    )
   else
     info "前端已在运行（端口 $CLIENT_PORT）"
   fi

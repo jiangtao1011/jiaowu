@@ -1,0 +1,19 @@
+[Unit]
+Description=教务管理系统（Express + node:sqlite，单进程托管前端）
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/edu-admin/server
+EnvironmentFile=/opt/edu-admin/server/.env
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=3
+# 基础资源保护（可选，按需取消注释）
+# NoNewPrivileges=true
+# ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -814,6 +814,87 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 
 /* 分享链接弹层 */
 .link-modal { max-width: 560px; }
+
+/* ============ 全局提示 toast + 确认框 ============ */
+.toast-stack {
+  position: fixed; top: 18px; right: 18px;
+  z-index: 100;
+  display: flex; flex-direction: column; gap: 10px;
+  max-width: min(360px, calc(100vw - 36px));
+}
+.toast {
+  display: flex; align-items: center; gap: 8px;
+  background: #fff; border: 1px solid var(--border-strong);
+  border-left: 4px solid var(--primary);
+  border-radius: 8px; padding: 11px 14px;
+  box-shadow: var(--shadow-md);
+  font-size: 13.5px; color: var(--text); line-height: 1.5;
+  animation: toast-in 0.18s ease-out;
+}
+.toast-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary); flex-shrink: 0; }
+.toast-success { border-left-color: var(--ok); }
+.toast-success .toast-dot { background: var(--ok); }
+.toast-error { border-left-color: var(--danger); }
+.toast-error .toast-dot { background: var(--danger); }
+.toast-warn { border-left-color: var(--warn); }
+.toast-warn .toast-dot { background: var(--warn); }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.confirm { max-width: 440px; }
+.confirm-text { margin: 4px 0 18px; color: var(--text-soft); line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+/* 统计配置：分类目录网格 */
+.cfg-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.cfg-tile {
+  text-align: left; cursor: pointer;
+  background: #fff; border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px 18px;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.cfg-tile:hover { border-color: var(--primary); box-shadow: var(--shadow-sm); }
+.cfg-tile-title { font-size: 15px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+.cfg-tile-desc { font-size: 12.5px; color: var(--muted); line-height: 1.55; margin-bottom: 10px; }
+.cfg-tile-count { font-size: 12px; color: var(--primary); font-weight: 600; }
+@media (max-width: 560px) { .cfg-grid { grid-template-columns: 1fr; } }
+
+/* ============ 打印通知单 ============ */
+.print-sheet {
+  background: #fff; color: #000;
+  font-family: "Songti SC", "STSong", "SimSun", "Noto Serif CJK SC", serif;
+  padding: 8px 4px;
+}
+.ps-title { text-align: center; font-size: 22px; font-weight: 700; letter-spacing: 0.15em; margin: 0 0 8px; }
+.ps-meta { text-align: center; font-size: 12px; color: #333; margin-bottom: 16px; }
+.ps-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.ps-table th, .ps-table td { border: 1px solid #000; padding: 10px 12px; text-align: left; }
+.ps-table th { width: 90px; background: #f4f4f4; font-weight: 600; }
+.ps-foot { margin-top: 22px; display: flex; justify-content: space-between; font-size: 13px; color: #333; }
+
+@media print {
+  body * { visibility: hidden; }
+  .print-sheet, .print-sheet * { visibility: visible; }
+  .print-sheet { position: absolute; left: 0; top: 0; width: 100%; padding: 24px; }
+  .modal-overlay { position: static; padding: 0; background: none; }
+  .modal { max-width: none !important; box-shadow: none; border: none; padding: 0; overflow: visible; max-height: none; }
+  .no-print { display: none !important; }
+}
+
+/* ============ 教师课时汇总表：分组表头 + 计钱列着色 ============ */
+.sum-table th, .sum-table td { padding: 7px 9px; text-align: right; white-space: nowrap; }
+.sum-table th:first-child, .sum-table td:first-child,
+.sum-table .td-group, .sum-table th.group { text-align: left; }
+.sum-table thead .group {
+  background: #f5f7fa; color: var(--text-soft);
+  font-size: 11px; letter-spacing: 0.05em; border-bottom: 1px solid var(--border);
+}
+.sum-table .num-pay { background: #fbf6ee; color: #8a5a00; font-weight: 600; }
+.sum-table .num-weight { color: var(--text-soft); }
+.sum-table tfoot td { border-top: 2px solid var(--border-strong); font-weight: 700; background: #f8fafc; }
+.sum-table .pay-total { color: var(--warn); font-weight: 700; }
+
+/* 分享链接弹层 */
 .link-box {
   background: #f8fafc; border: 1px solid var(--border); border-radius: 8px;
   padding: 12px 14px; word-break: break-all;

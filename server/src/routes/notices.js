@@ -38,6 +38,18 @@ function countsOf(noticeId) {
   return { read_count: reads, like_count: likes, reply_count: replies };
 }
 
+// 定向通知辅助：写入并直接发布一条通知，targetTeacherIds 非空则仅这些教师可见。
+// 供课务调整（代课/调课/停课）自动通知复用。
+export function createAdjustNotice({ title, content, targetTeacherIds, operatorId }) {
+  const share_token = crypto.randomBytes(12).toString('hex');
+  const targets = (targetTeacherIds || []).filter((x) => x != null);
+  const info = db.prepare(`
+    INSERT INTO notices (title, type, content, share_token, publish_status, target_teacher_ids, created_by, published_at)
+    VALUES (?, '课务调整', ?, ?, 'published', ?, ?, ?)`)
+    .run(title, content ?? null, share_token, targets.length ? JSON.stringify(targets) : null, operatorId ?? null, new Date().toISOString());
+  return Number(info.lastInsertRowid);
+}
+
 // ===== 公开分享（免登录） =====
 
 // 分享落地页详情：通知 + 附件 + 计数 + 公开回复 + 当前身份是否已读/已赞
@@ -119,9 +131,16 @@ router.use(authRequired);
 // 列表（含计数）。publish_status 可选过滤：published / draft（移动端传 published 只看已发布）
 router.get('/', (req, res) => {
   const { publish_status } = req.query;
-  let sql = 'SELECT n.*, u.name AS creator_name FROM notices n LEFT JOIN users u ON u.id = n.created_by';
+  let sql = 'SELECT n.*, u.name AS creator_name FROM notices n LEFT JOIN users u ON u.id = n.created_by WHERE 1=1';
   const params = [];
-  if (publish_status) { sql += ' WHERE n.publish_status = ?'; params.push(publish_status); }
+  if (publish_status) { sql += ' AND n.publish_status = ?'; params.push(publish_status); }
+  // 定向通知过滤：管理员看全部；非管理员仅看「广播 + 定向到自己」的通知
+  const isAdmin = ADMIN_ROLES.includes(req.user.role);
+  if (!isAdmin) {
+    const tid = req.user.teacher_id ?? null;
+    sql += ` AND (n.target_teacher_ids IS NULL OR n.target_teacher_ids = '' OR (? IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(n.target_teacher_ids) WHERE CAST(json_each.value AS TEXT) = ?)))`;
+    params.push(tid, String(tid));
+  }
   sql += ' ORDER BY n.id DESC';
   const rows = db.prepare(sql).all(...params);
   const myReadStmt = db.prepare('SELECT 1 FROM notice_reads WHERE notice_id = ? AND user_id = ?');

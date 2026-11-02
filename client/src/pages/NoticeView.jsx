@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import api from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const TYPE_STYLES = {
   课务调整: 'warn',
@@ -19,8 +20,8 @@ export default function NoticeView() {
   const [myLike, setMyLike] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
   const [replyForm, setReplyForm] = useState({ name: '', content: '' });
-  const [replyMsg, setReplyMsg] = useState('');
   const [busy, setBusy] = useState(false);
+  const toast = useToast();
   const isLoggedIn = !!localStorage.getItem('edu_token');
 
   useEffect(() => {
@@ -43,32 +44,29 @@ export default function NoticeView() {
   }, [notice, myRead, token, isLoggedIn]);
 
   const markRead = async () => {
-    setError('');
     try {
       await api.post(`/notices/share/${token}/read`, { name: replyForm.name });
       setMyRead(true);
-    } catch (e) { setError(e?.response?.data?.error || '操作失败'); }
+    } catch (e) { toast.error(e?.response?.data?.error || '操作失败'); }
   };
 
   const toggleLike = async () => {
-    setError('');
     try {
       const r = await api.post(`/notices/share/${token}/like`, { name: replyForm.name });
       setMyLike(r.data.data.liked);
       setLikeCount((c) => (r.data.data.liked ? c + 1 : Math.max(0, c - 1)));
-    } catch (e) { setError(e?.response?.data?.error || '操作失败'); }
+    } catch (e) { toast.error(e?.response?.data?.error || '操作失败'); }
   };
 
   const submitReply = async (e) => {
     e.preventDefault();
-    setError(''); setReplyMsg('');
-    if (!replyForm.content.trim()) return setError('回复内容不能为空');
+    if (!replyForm.content.trim()) return toast.error('回复内容不能为空');
     setBusy(true);
     try {
       await api.post(`/notices/share/${token}/replies`, replyForm);
-      setReplyMsg('回复已提交，审核通过后公开展示');
+      toast.success('回复已提交，审核通过后公开展示');
       setReplyForm({ ...replyForm, content: '' });
-    } catch (e) { setError(e?.response?.data?.error || '操作失败'); }
+    } catch (e) { toast.error(e?.response?.data?.error || '操作失败'); }
     finally { setBusy(false); }
   };
 
@@ -107,7 +105,6 @@ export default function NoticeView() {
     <div className="n-share">
       <div className="n-card">
         {error && <div className="alert error">{error}</div>}
-        {replyMsg && <div className="alert success">{replyMsg}</div>}
 
         {notice && (
           <>

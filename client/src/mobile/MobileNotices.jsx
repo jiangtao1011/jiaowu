@@ -4,11 +4,13 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const REPLY_STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回' };
 const REPLY_CLS = { pending: 'warn', approved: 'ok', rejected: '' };
 
 export default function MobileNotices() {
+  const toast = useToast();
   const { onUnreadChange } = useOutletContext();
   const [rows, setRows] = useState([]);
   const [myReplies, setMyReplies] = useState([]);
@@ -18,7 +20,6 @@ export default function MobileNotices() {
   const [open, setOpen] = useState(null); // 打开的通知
   const [reply, setReply] = useState('');
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
 
   const load = async () => {
     try {
@@ -44,14 +45,14 @@ export default function MobileNotices() {
   };
 
   const submitReply = async () => {
-    if (!reply.trim()) return setError('回复内容不能为空');
-    setError(''); setMsg('');
+    if (!reply.trim()) return toast.error('回复内容不能为空');
+    setError('');
     try {
       await api.post(`/notices/share/${open.share_token}/replies`, { content: reply });
-      setMsg('回复已提交，待教务处审核');
+      toast.success('回复已提交，待教务处审核');
       setReply('');
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const types = [...new Set(rows.map((n) => n.type))];
@@ -67,7 +68,6 @@ export default function MobileNotices() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       {/* 顶部：类型筛选 + 我的回复 */}
       <div className="mcard" style={{ padding: 10 }}>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '', withdrawn: 'info' };
@@ -12,7 +13,7 @@ export default function MobileApply() {
   const embedded = location.pathname.startsWith('/m');
   const [self, setSelf] = useState(null);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
+  const toast = useToast();
   const [mode, setMode] = useState(null); // '答疑' | '晚自习' | '早自习' | '批量' | null(首页)
   const [loading, setLoading] = useState(true);
 
@@ -65,7 +66,7 @@ export default function MobileApply() {
 
   const openMode = (m) => {
     setMode(m);
-    setMsg(''); setError('');
+    setError('');
     setGrade(''); setClassId(''); setContent('');
     setDate(today()); setPeriodCount(1);
     if (m === '批量') {
@@ -81,12 +82,11 @@ export default function MobileApply() {
   };
 
   const submit = async () => {
-    setError(''); setMsg('');
-    if (!self.teacher) return setError('你的账号尚未绑定教师档案，请联系教务员绑定后再申报');
-    if (mode === '答疑' && !grade) return setError('请选择年级');
-    if (mode === '晚自习' && !classId) return setError('请选择班级');
-    if (mode === '早自习' && !grade) return setError('请选择年级');
-    if (!date) return setError('请选择日期');
+    if (!self.teacher) return toast.error('你的账号尚未绑定教师档案，请联系教务员绑定后再申报');
+    if (mode === '答疑' && !grade) return toast.error('请选择年级');
+    if (mode === '晚自习' && !classId) return toast.error('请选择班级');
+    if (mode === '早自习' && !grade) return toast.error('请选择年级');
+    if (!date) return toast.error('请选择日期');
     try {
       // 答疑/早自习为年级级（挂年级虚班）；晚自习为班级级（挂行政班）
       const isGradeLevel = mode === '答疑' || mode === '早自习';
@@ -103,15 +103,15 @@ export default function MobileApply() {
         content: content || null,
       };
       await api.post('/applications', payload);
-      setMsg(`${mode}申报已提交，待教务处审核`);
+      toast.success(`${mode}申报已提交，待教务处审核`);
       setMode(null);
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const del = async (id) => {
-    if (!window.confirm('确定删除该申报记录？')) return;
-    try { await api.delete(`/applications/${id}`); load(); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('确定删除该申报记录？', { danger: true }))) return;
+    try { await api.delete(`/applications/${id}`); load(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   // ===== 批量申报（教务员/年级组长，同一天·同类型·多教师） =====
@@ -124,11 +124,10 @@ export default function MobileApply() {
     setSelectedTeachers(allSelected ? [] : allIds);
   };
   const submitBatch = async () => {
-    setError(''); setMsg('');
-    if (!batchGrade) return setError('请选择年级');
-    if (!batchType) return setError('请选择类型');
-    if (!batchDate) return setError('请选择日期');
-    if (!selectedTeachers.length) return setError('请至少选择一位教师');
+    if (!batchGrade) return toast.error('请选择年级');
+    if (!batchType) return toast.error('请选择类型');
+    if (!batchDate) return toast.error('请选择日期');
+    if (!selectedTeachers.length) return toast.error('请至少选择一位教师');
     const items = selectedTeachers.map((tid) => {
       const t = (batchCtx?.teachers || []).find((x) => String(x.id) === String(tid));
       return {
@@ -140,12 +139,12 @@ export default function MobileApply() {
     try {
       const res = await api.post('/applications/batch', { items });
       const { inserted, errors } = res.data.data;
-      setMsg(`批量申报已提交 ${inserted} 条待审核${errors.length ? `，${errors.length} 条失败` : ''}`);
-      if (errors.length) setError(errors.join('；'));
+      toast.success(`批量申报已提交 ${inserted} 条待审核${errors.length ? `，${errors.length} 条失败` : ''}`);
+      if (errors.length) toast.error(errors.join('；'));
       setSelectedTeachers([]);
       setMode(null);
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   if (loading) return <div className="mapply"><div className="mapply-loading">加载中…</div></div>;
@@ -184,7 +183,6 @@ export default function MobileApply() {
       )}
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       {notBound && (
         <div className="mapply-notice">

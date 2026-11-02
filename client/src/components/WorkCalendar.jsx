@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from './feedback.jsx';
 
 const CATEGORIES = ['工作', '会议', '考试', '检查', '活动', '其它'];
 const CAT_COLORS = {
@@ -19,6 +20,7 @@ function mondayStart(d) {
 }
 
 export default function WorkCalendar() {
+  const toast = useToast();
   const [year, setYear] = useState(() => new Date().getFullYear());
   const [month, setMonth] = useState(() => new Date().getMonth()); // 0-11
   const [items, setItems] = useState([]);
@@ -165,6 +167,7 @@ export default function WorkCalendar() {
 }
 
 function DayPanel({ date, items, cals, categories, onClose, onChanged }) {
+  const toast = useToast();
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('工作');
   const [note, setNote] = useState('');
@@ -182,25 +185,27 @@ function DayPanel({ date, items, cals, categories, onClose, onChanged }) {
     try {
       if (editing) {
         await api.patch(`/workplan/${editing.id}`, { title, category, note, remind });
+        toast.success('已更新');
       } else {
         await api.post('/workplan', { date, title, category, note, remind });
+        toast.success('已添加');
       }
       reset();
       onChanged();
     } catch (err) {
-      setError(errMsg(err));
+      toast.error(errMsg(err));
     } finally {
       setBusy(false);
     }
   };
 
   const toggle = async (id) => {
-    try { await api.patch(`/workplan/${id}/toggle`); onChanged(); } catch (err) { setError(errMsg(err)); }
+    try { await api.patch(`/workplan/${id}/toggle`); onChanged(); } catch (err) { toast.error(errMsg(err)); }
   };
   const edit = (it) => { setEditing(it); setTitle(it.title); setCategory(it.category); setNote(it.note || ''); setRemind(!!it.remind); };
   const del = async (id) => {
-    if (!window.confirm('删除该事项？')) return;
-    try { await api.delete(`/workplan/${id}`); if (editing?.id === id) reset(); onChanged(); } catch (err) { setError(errMsg(err)); }
+    if (!(await toast.confirm('删除该事项？', { danger: true }))) return;
+    try { await api.delete(`/workplan/${id}`); if (editing?.id === id) reset(); toast.success('已删除'); onChanged(); } catch (err) { toast.error(errMsg(err)); }
   };
 
   const [y, m, d] = date.split('-').map(Number);

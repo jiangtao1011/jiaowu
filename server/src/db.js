@@ -122,6 +122,9 @@ CREATE TABLE IF NOT EXISTS schedule_changes (
   to_date TEXT,
   reason TEXT,
   operator_id INTEGER REFERENCES users(id),
+  inserted_schedule_ids TEXT,
+  prev_effective_to TEXT,
+  reverted INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -301,6 +304,17 @@ CREATE TABLE IF NOT EXISTS period_type_coefficients (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+-- 按次计酬类型的分年级覆盖价：某类型（如晚自习）在不同年级可用不同单价。
+-- 无覆盖价时回退 period_type_pays.pay 基准价。grade 为空表示全局覆盖（当前主要用「按年级」维度）。
+CREATE TABLE IF NOT EXISTS period_type_grade_pays (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  period_type TEXT NOT NULL,
+  grade TEXT NOT NULL,
+  pay REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_period_type_grade_pays ON period_type_grade_pays(period_type, grade);
+
 CREATE TABLE IF NOT EXISTS application_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
@@ -422,8 +436,14 @@ ensureColumn('users', 'teacher_id', 'INTEGER REFERENCES teachers(id)');
 ensureColumn('users', 'managed_grade', 'TEXT');
 // 迁移：substitute_requests 增加 to_date（临时代课结束日期，左闭右开；空=长期）
 ensureColumn('substitute_requests', 'to_date', 'TEXT');
+// 迁移：schedule_changes 增加 inserted_schedule_ids / reverted（课务调整撤回支持）
+ensureColumn('schedule_changes', 'inserted_schedule_ids', 'TEXT');
+ensureColumn('schedule_changes', 'reverted', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('schedule_changes', 'prev_effective_to', 'TEXT');
 // 迁移：classes 增加 is_virtual（年级虚拟班标记，答疑「年级级计酬」用）
 ensureColumn('classes', 'is_virtual', 'INTEGER NOT NULL DEFAULT 0');
+// 迁移：notices 增加 target_teacher_ids（定向通知：JSON 教师 id 数组字符串，空=全校广播）
+ensureColumn('notices', 'target_teacher_ids', 'TEXT');
 
 // 迁移：课程申报改造（自定义表单 + 分享填报 + 审核计酬）
 ensureColumn('application_tasks', 'form_schema', 'TEXT');           // JSON 自定义字段定义 [{key,label,type,required,options}]
@@ -472,7 +492,8 @@ seedIfEmpty('subject_coefficients', () => {
 });
 seedIfEmpty('size_bands', () => {
   const st = db.prepare('INSERT INTO size_bands (min_size, coefficient) VALUES (?,?)');
-  for (const [m, c] of [[0, 1.0], [46, 1.1], [56, 1.2]]) st.run(m, c);
+  // 加数语义：折算 = 节数 ×（学科系数 + 班额系数），班额系数为小增量（可负，小班减算）
+  for (const [m, c] of [[0, 0], [46, 0.1], [56, 0.2]]) st.run(m, c);
 });
 
 // 课时类型设置：早自习系数、晚自习固定课酬（默认值，可在统计中心改）

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const isAdmin = (u) => ['admin', '教务员', '教务处'].includes(u?.role);
 
@@ -33,7 +34,7 @@ export default function Assessment() {
   const admin = isAdmin(user);
   const [tab, setTab] = useState('exams'); // exams | summary | config | records
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
+  const toast = useToast();
 
   // 考试列表
   const [exams, setExams] = useState([]);
@@ -77,24 +78,22 @@ export default function Assessment() {
   const filteredExams = semesterFilter ? exams.filter((e) => e.semester === semesterFilter) : exams;
 
   const createExam = async () => {
-    setError(''); setMsg('');
-    if (!examForm.name.trim()) return setError('考试名称必填');
-    if (!examForm.semester.trim()) return setError('学期必填');
+    if (!examForm.name.trim()) return toast.error('考试名称必填');
+    if (!examForm.semester.trim()) return toast.error('学期必填');
     try {
       await api.post('/assessment/exams', examForm);
-      setMsg('考试已创建');
+      toast.success('考试已创建');
       setExamForm({ name: '', semester: '', exam_type: '期末', grade: '', exam_date: '', note: '' });
       load();
-    } catch (err) { setError(errMsg(err)); }
+    } catch (err) { toast.error(errMsg(err)); }
   };
 
   const deleteExam = async (id) => {
-    if (!window.confirm('确认删除该考试及其所有各率、成绩文件？')) return;
-    try { await api.delete(`/assessment/exams/${id}`); load(); } catch (err) { setError(errMsg(err)); }
+    if (!(await toast.confirm('确认删除该考试及其所有各率、成绩文件？', { danger: true }))) return;
+    try { await api.delete(`/assessment/exams/${id}`); load(); } catch (err) { toast.error(errMsg(err)); }
   };
 
   const openExam = async (exam) => {
-    setError('');
     try {
       const r = await api.get(`/assessment/exams/${exam.id}/scores`);
       setCurExam(exam);
@@ -109,7 +108,7 @@ export default function Assessment() {
       setExpandedGrades(hasData);
       // 拉取该考试已上传的成绩文件
       try { setExamFiles((await api.get(`/assessment/exams/${exam.id}/files`)).data.data); } catch { setExamFiles([]); }
-    } catch (err) { setError(errMsg(err)); }
+    } catch (err) { toast.error(errMsg(err)); }
   };
 
   // 当前考试各率缓存（含未保存的编辑）
@@ -127,15 +126,14 @@ export default function Assessment() {
   };
 
   const saveScores = async () => {
-    setError(''); setMsg('');
     const items = scores
       .filter((r) => [r.rate_a, r.rate_b, r.rate_c, r.rate_d, r.rate_e].some((v) => v !== '' && v != null))
       .map((r) => ({ group_key: r.group_key, rate_a: r.rate_a, rate_b: r.rate_b, rate_c: r.rate_c, rate_d: r.rate_d, rate_e: r.rate_e, total_count: r.total_count, avg_score: r.avg_score }));
     try {
       await api.put(`/assessment/exams/${curExam.id}/scores`, { items });
-      setMsg(`已保存 ${items.length} 个备课组各率`);
+      toast.success(`已保存 ${items.length} 个备课组各率`);
       openExam(curExam);
-    } catch (err) { setError(errMsg(err)); }
+    } catch (err) { toast.error(errMsg(err)); }
   };
 
   // 下载各率导入模板
@@ -158,19 +156,18 @@ export default function Assessment() {
   const importScores = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setError(''); setMsg('');
     try {
       const token = localStorage.getItem('edu_token');
       const fd = new FormData();
       fd.append('file', file);
       const r = await fetch(`/api/assessment/exams/${curExam.id}/scores/import`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
       const j = await r.json();
-      if (!r.ok || !j.ok) { setError(j.error || '导入失败'); return; }
+      if (!r.ok || !j.ok) { toast.error(j.error || '导入失败'); return; }
       const { imported, errors } = j.data;
-      setMsg(`已导入 ${imported} 个备课组各率${errors?.length ? `，${errors.length} 行异常` : ''}`);
-      if (errors?.length) setError(errors.join('；'));
+      toast.success(`已导入 ${imported} 个备课组各率${errors?.length ? `，${errors.length} 行异常` : ''}`);
+      if (errors?.length) toast.error(errors.join('；'));
       openExam(curExam);
-    } catch (err) { setError(errMsg(err)); }
+    } catch (err) { toast.error(errMsg(err)); }
     finally { e.target.value = ''; }
   };
 
@@ -178,8 +175,7 @@ export default function Assessment() {
   const uploadFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!fileGroupKey) { setError('请先选择要关联的备课组'); e.target.value = ''; return; }
-    setError(''); setMsg('');
+    if (!fileGroupKey) { toast.error('请先选择要关联的备课组'); e.target.value = ''; return; }
     try {
       const token = localStorage.getItem('edu_token');
       const fd = new FormData();
@@ -187,10 +183,10 @@ export default function Assessment() {
       fd.append('group_key', fileGroupKey);
       const r = await fetch(`/api/assessment/exams/${curExam.id}/files`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
       const j = await r.json();
-      if (!r.ok || !j.ok) { setError(j.error || '上传失败'); return; }
-      setMsg(`已上传 ${j.data.filename}`);
+      if (!r.ok || !j.ok) { toast.error(j.error || '上传失败'); return; }
+      toast.success(`已上传 ${j.data.filename}`);
       setExamFiles((await api.get(`/assessment/exams/${curExam.id}/files`)).data.data);
-    } catch (err) { setError(errMsg(err)); }
+    } catch (err) { toast.error(errMsg(err)); }
     finally { e.target.value = ''; }
   };
 
@@ -214,21 +210,19 @@ export default function Assessment() {
   };
 
   const loadSummary = async () => {
-    setError('');
-    if (!summarySemester) return setError('请选择学期');
+    if (!summarySemester) return toast.error('请选择学期');
     try {
       const r = await api.get('/assessment/summary', { params: { semester: summarySemester } });
       setSummary(r.data.data);
-    } catch (err) { setError(errMsg(err)); }
+    } catch (err) { toast.error(errMsg(err)); }
   };
 
   const saveConfig = async () => {
-    setError(''); setMsg('');
     try {
       const r = await api.put('/assessment/config', config);
       setConfig(r.data.data);
-      setMsg('考核配置已保存');
-    } catch (err) { setError(errMsg(err)); }
+      toast.success('考核配置已保存');
+    } catch (err) { toast.error(errMsg(err)); }
   };
 
   // 固化 + 档案
@@ -236,22 +230,20 @@ export default function Assessment() {
   const [recordsSemester, setRecordsSemester] = useState('');
 
   const archiveSemester = async (semester) => {
-    setError(''); setMsg('');
-    if (!semester) return setError('请先选择学期');
-    if (!window.confirm(`确认固化「${semester}」的教师业绩档案？固化后改率/改权重不影响已归档档案。`)) return;
+    if (!semester) return toast.error('请先选择学期');
+    if (!(await toast.confirm(`确认固化「${semester}」的教师业绩档案？固化后改率/改权重不影响已归档档案。`, { danger: true }))) return;
     try {
       const r = await api.post(`/assessment/semesters/${encodeURIComponent(semester)}/archive`);
-      setMsg(`已固化 ${r.data.data.records} 条档案（${r.data.data.groups} 个备课组）`);
-    } catch (err) { setError(errMsg(err)); }
+      toast.success(`已固化 ${r.data.data.records} 条档案（${r.data.data.groups} 个备课组）`);
+    } catch (err) { toast.error(errMsg(err)); }
   };
 
   const loadRecords = async () => {
-    setError('');
-    if (!recordsSemester) return setError('请选择学期');
+    if (!recordsSemester) return toast.error('请选择学期');
     try {
       const r = await api.get('/assessment/records', { params: { semester: recordsSemester } });
       setRecords(r.data.data);
-    } catch (err) { setError(errMsg(err)); }
+    } catch (err) { toast.error(errMsg(err)); }
   };
 
   const setWeight = (key, val) => setConfig((c) => ({ ...c, rate_weights: { ...c.rate_weights, [key]: val } }));
@@ -299,7 +291,6 @@ export default function Assessment() {
         </div>
       </div>
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       {/* ===== Tab1 考试与成绩 ===== */}
       {tab === 'exams' && !curExam && (

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 export default function Login({ onLogin }) {
   const navigate = useNavigate();
@@ -8,12 +9,11 @@ export default function Login({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [remember, setRemember] = useState(false);
-  const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const toast = useToast();
 
   const submit = async (e) => {
     e.preventDefault();
-    setError('');
     setLoading(true);
     try {
       const { data } = await api.post('/auth/login', { username, password, remember });
@@ -22,7 +22,7 @@ export default function Login({ onLogin }) {
       onLogin(data.data.user);
       navigate('/');
     } catch (err) {
-      setError(errMsg(err));
+      toast.error(errMsg(err));
     } finally {
       setLoading(false);
     }
@@ -33,7 +33,6 @@ export default function Login({ onLogin }) {
   if (scanCode && !loading) {
     (async () => {
       setLoading(true);
-      setError('');
       try {
         const { data } = await api.post('/auth/scan-login', { code: scanCode });
         localStorage.setItem('edu_token', data.data.token);
@@ -41,7 +40,7 @@ export default function Login({ onLogin }) {
         onLogin(data.data.user);
         navigate('/');
       } catch (err) {
-        setError(errMsg(err));
+        toast.error(errMsg(err));
       } finally {
         setLoading(false);
       }
@@ -58,7 +57,6 @@ export default function Login({ onLogin }) {
             <div className="sub">课程中心 · 局域网教务管理平台</div>
           </div>
         </div>
-        {error && <div className="alert error">{error}</div>}
         <div className="form-row">
           <label>用户名</label>
           <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />

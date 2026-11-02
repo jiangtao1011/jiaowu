@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '', withdrawn: 'info' };
@@ -8,7 +9,7 @@ const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '', withdrawn: '
 export default function Applications() {
   const [tab, setTab] = useState('qna');
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
+  const toast = useToast();
 
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const isAdmin = ['admin', '教务员', '教务处'].includes(user.role);
@@ -64,19 +65,18 @@ export default function Applications() {
 
   const submitQna = async (e) => {
     e.preventDefault();
-    setError(''); setMsg('');
     try {
       if (editingQna) {
         await api.patch(`/applications/${editingQna}`, { ...qnaForm, teacher_id: qnaForm.teacher_id || null, class_id: qnaForm.class_id || null, date: qnaForm.date || null });
-        setMsg('申报已更新');
+        toast.success('申报已更新');
       } else {
         await api.post('/applications', { ...qnaForm, teacher_id: qnaForm.teacher_id || null, class_id: qnaForm.class_id || null, date: qnaForm.date || null });
-        setMsg('申报已填报，待教务处审核');
+        toast.success('申报已填报，待教务处审核');
       }
       setQnaForm({ grade: '', subject: '', teacher_id: '', class_id: '', day_of_week: '', period_no: '', content: '', date: '', period_count: '1', period_type: '答疑' });
       setEditingQna(null);
       loadQna();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const startEditQna = (q) => {
@@ -96,17 +96,17 @@ export default function Applications() {
   };
 
   const reviewQna = async (id, approved) => {
-    try { await api.patch(`/applications/${id}/review`, { approved }); setMsg('已审核'); loadQna(); } catch (e) { setError(errMsg(e)); }
+    try { await api.patch(`/applications/${id}/review`, { approved }); toast.success('已审核'); loadQna(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const deleteQna = async (id) => {
-    if (!window.confirm('确定删除该申报记录？若已通过，其已生成的上课记录（计酬）将一并删除。')) return;
-    try { await api.delete(`/applications/${id}`); setMsg('已删除'); loadQna(); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('确定删除该申报记录？若已通过，其已生成的上课记录（计酬）将一并删除。', { danger: true }))) return;
+    try { await api.delete(`/applications/${id}`); toast.success('已删除'); loadQna(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const withdrawQna = async (id) => {
-    if (!window.confirm('确定撤回该已通过的申报？其已生成的上课记录（计酬）将一并删除。')) return;
-    try { await api.patch(`/applications/${id}/withdraw`); setMsg('已撤回'); loadQna(); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('确定撤回该已通过的申报？其已生成的上课记录（计酬）将一并删除。', { danger: true }))) return;
+    try { await api.patch(`/applications/${id}/withdraw`); toast.success('已撤回'); loadQna(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   // ===== 批量导入 =====
@@ -123,28 +123,25 @@ export default function Applications() {
     } catch (e) { setError(errMsg(e)); }
   };
   const importQna = async () => {
-    if (!importFile) return setError('请先选择申报文件（.xlsx / .csv）');
-    setError(''); setMsg('');
+    if (!importFile) return toast.error('请先选择申报文件（.xlsx / .csv）');
     const fd = new FormData();
     fd.append('file', importFile);
     try {
       const res = await api.post('/applications/import', fd);
       const { inserted, errors } = res.data.data;
       if (inserted === 0 && errors.length) {
-        setError(`未导入任何记录，${errors.length} 条失败：\n${errors.join('\n')}`);
-        setMsg('');
+        toast.error(`未导入任何记录，${errors.length} 条失败：\n${errors.join('\n')}`);
       } else {
-        setMsg(`导入成功 ${inserted} 条${errors.length ? `，${errors.length} 条未导入` : ''}`);
-        if (errors.length) setError(errors.join('\n'));
+        toast.success(`导入成功 ${inserted} 条${errors.length ? `，${errors.length} 条未导入` : ''}`);
+        if (errors.length) toast.error(errors.join('\n'));
       }
       setImportFile(null);
       loadQna();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const submitTask = async (e) => {
     e.preventDefault();
-    setError(''); setMsg('');
     try {
       const res = await api.post('/applications/tasks', {
         title: taskForm.title,
@@ -159,30 +156,30 @@ export default function Applications() {
       const created = res.data.data;
       setTaskForm({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
       setFieldList([]);
-      setMsg('课程已创建');
+      toast.success('课程已创建');
       loadTasks();
       // 自动打开分享弹层
       if (created.share_token) openLinkModal(created);
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const openApps = async (task) => {
     setOpenTask(task);
-    try { setApps((await api.get(`/applications/tasks/${task.id}/applications`)).data.data); } catch (e) { setError(errMsg(e)); }
+    try { setApps((await api.get(`/applications/tasks/${task.id}/applications`)).data.data); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const reviewApp = async (id, approved) => {
-    try { await api.patch(`/applications/applications/${id}/review`, { approved }); setMsg('已审核'); openApps(openTask); } catch (e) { setError(errMsg(e)); }
+    try { await api.patch(`/applications/applications/${id}/review`, { approved }); toast.success('已审核'); openApps(openTask); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const withdrawApp = async (id) => {
-    if (!window.confirm('确定撤回该已通过的申报？其已生成的上课记录（计酬）将一并删除。')) return;
-    try { await api.patch(`/applications/applications/${id}/withdraw`); setMsg('已撤回'); openApps(openTask); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('确定撤回该已通过的申报？其已生成的上课记录（计酬）将一并删除。', { danger: true }))) return;
+    try { await api.patch(`/applications/applications/${id}/withdraw`); toast.success('已撤回'); openApps(openTask); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const deleteApp = async (id) => {
-    if (!window.confirm('确定删除该申报记录？若已通过，其已生成的上课记录（计酬）将一并删除。')) return;
-    try { await api.delete(`/applications/applications/${id}`); setMsg('已删除'); openApps(openTask); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('确定删除该申报记录？若已通过，其已生成的上课记录（计酬）将一并删除。', { danger: true }))) return;
+    try { await api.delete(`/applications/applications/${id}`); toast.success('已删除'); openApps(openTask); } catch (e) { toast.error(errMsg(e)); }
   };
 
   // ===== 字段定义器 =====
@@ -221,7 +218,8 @@ export default function Applications() {
     const url = linkModal.share_url || `${window.location.origin}/course/${linkModal.share_token}`;
     const ok = await copyToClipboard(url);
     setCopied(ok);
-    setMsg(ok ? '分享链接已复制' : '复制失败，请手动复制链接');
+    if (ok) toast.success('分享链接已复制');
+    else toast.error('复制失败，请手动复制链接');
     if (ok) setTimeout(() => setCopied(false), 1500);
   };
   const downloadQr = () => {
@@ -252,7 +250,6 @@ export default function Applications() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       <div className="toolbar">
         <button className={`btn ${tab === 'qna' ? 'primary' : ''}`} onClick={() => setTab('qna')}>课时申报</button>

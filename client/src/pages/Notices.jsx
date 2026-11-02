@@ -4,6 +4,7 @@ import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import QRCode from 'qrcode';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const TYPE_STYLES = {
   课务调整: 'info',
@@ -23,13 +24,14 @@ const MD_TOOLS = [
 ];
 
 export default function Notices() {
+  const toast = useToast();
   const [rows, setRows] = useState([]);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
   const [form, setForm] = useState({ title: '', type: '课务调整', content: '' });
   const [files, setFiles] = useState([]);
   const [editingId, setEditingId] = useState(null); // null=新建，有值=编辑
   const [preview, setPreview] = useState(false); // 正文实时预览开关
+  const [formOpen, setFormOpen] = useState(false); // 新建/编辑弹窗
   const [detail, setDetail] = useState(null); // { notice, reads, replies }
   const [linkModal, setLinkModal] = useState(null);
   const [copied, setCopied] = useState(false);
@@ -61,12 +63,11 @@ export default function Notices() {
 
   const submit = async (e) => {
     e.preventDefault();
-    setError(''); setMsg('');
     try {
       if (editingId) {
         // 编辑：只改标题/类型/正文（附件另在详情里处理，本次不覆盖）
         await api.patch(`/notices/${editingId}`, { title: form.title, type: form.type, content: form.content || '' });
-        setMsg('通知已更新');
+        toast.success('通知已更新');
       } else {
         const fd = new FormData();
         fd.append('title', form.title);
@@ -74,11 +75,12 @@ export default function Notices() {
         fd.append('content', form.content || '');
         for (const f of files) fd.append('files', f);
         await api.post('/notices', fd);
-        setMsg('通知已创建');
+        toast.success('通知已创建');
       }
       resetForm();
+      setFormOpen(false);
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const resetForm = () => {
@@ -93,18 +95,28 @@ export default function Notices() {
     setFiles([]);
     setEditingId(n.id);
     setPreview(false);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    setFormOpen(true);
+  };
+
+  const startCreate = () => {
+    resetForm();
+    setFormOpen(true);
+  };
+
+  const closeForm = () => {
+    resetForm();
+    setFormOpen(false);
   };
 
   const publish = async (id) => {
-    try { await api.patch(`/notices/${id}/publish`, { publish_status: 'published' }); setMsg('已发布'); load(); } catch (e) { setError(errMsg(e)); }
+    try { await api.patch(`/notices/${id}/publish`, { publish_status: 'published' }); toast.success('已发布'); load(); } catch (e) { toast.error(errMsg(e)); }
   };
   const unpublish = async (id) => {
-    try { await api.patch(`/notices/${id}/publish`, { publish_status: 'draft' }); setMsg('已下线'); load(); } catch (e) { setError(errMsg(e)); }
+    try { await api.patch(`/notices/${id}/publish`, { publish_status: 'draft' }); toast.success('已下线'); load(); } catch (e) { toast.error(errMsg(e)); }
   };
   const remove = async (id) => {
-    if (!window.confirm('确认删除该通知？已读/回复/点赞记录会一并删除。')) return;
-    try { await api.delete(`/notices/${id}`); setMsg('已删除'); load(); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('确认删除该通知？已读/回复/点赞记录会一并删除。', { danger: true }))) return;
+    try { await api.delete(`/notices/${id}`); toast.success('已删除'); load(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   // 复制到剪贴板：优先 Clipboard API（需 HTTPS/localhost），
@@ -132,7 +144,7 @@ export default function Notices() {
     const url = n.share_url || `${window.location.origin}/n/${n.share_token}`;
     const ok = await copyToClipboard(url);
     setCopied(ok);
-    setMsg(ok ? '分享链接已复制，可发到工作群' : '复制失败，请手动复制链接');
+    if (ok) toast.success('分享链接已复制，可发到工作群'); else toast.error('复制失败，请手动复制链接');
     if (ok) setTimeout(() => setCopied(false), 1500);
   };
 
@@ -147,7 +159,7 @@ export default function Notices() {
     const text = shareText(n);
     const ok = await copyToClipboard(text);
     setCopied(ok);
-    setMsg(ok ? '文案已复制，可直接粘贴到工作群' : '复制失败，请手动复制文案');
+    if (ok) toast.success('文案已复制，可直接粘贴到工作群'); else toast.error('复制失败，请手动复制文案');
     if (ok) setTimeout(() => setCopied(false), 1500);
   };
 
@@ -181,7 +193,7 @@ export default function Notices() {
   };
 
   const reviewReply = async (replyId, status) => {
-    try { await api.patch(`/notices/replies/${replyId}/review`, { status }); setMsg('已审核'); openDetail(detail.notice.id); } catch (e) { setError(errMsg(e)); }
+    try { await api.patch(`/notices/replies/${replyId}/review`, { status }); toast.success('已审核'); openDetail(detail.notice.id); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const fmt = (d) => (d ? String(d).replace('T', ' ').slice(0, 16) : '');
@@ -194,57 +206,66 @@ export default function Notices() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
+
+      {formOpen && (
+        <div className="modal-overlay" onClick={closeForm}>
+          <div className="modal" style={{ maxWidth: 760 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{editingId ? '编辑通知' : '新建通知'}</h3>
+              <button className="btn ghost" onClick={closeForm}>关闭</button>
+            </div>
+            <form onSubmit={submit}>
+              <div className="form-grid">
+                <div><label>标题</label><input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></div>
+                <div><label>类型</label>
+                  <div className="type-pills">
+                    {['课务调整', '考试', '其他'].map((t) => (
+                      <button type="button" key={t} className={`type-pill ${form.type === t ? 'on' : ''}`} onClick={() => setForm({ ...form, type: t })}>{t}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="form-row" style={{ marginTop: 14 }}>
+                <div className="md-label-row">
+                  <label style={{ marginBottom: 0 }}>内容</label>
+                  <div className="toolbar" style={{ marginBottom: 0, gap: 4 }}>
+                    {MD_TOOLS.map((t) => (
+                      <button type="button" key={t.label} className="btn sm md-tool" title={t.hint} onClick={() => insertMd(t)}>{t.label}</button>
+                    ))}
+                    <button type="button" className={`btn sm ${preview ? 'primary' : ''}`} onClick={() => setPreview(!preview)}>{preview ? '关闭预览' : '预览'}</button>
+                  </div>
+                </div>
+                {!preview ? (
+                  <textarea ref={taRef} rows={8} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} placeholder={'正文支持 Markdown：\n## 小标题\n- 列表项\n**加粗** 重点\n---\n直接换行即换行显示'} />
+                ) : (
+                  <div className="md-preview">
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                      {form.content || '*（空）*'}
+                    </ReactMarkdown>
+                  </div>
+                )}
+              </div>
+              {!editingId && (
+                <div className="form-row">
+                  <label>附件（可选，多个）</label>
+                  <input type="file" multiple onChange={(e) => setFiles([...e.target.files])} style={{ padding: 6 }} />
+                  {files.length > 0 && <p className="muted" style={{ margin: '4px 0 0' }}>已选 {files.length} 个文件</p>}
+                </div>
+              )}
+              <div className="toolbar" style={{ marginBottom: 0, marginTop: 14 }}>
+                <button className="btn primary">{editingId ? '保存修改' : '保存'}</button>
+                <button type="button" className="btn" onClick={closeForm}>取消</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       <div className="card">
-        <h3>{editingId ? '编辑通知' : '新建通知'}</h3>
-        <form onSubmit={submit}>
-          <div className="form-grid">
-            <div><label>标题</label><input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></div>
-            <div><label>类型</label>
-              <div className="type-pills">
-                {['课务调整', '考试', '其他'].map((t) => (
-                  <button type="button" key={t} className={`type-pill ${form.type === t ? 'on' : ''}`} onClick={() => setForm({ ...form, type: t })}>{t}</button>
-                ))}
-              </div>
-            </div>
-          </div>
-          <div className="form-row" style={{ marginTop: 14 }}>
-            <div className="md-label-row">
-              <label style={{ marginBottom: 0 }}>内容</label>
-              <div className="toolbar" style={{ marginBottom: 0, gap: 4 }}>
-                {MD_TOOLS.map((t) => (
-                  <button type="button" key={t.label} className="btn sm md-tool" title={t.hint} onClick={() => insertMd(t)}>{t.label}</button>
-                ))}
-                <button type="button" className={`btn sm ${preview ? 'primary' : ''}`} onClick={() => setPreview(!preview)}>{preview ? '关闭预览' : '预览'}</button>
-              </div>
-            </div>
-            {!preview ? (
-              <textarea ref={taRef} rows={8} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} placeholder={'正文支持 Markdown：\n## 小标题\n- 列表项\n**加粗** 重点\n---\n直接换行即换行显示'} />
-            ) : (
-              <div className="md-preview">
-                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
-                  {form.content || '*（空）*'}
-                </ReactMarkdown>
-              </div>
-            )}
-          </div>
-          {!editingId && (
-            <div className="form-row">
-              <label>附件（可选，多个）</label>
-              <input type="file" multiple onChange={(e) => setFiles([...e.target.files])} style={{ padding: 6 }} />
-              {files.length > 0 && <p className="muted" style={{ margin: '4px 0 0' }}>已选 {files.length} 个文件</p>}
-            </div>
-          )}
-          <div className="toolbar" style={{ marginBottom: 0, marginTop: 14 }}>
-            <button className="btn primary">{editingId ? '保存修改' : '保存'}</button>
-            {editingId && <button type="button" className="btn" onClick={resetForm}>取消</button>}
-          </div>
-        </form>
-      </div>
-
-      <div className="card">
-        <div className="card-head"><h3>通知列表</h3></div>
+        <div className="card-head">
+          <h3>通知列表</h3>
+          <button className="btn primary sm" onClick={startCreate}>新建通知</button>
+        </div>
         <div className="table-wrap">
           <table>
             <thead><tr><th>标题</th><th>类型</th><th>状态</th><th>已读</th><th>赞</th><th>回复</th><th>创建时间</th><th>操作</th></tr></thead>

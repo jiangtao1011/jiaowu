@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { db, logAudit, UPLOAD_DIR } from '../db.js';
 import { authRequired, roleRequired, ADMIN_ROLES, INSPECTION_CONFIG_ROLES, INSPECTION_SUBMIT_ROLES } from '../auth.js';
 import { visibleTeacherIds } from '../scope.js';
@@ -358,6 +359,23 @@ router.get('/', (req, res) => {
   return res.json({ ok: true, data });
 });
 
+// 打分：以当前类型维度对齐，缺省记 0。返回 { score_total, score_max, score_data } 或全 null。
+function computeScoreFields(tid, scores) {
+  if (!Array.isArray(scores) || !scores.length) return { scoreTotal: null, scoreMax: null, scoreSnapshot: null };
+  const model = scoreModel(tid);
+  const byName = {};
+  for (const s of scores) if (s && s.name) byName[s.name] = Number(s.score) || 0;
+  for (const m of Object.values(model)) {
+    if (byName[m.name] != null) m.score = Math.max(0, Math.min(100, byName[m.name]));
+  }
+  const totals = computeTotals(model);
+  return {
+    scoreTotal: totals.total,
+    scoreMax: totals.max,
+    scoreSnapshot: JSON.stringify(Object.fromEntries(Object.values(model).map((m) => [m.name, { score: m.score, weight: m.weight, label: m.label }]))),
+  };
+}
+
 // 提交检查记录（教务员/教务处/admin + 教研组长/备课组长；非管理员按作用域限定教师）
 router.post('/', roleRequired(...INSPECTION_SUBMIT_ROLES), (req, res) => {
   const { template_id, type_id, class_id, teacher_id, subject, day_of_week, period_no, lesson_date, cycle_label, data, scores } = req.body || {};
@@ -375,20 +393,7 @@ router.post('/', roleRequired(...INSPECTION_SUBMIT_ROLES), (req, res) => {
     }
   }
 
-  // 打分：以当前类型维度对齐，缺省记 0
-  let scoreTotal = null, scoreMax = null, scoreSnapshot = null;
-  if (Array.isArray(scores) && scores.length) {
-    const model = scoreModel(tid);
-    const byName = {};
-    for (const s of scores) if (s && s.name) byName[s.name] = Number(s.score) || 0;
-    for (const m of Object.values(model)) {
-      if (byName[m.name] != null) m.score = Math.max(0, Math.min(100, byName[m.name]));
-    }
-    const totals = computeTotals(model);
-    scoreTotal = totals.total;
-    scoreMax = totals.max;
-    scoreSnapshot = JSON.stringify(Object.fromEntries(Object.values(model).map((m) => [m.name, { score: m.score, weight: m.weight, label: m.label }])));
-  }
+  const { scoreTotal, scoreMax, scoreSnapshot } = computeScoreFields(tid, scores);
 
   // 周期标记：周期类按日期自动算（可被前端传入覆盖），日常类留空
   let cycle = null;
@@ -405,6 +410,79 @@ router.post('/', roleRequired(...INSPECTION_SUBMIT_ROLES), (req, res) => {
       lesson_date ?? null, cycle, JSON.stringify(data), scoreSnapshot, scoreTotal, scoreMax, req.user.id);
   logAudit(req.user.id, 'create_inspection', `inspections:${info.lastInsertRowid}`, `提交检查（类型 ${template.name}${cycle ? ` ${cycle}` : ''}）`);
   return res.json({ ok: true, data: { id: Number(info.lastInsertRowid), cycle_label: cycle } });
+});
+
+// 修改检查记录（与提交同权限；非管理员按作用域限定教师）
+router.patch('/:id', roleRequired(...INSPECTION_SUBMIT_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM inspections WHERE id = ?').get(id);
+  if (!existing) return res.status(404).json({ ok: false, error: '检查记录不存在' });
+
+  const { type_id, template_id, class_id, teacher_id, subject, day_of_week, period_no, lesson_date, cycle_label, data, scores } = req.body || {};
+  const tid = type_id != null ? Number(type_id) : (template_id != null ? Number(template_id) : existing.template_id);
+  const template = db.prepare('SELECT * FROM inspection_templates WHERE id = ?').get(tid);
+  if (!template) return res.status(404).json({ ok: false, error: '检查类型不存在' });
+
+  // 作用域：非管理员只能改本范围内的教师记录
+  const nextTeacherId = teacher_id !== undefined ? (teacher_id ? Number(teacher_id) : null) : existing.teacher_id;
+  if (!ADMIN_ROLES.includes(req.user.role) && nextTeacherId) {
+    const scope = visibleTeacherIds(req.user);
+    if (scope && !scope.includes(Number(nextTeacherId))) {
+      return res.status(403).json({ ok: false, error: '只能检查本职责范围内的教师' });
+    }
+  }
+
+  const nextData = data && typeof data === 'object' ? data : (existing.data ? JSON.parse(existing.data) : {});
+  const nextScores = scores !== undefined ? scores : (existing.score_data ? Object.values(JSON.parse(existing.score_data)) : null);
+  const { scoreTotal, scoreMax, scoreSnapshot } = computeScoreFields(tid, nextScores);
+
+  let cycle = existing.cycle_label;
+  if (template.cycle === 'periodic') {
+    cycle = cycle_label !== undefined ? String(cycle_label || '').trim() : weekLabel(lesson_date ?? existing.lesson_date);
+  } else {
+    cycle = null;
+  }
+
+  db.prepare(`UPDATE inspections SET
+    template_id = ?, class_id = ?, teacher_id = ?, subject = ?, day_of_week = ?, period_no = ?,
+    lesson_date = ?, cycle_label = ?, data = ?, score_data = ?, score_total = ?, score_max = ?
+    WHERE id = ?`)
+    .run(tid,
+      class_id !== undefined ? (class_id ? Number(class_id) : null) : existing.class_id,
+      teacher_id !== undefined ? (teacher_id ? Number(teacher_id) : null) : existing.teacher_id,
+      subject !== undefined ? subject : existing.subject,
+      day_of_week !== undefined ? (day_of_week != null ? Number(day_of_week) : null) : existing.day_of_week,
+      period_no !== undefined ? (period_no != null ? Number(period_no) : null) : existing.period_no,
+      lesson_date !== undefined ? lesson_date : existing.lesson_date,
+      cycle,
+      JSON.stringify(nextData), scoreSnapshot, scoreTotal, scoreMax,
+      id);
+  logAudit(req.user.id, 'update_inspection', `inspections:${id}`, `修改检查记录（类型 ${template.name}）`);
+  return res.json({ ok: true, data: { id } });
+});
+
+// 删除检查记录（与提交同权限；非管理员按作用域限定教师）。级联删除照片文件。
+router.delete('/:id', roleRequired(...INSPECTION_SUBMIT_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const inspection = db.prepare('SELECT * FROM inspections WHERE id = ?').get(id);
+  if (!inspection) return res.status(404).json({ ok: false, error: '检查记录不存在' });
+
+  if (!ADMIN_ROLES.includes(req.user.role) && inspection.teacher_id) {
+    const scope = visibleTeacherIds(req.user);
+    if (scope && !scope.includes(Number(inspection.teacher_id))) {
+      return res.status(403).json({ ok: false, error: '只能删除本职责范围内的教师记录' });
+    }
+  }
+
+  // 级联删除照片文件
+  const photos = db.prepare('SELECT stored_path FROM inspection_photos WHERE inspection_id = ?').all(id);
+  for (const p of photos) {
+    try { fs.unlinkSync(path.join(UPLOAD_DIR, p.stored_path)); } catch { /* 忽略 */ }
+  }
+  db.prepare('DELETE FROM inspection_photos WHERE inspection_id = ?').run(id);
+  db.prepare('DELETE FROM inspections WHERE id = ?').run(id);
+  logAudit(req.user.id, 'delete_inspection', `inspections:${id}`, `删除检查记录`);
+  return res.json({ ok: true, data: { id } });
 });
 
 // 单条详情（路由放末尾，避免抢在 /groups /stats 等单段路径之前）

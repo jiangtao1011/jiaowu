@@ -330,6 +330,11 @@ router.post('/instance/:id/adjust', roleRequired(...ADMIN_ROLES), (req, res) => 
   if (!r) return res.status(404).json({ ok: false, error: '上课记录不存在' });
   const { change_type, to_teacher_id, note } = req.body || {};
 
+  // 检查：已停课/已调整的记录不能再调整，防止「停课后还能代课」等误操作
+  if (r.cancelled) {
+    return res.status(400).json({ ok: false, error: '该课已停课或已调整，无法再次调整' });
+  }
+
   if (change_type === '停课') {
     db.prepare('UPDATE lesson_instances SET cancelled = 1, note = ? WHERE id = ?').run(note ?? '停课', id);
     logAudit(req.user.id, 'cancel_instance', `lesson_instances:${id}`, `停课 ${r.date}`);
@@ -467,7 +472,9 @@ router.get('/summary', (req, res) => {
       });
     }
     const e = map.get(r.teacher_id);
-    e[r.period_type] = (e[r.period_type] || 0) + 1;
+    // 节假补课正课单独成列（按课酬标准计酬），与周一至周五正课（按系数折算）分开展示
+    const col = r.term === '节假补课' ? '节假补课' : r.period_type;
+    e[col] = (e[col] || 0) + 1;
     e.total += 1;
     e.weighted_total += weighted;
     e.pay_total += pay;
@@ -481,8 +488,8 @@ router.get('/summary', (req, res) => {
     weighted_total: Math.round(e.weighted_total * 100) / 100,
     pay_total: Math.round(e.pay_total * 100) / 100,
   }));
-  // 汇总表列：折算类型字典 + 正课 + 按次计酬类型字典
-  const types = [...ctx.periodTypeCoefs.keys(), '正课', ...ctx.periodTypePays.keys()];
+  // 汇总表列：折算类型字典 + 正课 + 节假补课 + 按次计酬类型字典
+  const types = [...ctx.periodTypeCoefs.keys(), '正课', '节假补课', ...ctx.periodTypePays.keys()];
   return res.json({ ok: true, data, types });
 });
 
@@ -534,7 +541,53 @@ router.delete('/type-pays/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
     });
   }
   db.prepare('DELETE FROM period_type_pays WHERE id = ?').run(id);
+  db.prepare('DELETE FROM period_type_grade_pays WHERE period_type = ?').run(row.name);
   logAudit(req.user.id, 'delete_type_pay', `period_type_pays:${id}`, `删除按次计酬类型 ${row.name}`);
+  return res.json({ ok: true, data: { deleted: true } });
+});
+
+// ===== 按次计酬类型的分年级覆盖价（如晚自习按年级分价） =====
+
+// 列出所有分年级覆盖价（含类型基准价，供前端展示「覆盖后实际单价」）
+router.get('/type-pays/grade-pays', (req, res) => {
+  const rows = db.prepare('SELECT id, period_type, grade, pay FROM period_type_grade_pays ORDER BY period_type, grade').all();
+  const base = Object.fromEntries(
+    db.prepare('SELECT name, pay FROM period_type_pays').all().map((r) => [r.name, r.pay])
+  );
+  return res.json({ ok: true, data: rows.map((r) => ({ ...r, base_pay: base[r.period_type] ?? null })) });
+});
+
+// 批量保存分年级覆盖价（按 id 更新，无 id 新增；period_type/grade 为空则跳过）
+router.put('/type-pays/grade-pays', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const { items = [] } = req.body || {};
+  if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items 需为数组' });
+  const up = db.prepare('UPDATE period_type_grade_pays SET period_type = ?, grade = ?, pay = ? WHERE id = ?');
+  const ins = db.prepare('INSERT INTO period_type_grade_pays (period_type, grade, pay) VALUES (?,?,?)');
+  const existsId = db.prepare('SELECT id FROM period_type_grade_pays WHERE id = ?');
+  for (const it of items) {
+    const periodType = String(it.period_type || '').trim();
+    const grade = String(it.grade || '').trim();
+    const pay = Number(it.pay);
+    if (!periodType || !grade || !Number.isFinite(pay)) continue;
+    if (it.id != null && existsId.get(it.id)) up.run(periodType, grade, pay, Number(it.id));
+    else {
+      // 同类型+同年级则更新（避免重复）
+      const dup = db.prepare('SELECT id FROM period_type_grade_pays WHERE period_type = ? AND grade = ?').get(periodType, grade);
+      if (dup) up.run(periodType, grade, pay, dup.id);
+      else ins.run(periodType, grade, pay);
+    }
+  }
+  logAudit(req.user.id, 'update_grade_pays', 'period_type_grade_pays', '更新按次计酬分年级覆盖价');
+  return res.json({ ok: true, data: { updated: true } });
+});
+
+// 删除某条分年级覆盖价
+router.delete('/type-pays/grade-pays/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const row = db.prepare('SELECT * FROM period_type_grade_pays WHERE id = ?').get(id);
+  if (!row) return res.status(404).json({ ok: false, error: '分年级价记录不存在' });
+  db.prepare('DELETE FROM period_type_grade_pays WHERE id = ?').run(id);
+  logAudit(req.user.id, 'delete_grade_pay', `period_type_grade_pays:${id}`, `删除 ${row.period_type} ${row.grade} 分年级价`);
   return res.json({ ok: true, data: { deleted: true } });
 });
 
@@ -696,6 +749,10 @@ router.get('/financial-report', roleRequired(...ADMIN_ROLES), (req, res) => {
     [],
     ['二、按次计酬类型（元 = 单价 × 节数）'],
     ...typeColumns.map((t) => [`· ${t}：${ctx.periodTypePays.get(t) ?? 0} 元/节`]),
+    ...typeColumns.flatMap((t) => {
+      const gp = ctx.periodTypeGradePays.get(t);
+      return gp && gp.size ? [[`· ${t} 分年级：` + [...gp.entries()].map(([g, p]) => `${g}${p}元`).join('，')]] : [];
+    }),
     [],
     ['三、非规时段课酬（元 = 节数 × 教师课酬标准）'],
     ['· 各教师课酬标准见「教师信息」模块的 pay_standard 字段（按时段分档）。'],
@@ -1003,6 +1060,10 @@ router.get('/financial-pack', roleRequired(...ADMIN_ROLES), (req, res) => {
     [],
     ['二、按次计酬类型（元 = 单价 × 节数）'],
     ...fin.typeColumns.map((t) => [`· ${t}：${ctx.periodTypePays.get(t) ?? 0} 元/节`]),
+    ...fin.typeColumns.flatMap((t) => {
+      const gp = ctx.periodTypeGradePays.get(t);
+      return gp && gp.size ? [[`· ${t} 分年级：` + [...gp.entries()].map(([g, p]) => `${g}${p}元`).join('，')]] : [];
+    }),
     [],
     ['三、非规时段课酬（元 = 节数 × 教师课酬标准）'],
     ['· 各教师课酬标准见「教师信息」模块（按时段分档）。'],

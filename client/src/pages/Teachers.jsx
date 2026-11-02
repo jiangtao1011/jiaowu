@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const PAY_KEYS = ['夏令营', '冬令营', '全员夏令营', '全员冬令营', '节假补课'];
 const EMPTY = { name: '', phone: '', subject: '', pay_standard: {} };
@@ -7,7 +8,7 @@ const EMPTY = { name: '', phone: '', subject: '', pay_standard: {} };
 export default function Teachers() {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
+  const toast = useToast();
   const [keyword, setKeyword] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [form, setForm] = useState(EMPTY);
@@ -25,12 +26,12 @@ export default function Teachers() {
 
   const parsePay = (s) => { try { return JSON.parse(s) || {}; } catch { return {}; } };
 
-  const openAdd = () => { setEditingId(null); setForm(EMPTY); setError(''); setMsg(''); setShowForm(true); };
+  const openAdd = () => { setEditingId(null); setForm(EMPTY); setError(''); setShowForm(true); };
 
   const startEdit = (t) => {
     setEditingId(t.id);
     setForm({ name: t.name, phone: t.phone || '', subject: t.subject || '', pay_standard: parsePay(t.pay_standard) });
-    setError(''); setMsg('');
+    setError('');
     setShowForm(true);
   };
 
@@ -44,17 +45,18 @@ export default function Teachers() {
       const body = { name: form.name, phone: form.phone, subject: form.subject, pay_standard };
       if (editingId) await api.patch(`/teachers/${editingId}`, body);
       else await api.post('/teachers', body);
-      setMsg(editingId ? '教师信息已更新' : '教师已新增');
+      toast.success(editingId ? '教师信息已更新' : '教师已新增');
       closeForm();
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const toggleActive = async (t) => {
     try {
       await api.patch(`/teachers/${t.id}`, { active: !t.active });
+      toast.success(t.active ? '已停用' : '已启用');
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const downloadTemplate = async () => {
@@ -71,17 +73,16 @@ export default function Teachers() {
   };
 
   const importFile = async () => {
-    if (!file) return setError('请先选择教师文件（.xlsx / .csv）');
-    setError(''); setMsg('');
+    if (!file) return toast.error('请先选择教师文件（.xlsx / .csv）');
     const fd = new FormData();
     fd.append('file', file);
     try {
       const { inserted, skipped, errors } = (await api.post('/teachers/import', fd)).data.data;
-      setMsg(`导入成功 ${inserted} 条${skipped ? `，跳过已存在 ${skipped} 条` : ''}${errors.length ? `，${errors.length} 条未导入` : ''}`);
+      toast.success(`导入成功 ${inserted} 条${skipped ? `，跳过已存在 ${skipped} 条` : ''}${errors.length ? `，${errors.length} 条未导入` : ''}`);
       setFile(null);
       setShowImport(false);
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const filtered = rows.filter((t) => {
@@ -104,7 +105,6 @@ export default function Teachers() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       <div className="card">
         <div className="toolbar" style={{ marginBottom: 14 }}>
@@ -120,7 +120,7 @@ export default function Teachers() {
             <option value="停用">停用</option>
           </select>
           <span className="spacer" />
-          <button className="btn" onClick={() => { setError(''); setMsg(''); setFile(null); setShowImport(true); }}>批量导入</button>
+          <button className="btn" onClick={() => { setError(''); setFile(null); setShowImport(true); }}>批量导入</button>
           <button className="btn primary" onClick={openAdd}>新增教师</button>
         </div>
 

@@ -182,4 +182,31 @@ router.patch('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
   return res.json({ ok: true, data: { id } });
 });
 
+// 删除班级（仅管理员）。有业务引用时拒绝（避免历史课表/计酬/申报突变），
+// 无引用时清理其作为走班的合班成员记录后删除。
+router.delete('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const target = db.prepare('SELECT * FROM classes WHERE id = ?').get(id);
+  if (!target) return res.status(404).json({ ok: false, error: '班级不存在' });
+
+  const sched = db.prepare('SELECT COUNT(*) n FROM schedules WHERE class_id = ?').get(id).n;
+  const inst = db.prepare('SELECT COUNT(*) n FROM lesson_instances WHERE class_id = ?').get(id).n;
+  const qna = db.prepare('SELECT COUNT(*) n FROM qna_lessons WHERE class_id = ?').get(id).n;
+  const child = db.prepare('SELECT COUNT(*) n FROM classes WHERE parent_id = ?').get(id).n;
+  // 作为「走班合班成员」被引用（删除会导致合班缺班）
+  const memberRef = db.prepare('SELECT COUNT(*) n FROM class_members WHERE member_class_id = ?').get(id).n;
+  const used = sched + inst + qna + child + memberRef;
+  if (used > 0) {
+    return res.status(400).json({
+      ok: false,
+      error: `「${target.name}」已被 ${used} 条记录引用（课表 ${sched}、上课记录 ${inst}、申报 ${qna}、子分层 ${child}、合班成员 ${memberRef}），无法删除。请先处理这些引用，或改名为「停用」标记。`,
+    });
+  }
+  // 清理该班作为走班时的合班成员（无业务副作用，仅结构数据）
+  db.prepare('DELETE FROM class_members WHERE class_id = ?').run(id);
+  db.prepare('DELETE FROM classes WHERE id = ?').run(id);
+  logAudit(req.user.id, 'delete_class', `classes:${id}`, `删除班级 ${target.name}`);
+  return res.json({ ok: true, data: { id } });
+});
+
 export default router;

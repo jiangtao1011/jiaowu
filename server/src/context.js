@@ -32,8 +32,10 @@ export function computePay(ctx, r) {
     return { weighted: count * (ctx.periodTypeCoefs.get(r.period_type) ?? 0.5), pay: 0 };
   }
   if (ctx.periodTypePays.has(r.period_type)) {
-    // 按次计酬类型（晚自习/答疑/晚练/自定义）：折算 0，课酬 = 单价 × 节数
-    return { weighted: 0, pay: count * (ctx.periodTypePays.get(r.period_type) ?? 0) };
+    // 按次计酬类型（晚自习/答疑/晚练/自定义）：折算 0，课酬 = 单价 × 节数。
+    // 单价优先取「该类型 × 该年级」的覆盖价，无覆盖则回退类型基准价。
+    const pay = ctx.gradePayOf(r.period_type, ctx.gradeOf(r.class_id)) ?? ctx.periodTypePays.get(r.period_type) ?? 0;
+    return { weighted: 0, pay: count * pay };
   }
   if (r.term !== '常规') {
     // 非规时段（夏/冬令营等）：折算 = 节数，课酬 = 节数 × 教师课酬标准
@@ -47,7 +49,7 @@ export function computePay(ctx, r) {
 // 加载班级层级 + 系数表，供课表展示与统计共用
 export function loadContext() {
   const classMap = new Map(
-    db.prepare('SELECT id, type, parent_id, student_count, subject FROM classes').all()
+    db.prepare('SELECT id, type, parent_id, student_count, subject, grade FROM classes').all()
       .map((c) => [c.id, c])
   );
   const memberSize = new Map();
@@ -68,6 +70,12 @@ export function loadContext() {
     db.prepare('SELECT name, pay FROM period_type_pays').all()
       .map((r) => [r.name, r.pay])
   );
+  // 按次计酬类型的分年级覆盖价：类型名 -> (年级 -> 单价)
+  const periodTypeGradePays = new Map();
+  for (const r of db.prepare('SELECT period_type, grade, pay FROM period_type_grade_pays').all()) {
+    if (!periodTypeGradePays.has(r.period_type)) periodTypeGradePays.set(r.period_type, new Map());
+    periodTypeGradePays.get(r.period_type).set(r.grade, r.pay);
+  }
   // 折算类型字典：类型名 -> 折算系数（早自习等）
   const periodTypeCoefs = new Map(
     db.prepare('SELECT name, coefficient FROM period_type_coefficients').all()
@@ -81,6 +89,16 @@ export function loadContext() {
     periodSettings,
     periodTypePays,
     periodTypeCoefs,
+    periodTypeGradePays,
+    // 某班级所属年级（班级不存在或无年级则返回 null）
+    gradeOf(cid) {
+      return classMap.get(cid)?.grade ?? null;
+    },
+    // 某按次计酬类型在某年级的覆盖单价；无覆盖返回 undefined（回退基准价）
+    gradePayOf(periodType, grade) {
+      if (grade == null) return undefined;
+      return periodTypeGradePays.get(periodType)?.get(grade);
+    },
     // 统计班额：走班默认=合班成员班额之和，若手动填了人数（student_count>0）则以手动值为准；其余=自身班额
     effSize(cid) {
       const c = classMap.get(cid);

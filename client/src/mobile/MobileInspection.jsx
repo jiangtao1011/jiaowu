@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const GRADE_ORDER = ['高一', '高二', '高三', '初一', '初二', '初三'];
@@ -17,6 +18,7 @@ function dowOf(dateStr) {
 }
 
 export default function MobileInspection() {
+  const toast = useToast();
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const isAdmin = ['admin', '教务员', '教务处'].includes(user.role);
   const canSubmit = ['admin', '教务员', '教务处', '教研组长', '备课组长'].includes(user.role);
@@ -25,7 +27,6 @@ export default function MobileInspection() {
   const [classes, setClasses] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   // 表单
@@ -184,12 +185,12 @@ export default function MobileInspection() {
   };
 
   const submit = async () => {
-    setError(''); setMsg('');
-    if (!typeId) return setError('请选择检查类型');
-    if (!date) return setError('请选择日期');
-    if (linkType && !classId) return setError('请选择班级');
-    if (linkType && !periodNo) return setError('请选择节次');
-    if (!linkType && !teacherId) return setError('请选择被检查教师');
+    setError('');
+    if (!typeId) return toast.error('请选择检查类型');
+    if (!date) return toast.error('请选择日期');
+    if (linkType && !classId) return toast.error('请选择班级');
+    if (linkType && !periodNo) return toast.error('请选择节次');
+    if (!linkType && !teacherId) return toast.error('请选择被检查教师');
     setSubmitting(true);
 
     const scoreArr = typeDims.map((d) => ({ name: d.name, score: scores[d.name] ?? 0 }));
@@ -214,10 +215,10 @@ export default function MobileInspection() {
         await api.post(`/inspections/${id}/photos`, fd);
       }
 
-      setMsg('检查已提交');
+      toast.success('检查已提交');
       setClassId(''); setPeriodNo(''); setTeacherId(''); setSubject(''); setLesson(null);
       setValues({}); setScores({}); setPhotos([]); setCycleLabel(''); setTeacherQuery('');
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
     setSubmitting(false);
   };
 
@@ -233,7 +234,6 @@ export default function MobileInspection() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       {/* 检查类型 */}
       <div className="mcard">

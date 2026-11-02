@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const ROLES = ['教务员', '教务处', '教研组长', '备课组长', '教师'];
 
@@ -7,6 +8,7 @@ export default function UploadTasks() {
   const [tasks, setTasks] = useState([]);
   const [users, setUsers] = useState([]);
   const [error, setError] = useState('');
+  const toast = useToast();
   const [form, setForm] = useState({ title: '', description: '', target_role: '教师', requirement: '', deadline: '', allow_file_types: '' });
   const [openTask, setOpenTask] = useState(null);
   const [files, setFiles] = useState([]);
@@ -22,29 +24,29 @@ export default function UploadTasks() {
 
   const submit = async (e) => {
     e.preventDefault();
-    setError('');
     try {
       await api.post('/upload-tasks', { ...form, deadline: form.deadline || null });
+      toast.success('任务已创建');
       setForm({ title: '', description: '', target_role: '教师', requirement: '', deadline: '', allow_file_types: '' });
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const openFiles = async (task) => {
     setOpenTask(task);
-    try { setFiles((await api.get(`/upload-tasks/${task.id}/files`)).data.data); } catch (e) { setError(errMsg(e)); }
+    try { setFiles((await api.get(`/upload-tasks/${task.id}/files`)).data.data); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const upload = async () => {
     if (!file) return;
-    setError('');
     try {
       const fd = new FormData();
       fd.append('file', file);
       await api.post(`/upload-tasks/${openTask.id}/files`, fd);
+      toast.success('已上传');
       setFile(null);
       openFiles(openTask);
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const download = (fileId, filename) => {

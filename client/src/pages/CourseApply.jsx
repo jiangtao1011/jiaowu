@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 // 手机端课程填报页（分享链接 /course/:token 打开，需登录）
 export default function CourseApply() {
@@ -8,7 +9,7 @@ export default function CourseApply() {
   const [course, setCourse] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
+  const toast = useToast();
   const [values, setValues] = useState({}); // 自定义字段值
   const [date, setDate] = useState(() => {
     const d = new Date();
@@ -32,23 +33,22 @@ export default function CourseApply() {
   const setVal = (key, v) => setValues((prev) => ({ ...prev, [key]: v }));
 
   const submit = async () => {
-    setError(''); setMsg('');
     // 必填字段校验
     for (const f of course.form_schema || []) {
       if (f.required && !String(values[f.key] ?? '').trim()) {
-        return setError(`请填写「${f.label}」`);
+        return toast.error(`请填写「${f.label}」`);
       }
     }
-    if (!date) return setError('请选择上课日期');
+    if (!date) return toast.error('请选择上课日期');
     try {
       await api.post(`/applications/tasks/${course.id}/apply`, {
         form_data: values,
         period_count: periodCount,
         date,
       });
-      setMsg('申报已提交，待教务处审核');
+      toast.success('申报已提交，待教务处审核');
       setValues({});
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   if (loading) return <div className="mapply"><div className="mapply-loading">加载中…</div></div>;
@@ -69,7 +69,6 @@ export default function CourseApply() {
       </header>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       {course && (
         <div className="mapply-form">

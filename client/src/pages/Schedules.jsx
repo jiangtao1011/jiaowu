@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const TERMS = ['常规', '夏令营', '冬令营', '全员夏令营', '全员冬令营', '节假补课'];
@@ -21,12 +22,38 @@ const layerToken = (name) => {
 // 去掉科目尾部的层标识
 const baseSubject = (s) => (s || '').replace(/[A-Za-z0-9一二三四五六七八九十]+层$/, '').trim();
 
+// 通知单打印版式（仅打印时可见）
+function PrintSheet({ c, rangeLabel }) {
+  const timeLabel = c.source === 'instance'
+    ? `${c.date || ''} ${c.period_no ? `第 ${c.period_no} 节` : ''}`.trim()
+    : `${c.day_of_week ? `星期${'一二三四五六日'[c.day_of_week - 1]}` : ''} ${c.period_no ? `第 ${c.period_no} 节` : ''}`.trim();
+  const range = rangeLabel(c);
+  return (
+    <div className="print-sheet">
+      <h1 className="ps-title">{c.change_type}通知单</h1>
+      <div className="ps-meta">编号：{String(c.id).padStart(4, '0')} · 签发日期：{String(c.created_at || '').slice(0, 10)}</div>
+      <table className="ps-table">
+        <tbody>
+          <tr><th>班级</th><td>{c.class_grade ? `${c.class_grade} · ` : ''}{c.class_name || '—'}</td><th>课程</th><td>{c.subject || '—'}</td></tr>
+          <tr><th>时间</th><td>{timeLabel || '—'}</td><th>类型</th><td>{c.change_type}</td></tr>
+          <tr><th>原教师</th><td>{c.from_teacher_name || '—'}</td><th>{c.change_type === '停课' ? '状态' : '新教师'}</th><td>{c.change_type === '停课' ? '停课' : c.to_teacher_name || '—'}</td></tr>
+          <tr><th>生效日期</th><td>{range}</td><th>原因</th><td>{c.reason || '—'}</td></tr>
+        </tbody>
+      </table>
+      <div className="ps-foot">
+        <div>签发人：{c.operator_name || '教务处'}</div>
+        <div>（本通知单一式一份，交相关教师留存）</div>
+      </div>
+    </div>
+  );
+}
+
 export default function Schedules() {
+  const toast = useToast();
   const [rows, setRows] = useState([]);
   const [classes, setClasses] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
   const [classId, setClassId] = useState('');
   const [grade, setGrade] = useState('');
   const [term, setTerm] = useState('');
@@ -41,6 +68,9 @@ export default function Schedules() {
   const [makeupSet, setMakeupSet] = useState(''); // 补课课表套号（1/2/3…，导入节假补课时标记第几套）
   const [view, setView] = useState('grid'); // 'grid' 课表视图 | 'makeup' 补课课表列表
   const [makeupRows, setMakeupRows] = useState([]); // 补课课表（term=节假补课）明细
+  const [showImport, setShowImport] = useState(false); // 导入课表弹窗
+  const [changes, setChanges] = useState([]); // 课务调整记录
+  const [printChange, setPrintChange] = useState(null); // 打印通知单对象
 
   const load = async () => {
     try {
@@ -49,6 +79,22 @@ export default function Schedules() {
     } catch (e) { setError(errMsg(e)); }
   };
   useEffect(() => { load(); }, []);
+
+  const loadChanges = async () => {
+    try {
+      setChanges((await api.get('/schedules/changes')).data.data);
+    } catch (e) { setError(errMsg(e)); }
+  };
+  useEffect(() => { if (view === 'changes') loadChanges(); }, [view]);
+
+  const revertChange = async (c) => {
+    if (!(await toast.confirm(`确定撤回这条「${c.change_type}」调整？撤销后课表恢复原状。`, { danger: true }))) return;
+    try {
+      await api.post(`/schedules/changes/${c.id}/revert`);
+      toast.success('已撤回该调整');
+      loadChanges();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const loadMakeup = async () => {
     try {
@@ -102,10 +148,9 @@ export default function Schedules() {
   };
 
   const importFile = async () => {
-    if (!file) return setError('请先选择课表文件（.xlsx / .csv）');
-    if (scope !== 'append' && !effFrom) return setError('替换导入需指定生效日期');
-    if (effFrom && effTo && effFrom > effTo) return setError('生效日期不能晚于结束日期');
-    setError(''); setMsg('');
+    if (!file) return toast.error('请先选择课表文件（.xlsx / .csv）');
+    if (scope !== 'append' && !effFrom) return toast.error('替换导入需指定生效日期');
+    if (effFrom && effTo && effFrom > effTo) return toast.error('生效日期不能晚于结束日期');
     const fd = new FormData();
     fd.append('file', file);
     fd.append('scope', scope);
@@ -119,10 +164,12 @@ export default function Schedules() {
       const { inserted, errors } = res.data.data;
       const range = effFrom ? `${effFrom}${effTo ? '~' + effTo : ' 起'}` : '';
       const mode = scope === 'append' ? `追加${range ? '（' + range + '）' : ''}` : `替换（${scope === 'all' ? '全校' : scope === 'grade' ? '年级 ' + scopeGrade : '时段 ' + scopeTerm}，${range}）`;
-      setMsg(`导入成功 ${inserted} 条（${mode}）${errors.length ? `，${errors.length} 条未导入` : ''}`);
+      if (errors.length) toast.warn(`导入成功 ${inserted} 条（${mode}），${errors.length} 条未导入`);
+      else toast.success(`导入成功 ${inserted} 条（${mode}）`);
       setFile(null);
+      setShowImport(false);
       loadSchedules();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const onDrop = async (targetScheduleId) => {
@@ -133,21 +180,22 @@ export default function Schedules() {
       if (!src || !dst) { setDrag(null); return; }
       await api.post('/schedules/adjust', { schedule_id: drag, change_type: '调课', from_teacher_id: src.teacher_id, to_teacher_id: dst.teacher_id, reason: '拖拽调课' });
       await api.post('/schedules/adjust', { schedule_id: targetScheduleId, change_type: '调课', from_teacher_id: dst.teacher_id, to_teacher_id: src.teacher_id, reason: '拖拽调课' });
-      setMsg('调课成功');
+      toast.success('调课成功');
       setDrag(null);
       loadSchedules();
-    } catch (e) { setError(errMsg(e)); setDrag(null); }
+    } catch (e) { toast.error(errMsg(e)); setDrag(null); }
   };
 
   const substitute = async (scheduleId, teacherId, fromDate, toDate) => {
+    if (!(await toast.confirm('确定代课？', { danger: true }))) return;
     try {
       await api.post('/schedules/adjust', {
         schedule_id: scheduleId, change_type: '代课', from_teacher_id: null, to_teacher_id: teacherId,
         from_date: fromDate || null, to_date: toDate || null, reason: '代课',
       });
-      setMsg(toDate ? `代课成功（至 ${toDate}，之后自动换回）` : fromDate ? `代课成功（${fromDate} 起）` : '代课成功');
+      toast.success(toDate ? `代课成功（至 ${toDate}，之后自动换回）` : fromDate ? `代课成功（${fromDate} 起）` : '代课成功');
       loadSchedules();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   // 日期字符串 +1 天，用于把「结束日」转成左闭右开区间的「次日」
@@ -158,12 +206,27 @@ export default function Schedules() {
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   };
 
+  // 课务调整的生效区间显示（课表级用 from_date/to_date 左闭右开；按日级用 date）
+  const rangeLabel = (c) => {
+    if (c.source === 'instance') return c.date || '-';
+    if (!c.from_date) return '-';
+    if (!c.to_date) return `${c.from_date} 起`;
+    return `${c.from_date} ~ ${dayBefore(c.to_date)}`;
+  };
+  const dayBefore = (dateStr) => {
+    const d = new Date(`${dateStr}T00:00:00`);
+    d.setDate(d.getDate() - 1);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  };
+
   const stopClass = async (scheduleId) => {
+    if (!(await toast.confirm('确定停课？', { danger: true }))) return;
     try {
       await api.post('/schedules/adjust', { schedule_id: scheduleId, change_type: '停课', reason: '停课' });
-      setMsg('停课成功');
+      toast.success('停课成功');
       loadSchedules();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   // 格子里一门课的紧凑显示标签
@@ -352,48 +415,62 @@ export default function Schedules() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
-      <div className="card">
-        <h3>导入课表</h3>
-        <div className="toolbar">
-          <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setFile(e.target.files[0])} style={{ width: 'auto' }} />
-          <select value={scope} onChange={(e) => setScope(e.target.value)} style={{ width: 140 }}>
-            <option value="append">追加（不改旧表）</option>
-            <option value="all">整体替换（全校）</option>
-            <option value="grade">替换某年级</option>
-            <option value="term">替换某时段</option>
-          </select>
-          <input type="date" value={effFrom} onChange={(e) => setEffFrom(e.target.value)} title="生效日期（可选）" />
-          {effFrom && (
-            <input type="date" value={effTo} onChange={(e) => setEffTo(e.target.value)} title="结束日期（留空=不设终点）" />
-          )}
-          {scope === 'grade' && (
-            <select value={scopeGrade} onChange={(e) => setScopeGrade(e.target.value)} style={{ width: 130 }}>
-              <option value="">选择年级</option>
-              {grades.map((g) => <option key={g} value={g}>{g}</option>)}
-            </select>
-          )}
-          {scope === 'term' && (
-            <select value={scopeTerm} onChange={(e) => setScopeTerm(e.target.value)} style={{ width: 140 }}>
-              <option value="">选择时段</option>
-              {TERMS.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          )}
-          <input type="number" min="1" step="1" value={makeupSet} onChange={(e) => setMakeupSet(e.target.value)} placeholder="套号(补课)" style={{ width: 100 }} title="补课课表套号：导入「节假补课」时填 1/2/3 区分多套轮换" />
-          <button className="btn primary" onClick={importFile} disabled={!file}>导入</button>
-          <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
+      <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <h3 style={{ margin: 0 }}>课表</h3>
+          <p className="muted" style={{ margin: '4px 0 0' }}>表头：班级、星期、节次、类型、时段、课程名称、教师。按「课程名称」导入；班级填「班级信息」里的名称（行政班/分层/走班），系统自动识别上课形式并合并到对应班级课表。</p>
         </div>
-        <p className="muted" style={{ margin: 0 }}>表头：班级、星期、节次、类型、时段、课程名称、教师。按「课程名称」导入；班级填「班级信息」里的名称（行政班/分层/走班），系统自动识别上课形式并合并到对应班级课表。</p>
-        <p className="muted" style={{ margin: '4px 0 0' }}>「追加」保留旧课表不变，可选填生效/结束日期（如补课课表只在一段日期内生效）；「替换」从生效日期起关闭选定范围内旧课表、启用新表（旧数据仍保留，历史统计不受影响）。</p>
-        <p className="muted" style={{ margin: '4px 0 0' }}>补课课表轮换：时段选「节假补课」，每个文件导入为一套，在「套号」填 1/2/3（高一/高二两套、高三三套）；之后在校历把补课周日标「补课 + 用第几套」即可按套轮换、按节假日标准计酬。</p>
+        <button className="btn primary" onClick={() => setShowImport(true)}>导入课表</button>
       </div>
+
+      {showImport && (
+        <div className="modal-overlay" onClick={() => setShowImport(false)}>
+          <div className="modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>导入课表</h3>
+              <button className="btn ghost" onClick={() => setShowImport(false)}>关闭</button>
+            </div>
+            <div className="toolbar">
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setFile(e.target.files[0])} style={{ width: 'auto' }} />
+              <select value={scope} onChange={(e) => setScope(e.target.value)} style={{ width: 140 }}>
+                <option value="append">追加（不改旧表）</option>
+                <option value="all">整体替换（全校）</option>
+                <option value="grade">替换某年级</option>
+                <option value="term">替换某时段</option>
+              </select>
+              <input type="date" value={effFrom} onChange={(e) => setEffFrom(e.target.value)} title="生效日期（可选）" />
+              {effFrom && (
+                <input type="date" value={effTo} onChange={(e) => setEffTo(e.target.value)} title="结束日期（留空=不设终点）" />
+              )}
+              {scope === 'grade' && (
+                <select value={scopeGrade} onChange={(e) => setScopeGrade(e.target.value)} style={{ width: 130 }}>
+                  <option value="">选择年级</option>
+                  {grades.map((g) => <option key={g} value={g}>{g}</option>)}
+                </select>
+              )}
+              {scope === 'term' && (
+                <select value={scopeTerm} onChange={(e) => setScopeTerm(e.target.value)} style={{ width: 140 }}>
+                  <option value="">选择时段</option>
+                  {TERMS.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              )}
+              <input type="number" min="1" step="1" value={makeupSet} onChange={(e) => setMakeupSet(e.target.value)} placeholder="套号(补课)" style={{ width: 100 }} title="补课课表套号：导入「节假补课」时填 1/2/3 区分多套轮换" />
+              <button className="btn primary" onClick={importFile} disabled={!file}>导入</button>
+              <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
+            </div>
+            <p className="muted" style={{ margin: '12px 0 0' }}>「追加」保留旧课表不变，可选填生效/结束日期（如补课课表只在一段日期内生效）；「替换」从生效日期起关闭选定范围内旧课表、启用新表（旧数据仍保留，历史统计不受影响）。</p>
+            <p className="muted" style={{ margin: '4px 0 0' }}>补课课表轮换：时段选「节假补课」，每个文件导入为一套，在「套号」填 1/2/3（高一/高二两套、高三三套）；之后在校历把补课周日标「补课 + 用第几套」即可按套轮换、按节假日标准计酬。</p>
+          </div>
+        </div>
+      )}
 
       <div className="card">
         <div className="card-head">
           <div className="toolbar" style={{ marginBottom: 0 }}>
             <button className={`btn ${view === 'grid' ? 'primary' : ''}`} onClick={() => setView('grid')}>课表视图</button>
             <button className={`btn ${view === 'makeup' ? 'primary' : ''}`} onClick={() => setView('makeup')}>补课课表</button>
+            <button className={`btn ${view === 'changes' ? 'primary' : ''}`} onClick={() => setView('changes')}>课务调整</button>
           </div>
         </div>
 
@@ -424,7 +501,60 @@ export default function Schedules() {
             {renderMakeupGrids()}
           </>
         )}
+
+        {view === 'changes' && (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>类型</th><th>年级</th><th>班级</th><th>课程</th><th>日期/星期</th><th>节次</th><th>原教师</th><th>新教师</th><th>原因</th><th>操作人</th><th>时间</th><th>操作</th></tr>
+                </thead>
+                <tbody>
+                  {changes.map((c) => (
+                    <tr key={`${c.source}-${c.id}`}>
+                      <td><span className={`badge ${c.change_type === '代课' ? 'warn' : c.change_type === '停课' ? 'danger' : 'info'}`}>{c.change_type}{c.reverted ? '·已撤回' : ''}</span></td>
+                      <td>{c.class_grade || '-'}</td>
+                      <td>{c.class_name || '-'}</td>
+                      <td>{c.subject || '-'}</td>
+                      <td>{c.source === 'instance' ? (c.date || '-') : (c.day_of_week ? `周${'一二三四五六日'[c.day_of_week - 1]}` : '-')}</td>
+                      <td>{c.period_no ? `第${c.period_no}节` : '-'}</td>
+                      <td>{c.from_teacher_name || '-'}</td>
+                      <td>{c.to_teacher_name || '-'}</td>
+                      <td>{c.reason || '-'}</td>
+                      <td>{c.operator_name || '-'}</td>
+                      <td>{String(c.created_at || '').replace('T', ' ').slice(0, 16)}</td>
+                      <td>
+                        <div className="toolbar" style={{ marginBottom: 0, gap: 6 }}>
+                          <button className="btn sm" onClick={() => setPrintChange(c)}>打印通知单</button>
+                          {c.source === 'schedule' && !c.reverted && (
+                            <button className="btn sm" onClick={() => revertChange(c)}>撤回</button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {changes.length === 0 && <tr><td colSpan={12} className="muted">暂无课务调整记录</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
+
+      {printChange && (
+        <div className="modal-overlay" onClick={() => setPrintChange(null)}>
+          <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head no-print">
+              <h3>打印通知单</h3>
+              <div className="toolbar" style={{ marginBottom: 0, gap: 8 }}>
+                <button className="btn primary sm" onClick={() => window.print()}>打印</button>
+                <button className="btn ghost sm" onClick={() => setPrintChange(null)}>关闭</button>
+              </div>
+            </div>
+            <PrintSheet c={printChange} rangeLabel={rangeLabel} />
+          </div>
+        </div>
+      )}
 
       {detail && (
         <div className="modal-overlay" onClick={() => setDetail(null)}>

@@ -3,6 +3,7 @@ import multer from 'multer';
 import { db, logAudit } from '../db.js';
 import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
 import { loadContext, computePay } from '../context.js';
+import { createAdjustNotice } from './notices.js';
 import * as XLSX from 'xlsx';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
 
@@ -246,26 +247,36 @@ router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req
 function applyAdjust({ schedule_id, change_type, to_teacher_id, from_date, to_date, reason, operator_id }) {
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(Number(schedule_id));
   if (!schedule) return { error: '课表条目不存在' };
+
+  // 检查：该课是否已停课/已调整（effective_to 已非空 = 已关闭）。防止「停课后还能代课」等误操作。
+  if (schedule.effective_to != null) {
+    return { error: '该课已停课或已调整，请刷新课表后重试' };
+  }
+
   const effectiveDate = from_date || localDate();
   const endDate = to_date || null; // 左闭右开
+  const prevEffectiveTo = schedule.effective_to; // 撤销用：恢复原 effective_to
+  const insertedIds = [];
 
   if (change_type === '代课' || change_type === '调课') {
     if (!to_teacher_id) return { error: '请选择目标教师' };
     // 1. 关闭原教师记录：生效到 effectiveDate 为止
     db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?').run(effectiveDate, Number(schedule_id));
     // 2. 插入代课教师记录：[effectiveDate, endDate)
-    db.prepare(`
+    const r2 = db.prepare(`
       INSERT INTO schedules (class_id, teacher_id, subject, course_type, day_of_week, period_no, period_type, term, effective_from, effective_to, version)
       VALUES (?,?,?,?,?,?,?,?,?, ?, ?)`)
       .run(schedule.class_id, Number(to_teacher_id), schedule.subject, schedule.course_type ?? '行政班', schedule.day_of_week,
         schedule.period_no, schedule.period_type, schedule.term ?? '常规', effectiveDate, endDate, schedule.version + 1);
+    insertedIds.push(Number(r2.lastInsertRowid));
     // 3. 临时代课：再插入原教师「恢复段」记录 [endDate, 起)，版本再 +1
     if (endDate && endDate > effectiveDate) {
-      db.prepare(`
+      const r3 = db.prepare(`
         INSERT INTO schedules (class_id, teacher_id, subject, course_type, day_of_week, period_no, period_type, term, effective_from, effective_to, version)
         VALUES (?,?,?,?,?,?,?,?,?, NULL, ?)`)
         .run(schedule.class_id, schedule.teacher_id, schedule.subject, schedule.course_type ?? '行政班', schedule.day_of_week,
           schedule.period_no, schedule.period_type, schedule.term ?? '常规', endDate, schedule.version + 2);
+      insertedIds.push(Number(r3.lastInsertRowid));
     }
   } else if (change_type === '停课') {
     db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?').run(effectiveDate, Number(schedule_id));
@@ -273,11 +284,66 @@ function applyAdjust({ schedule_id, change_type, to_teacher_id, from_date, to_da
 
   const info = db
     .prepare(`INSERT INTO schedule_changes
-      (schedule_id, change_type, from_teacher_id, to_teacher_id, from_date, to_date, reason, operator_id)
-      VALUES (?,?,?,?,?,?,?,?)`)
-    .run(Number(schedule_id), change_type, schedule.teacher_id, to_teacher_id ?? null, effectiveDate, endDate, reason ?? null, operator_id);
+      (schedule_id, change_type, from_teacher_id, to_teacher_id, from_date, to_date, reason, operator_id, inserted_schedule_ids, prev_effective_to)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(Number(schedule_id), change_type, schedule.teacher_id, to_teacher_id ?? null, effectiveDate, endDate,
+      reason ?? null, operator_id, insertedIds.length ? JSON.stringify(insertedIds) : null, prevEffectiveTo ?? null);
   logAudit(operator_id, 'adjust_schedule', `schedules:${schedule_id}`, `${change_type}：${schedule.teacher_id} -> ${to_teacher_id ?? null}（${effectiveDate}${endDate ? '~' + endDate : ' 起'}）`);
+
+  // 定向通知相关教师（失败不影响调整本身）
+  notifyAdjust({ schedule, change_type, to_teacher_id, effectiveDate, endDate, reason, operator_id });
   return { change_id: Number(info.lastInsertRowid) };
+}
+
+// 课务调整后给相关教师发定向手机通知（原+新教师都通知；停课只通知原教师）
+function notifyAdjust({ schedule, change_type, to_teacher_id, effectiveDate, endDate, reason, operator_id }) {
+  try {
+    const cls = db.prepare('SELECT id, name FROM classes WHERE id = ?').get(schedule.class_id);
+    const className = cls?.name ?? '未知班级';
+    const fromName = db.prepare('SELECT name FROM teachers WHERE id = ?').get(schedule.teacher_id)?.name ?? '未知教师';
+    const toName = to_teacher_id ? (db.prepare('SELECT name FROM teachers WHERE id = ?').get(to_teacher_id)?.name ?? '未知教师') : null;
+    const operatorName = db.prepare('SELECT name FROM users WHERE id = ?').get(operator_id)?.name ?? '';
+    const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const dow = (schedule.day_of_week >= 1 && schedule.day_of_week <= 7) ? DAYS[schedule.day_of_week - 1] : '';
+    const period = schedule.period_no ? `第${schedule.period_no}节` : '';
+    const range = endDate ? `${effectiveDate} ~ ${dayBefore(endDate)}` : `${effectiveDate} 起`;
+
+    let title, content, targets;
+    if (change_type === '停课') {
+      title = `停课通知：${effectiveDate} ${className} ${schedule.subject || ''}`.trim();
+      content = [
+        `**停课通知**`,
+        ``,
+        `- 班级：${className}`,
+        `- 课程：${schedule.subject || '—'}`,
+        `- 时间：${dow} ${period}`.trim(),
+        `- 原教师：${fromName}`,
+        `- 停课日期：${effectiveDate}`,
+        reason ? `- 原因：${reason}` : '',
+        operatorName ? `\n签发：${operatorName}` : '',
+      ].filter((l) => l !== '').join('\n');
+      targets = [schedule.teacher_id];
+    } else {
+      title = `${change_type}通知：${effectiveDate} ${className} ${schedule.subject || ''}`.trim();
+      content = [
+        `**${change_type}通知**`,
+        ``,
+        `- 班级：${className}`,
+        `- 课程：${schedule.subject || '—'}`,
+        `- 时间：${dow} ${period}`.trim(),
+        `- 原教师：${fromName}`,
+        `- ${change_type === '调课' ? '调换至' : '代课教师'}：${toName}`,
+        `- 生效：${range}`,
+        reason ? `- 原因：${reason}` : '',
+        operatorName ? `\n签发：${operatorName}` : '',
+      ].filter((l) => l !== '').join('\n');
+      targets = [...new Set([schedule.teacher_id, Number(to_teacher_id)].filter((x) => x != null))];
+    }
+
+    if (targets.length) createAdjustNotice({ title, content, targetTeacherIds: targets, operatorId: operator_id });
+  } catch (e) {
+    console.error('[notifyAdjust] 通知发送失败', e);
+  }
 }
 
 // 调课/代课/停课 —— 快照模式：关闭旧记录 + 插入新记录，变化前统计不受影响
@@ -292,6 +358,34 @@ router.post('/adjust', roleRequired(...ADMIN_ROLES), (req, res) => {
   const result = applyAdjust({ schedule_id, change_type, to_teacher_id, from_date, to_date, reason, operator_id: req.user.id });
   if (result.error) return res.status(400).json({ ok: false, error: result.error });
   return res.json({ ok: true, data: { change_id: result.change_id } });
+});
+
+// 撤回一条课务调整（撤销误操作）：恢复原课表的 effective_to，删除本次插入的代课/恢复段记录。
+router.post('/changes/:id/revert', roleRequired(...ADMIN_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const ch = db.prepare('SELECT * FROM schedule_changes WHERE id = ?').get(id);
+  if (!ch) return res.status(404).json({ ok: false, error: '调整记录不存在' });
+  if (ch.reverted) return res.status(400).json({ ok: false, error: '该调整已撤回，不能重复撤回' });
+
+  const t = db.prepare('BEGIN'); t.run();
+  try {
+    // 1. 恢复原课表记录（把 effective_to 改回调整前的值）
+    db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?').run(ch.prev_effective_to ?? null, Number(ch.schedule_id));
+    // 2. 删除本次插入的段记录（代课段 + 恢复段）
+    if (ch.inserted_schedule_ids) {
+      const ids = JSON.parse(ch.inserted_schedule_ids);
+      const del = db.prepare('DELETE FROM schedules WHERE id = ?');
+      for (const sid of ids) del.run(Number(sid));
+    }
+    // 3. 标记已撤回
+    db.prepare('UPDATE schedule_changes SET reverted = 1 WHERE id = ?').run(id);
+    db.prepare('COMMIT').run();
+    logAudit(req.user.id, 'revert_schedule_change', `schedule_changes:${id}`, `撤回${ch.change_type}（原课 ${ch.schedule_id}）`);
+    return res.json({ ok: true, data: { id, reverted: true } });
+  } catch (e) {
+    db.prepare('ROLLBACK').run();
+    return res.status(500).json({ ok: false, error: '撤回失败：' + e.message });
+  }
 });
 
 // 汇总统计：按教师统计课时数，含早/晚自习。
@@ -358,7 +452,9 @@ router.get('/summary', (req, res) => {
       });
     }
     const e = map.get(r.teacher_id);
-    e[r.period_type] = (e[r.period_type] || 0) + r.count;
+    // 节假补课正课单独成列（按课酬标准计酬），与周一至周五正课（按系数折算）分开展示
+    const col = r.term === '节假补课' ? '节假补课' : r.period_type;
+    e[col] = (e[col] || 0) + r.count;
     e.total += r.count;
     e.weighted_total += weighted;
     e.pay_total += pay;
@@ -368,7 +464,7 @@ router.get('/summary', (req, res) => {
   }
 
   const data = [...map.values()].map((e) => ({ ...e, weighted_total: Math.round(e.weighted_total * 100) / 100, pay_total: Math.round(e.pay_total * 100) / 100 }));
-  const types = ['早自习', '正课', ...[...ctx.periodTypePays.keys()]];
+  const types = ['早自习', '正课', '节假补课', ...[...ctx.periodTypePays.keys()]];
   return res.json({ ok: true, data, types });
 });
 
@@ -418,27 +514,41 @@ router.get('/coefficients', (req, res) => {
 
 router.put('/coefficients', roleRequired(...ADMIN_ROLES), (req, res) => {
   const { subjects = [], bands = [], periods = {} } = req.body || {};
-  // 按 id 匹配更新（改名/改档位时不产生重复）；无 id 的新记录才插入
+  // 按 id 匹配更新（改名/改档位时不产生重复）；无 id 的新记录才插入。
+  // 全量同步：请求里没带的 id 视为「已删除」，从库中移除。
   const upSubj = db.prepare('UPDATE subject_coefficients SET subject = ?, coefficient = ? WHERE id = ?');
   const insSubj = db.prepare('INSERT INTO subject_coefficients (subject, coefficient) VALUES (?,?)');
   const existsSubjId = db.prepare('SELECT id FROM subject_coefficients WHERE id = ?');
+  const seenSubj = new Set();
   for (const s of subjects) {
     const name = String(s.subject || '').trim();
     const coef = Number(s.coefficient);
     if (!name || !Number.isFinite(coef)) continue;
-    if (s.id != null && existsSubjId.get(s.id)) upSubj.run(name, coef, Number(s.id));
-    else insSubj.run(name, coef);
+    if (s.id != null && existsSubjId.get(s.id)) { upSubj.run(name, coef, Number(s.id)); seenSubj.add(Number(s.id)); }
+    else { const info = insSubj.run(name, coef); seenSubj.add(Number(info.lastInsertRowid)); }
   }
+  // 删除未出现在请求中的学科系数（含重复科目清理后的残留）
+  const existingSubj = db.prepare('SELECT id FROM subject_coefficients').all().map((r) => r.id);
+  for (const id of existingSubj) {
+    if (!seenSubj.has(id)) db.prepare('DELETE FROM subject_coefficients WHERE id = ?').run(id);
+  }
+
   const upBand = db.prepare('UPDATE size_bands SET min_size = ?, coefficient = ? WHERE id = ?');
   const insBand = db.prepare('INSERT INTO size_bands (min_size, coefficient) VALUES (?,?)');
   const existsBandId = db.prepare('SELECT id FROM size_bands WHERE id = ?');
+  const seenBand = new Set();
   for (const b of bands) {
     const min = Number(b.min_size);
     const coef = Number(b.coefficient);
     if (!Number.isFinite(min) || !Number.isFinite(coef)) continue;
-    if (b.id != null && existsBandId.get(b.id)) upBand.run(min, coef, Number(b.id));
-    else insBand.run(min, coef);
+    if (b.id != null && existsBandId.get(b.id)) { upBand.run(min, coef, Number(b.id)); seenBand.add(Number(b.id)); }
+    else { const info = insBand.run(min, coef); seenBand.add(Number(info.lastInsertRowid)); }
   }
+  const existingBand = db.prepare('SELECT id FROM size_bands').all().map((r) => r.id);
+  for (const id of existingBand) {
+    if (!seenBand.has(id)) db.prepare('DELETE FROM size_bands WHERE id = ?').run(id);
+  }
+
   const upPeriod = db.prepare(`UPDATE period_settings SET value = ?, updated_at = datetime('now','localtime') WHERE key = ?`);
   const insPeriod = db.prepare('INSERT INTO period_settings (key, value) VALUES (?,?)');
   for (const [key, value] of Object.entries(periods)) {
@@ -527,16 +637,55 @@ router.delete('/requests/:id', (req, res) => {
   return res.json({ ok: true, data: { id } });
 });
 
-// 调课/代课记录
+// 课务调整列表（统一两类来源，供课务调整列表与打印通知单）：
+//  A) 课表级快照调整（schedule_changes）：代课/调课/停课，长期或区间。
+//  B) 按日上课记录的调整（lesson_instances）：source='adjust'=代课/调课；cancelled=1 AND note='停课'=停课。
+// 统一字段：{ id, source, change_type, class_name, class_grade, subject, date, day_of_week, period_no,
+//              from_teacher_name, to_teacher_name, reason, operator_name, created_at }。
 router.get('/changes', (req, res) => {
-  const rows = db.prepare(`
-    SELECT sc.*, u.name AS operator_name,
-           ft.name AS from_teacher_name, tt.name AS to_teacher_name
+  // A) 课表级调整
+  const scheduleRows = db.prepare(`
+    SELECT sc.id, 'schedule' AS source, sc.change_type, sc.reverted,
+           c.name AS class_name, c.grade AS class_grade, s.subject,
+           sc.from_date AS date, s.day_of_week, s.period_no,
+           ft.name AS from_teacher_name, tt.name AS to_teacher_name,
+           sc.reason, u.name AS operator_name, sc.created_at
     FROM schedule_changes sc
+    LEFT JOIN schedules s ON s.id = sc.schedule_id
+    LEFT JOIN classes c ON c.id = s.class_id
     LEFT JOIN users u ON u.id = sc.operator_id
     LEFT JOIN teachers ft ON ft.id = sc.from_teacher_id
-    LEFT JOIN teachers tt ON tt.id = sc.to_teacher_id
-    ORDER BY sc.created_at DESC`).all();
+    LEFT JOIN teachers tt ON tt.id = sc.to_teacher_id`).all();
+
+  // B) 按日上课记录调整
+  // 代课/调课：source='adjust'，原教师从 schedule_id → schedules.teacher_id 回查（parent 记录可能已被删）。
+  // 停课：cancelled=1 且 note 标记为停课。
+  const instanceRows = db.prepare(`
+    SELECT li.id, 'instance' AS source,
+           CASE WHEN li.cancelled = 1 THEN '停课'
+                WHEN li.note = '调课' THEN '调课'
+                ELSE '代课' END AS change_type,
+           c.name AS class_name, c.grade AS class_grade, li.subject,
+           li.date, s.day_of_week, li.period_no,
+           ot.name AS from_teacher_name, nt.name AS to_teacher_name,
+           li.note AS reason, NULL AS operator_name, li.created_at
+    FROM lesson_instances li
+    JOIN classes c ON c.id = li.class_id
+    LEFT JOIN schedules s ON s.id = li.schedule_id
+    LEFT JOIN teachers ot ON ot.id = s.teacher_id
+    LEFT JOIN teachers nt ON nt.id = li.teacher_id
+    WHERE li.source = 'adjust' OR (li.cancelled = 1 AND li.note LIKE '%停课%')`).all();
+
+  // 合并并按时间倒序 + 年级排序
+  const rows = [...scheduleRows, ...instanceRows].sort((a, b) => {
+    const ta = String(a.created_at || '');
+    const tb = String(b.created_at || '');
+    if (ta !== tb) return tb.localeCompare(ta);
+    const ga = a.class_grade || '';
+    const gb = b.class_grade || '';
+    return ga.localeCompare(gb, 'zh');
+  });
+
   return res.json({ ok: true, data: rows });
 });
 

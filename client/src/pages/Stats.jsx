@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const TERMS = ['常规', '夏令营', '冬令营', '全员夏令营', '全员冬令营', '节假补课'];
 const CAL_TYPES = ['上课', '放假', '停课', '补课', '调课'];
@@ -30,12 +31,15 @@ function Pagination({ page, total, pageSize = PAGE_SIZE, onPage }) {
 }
 
 export default function Stats() {
+  const toast = useToast();
   const [tab, setTab] = useState('payroll'); // payroll | config | other
+  const [configOpen, setConfigOpen] = useState(false); // 配置目录弹窗
+  const [cat, setCat] = useState(null); // 当前打开的配置分类：subject|band|typePay|typeCoef|gradePay
+  const [edit, setEdit] = useState(null); // 条目编辑弹窗 { key, index, data }
   const [summary, setSummary] = useState([]);
   const [changes, setChanges] = useState([]);
   const [coefs, setCoefs] = useState({ subjects: [], bands: [], periods: {} });
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
 
   // 口径：daily（按日，默认）| current（课表当前）| range（课表按时间段推算）
   const [mode, setMode] = useState('daily');
@@ -52,9 +56,10 @@ export default function Stats() {
   const [calForm, setCalForm] = useState({ date: '', from: '', to: '', grade: '', type: '上课', make_up_for: '', make_up_set: '', note: '' });
   const [regenerate, setRegenerate] = useState(true); // 生成上课记录时是否先清空区间内课表展开记录
   const [extraForm, setExtraForm] = useState({ class_id: '', teacher_id: '', subject: '', date: '', period_no: '1', period_type: '正课', term: '常规' });
-  const [instFilter, setInstFilter] = useState({ date: '', class_id: '', teacher_id: '' });
+  const [instFilter, setInstFilter] = useState({ date: '', class_id: '', teacher_id: '', status: '' });
   const [typePays, setTypePays] = useState([]); // 按次计酬类型字典
   const [typeCoefs, setTypeCoefs] = useState([]); // 折算类型字典
+  const [gradePays, setGradePays] = useState([]); // 按次计酬分年级覆盖价
   const [summaryTypes, setSummaryTypes] = useState([]); // 汇总表动态列
 
   // 分页 + 折叠
@@ -75,11 +80,13 @@ export default function Stats() {
         params.from_date = fromDate;
         params.to_date = toDate;
       }
-      const jobs = [api.get('/schedules/changes'), api.get('/schedules/coefficients'), api.get('/teachers'), api.get('/classes'), api.get('/stats/type-pays'), api.get('/stats/type-coefficients')];
+      const jobs = [api.get('/schedules/changes'), api.get('/schedules/coefficients'), api.get('/teachers'), api.get('/classes'), api.get('/stats/type-pays'), api.get('/stats/type-coefficients'), api.get('/stats/type-pays/grade-pays')];
       if (mode === 'daily') {
         const instParams = {};
         if (fromDate) instParams.from_date = fromDate;
         if (toDate) instParams.to_date = toDate;
+        // 拉全部（含已停课/已代课），前端按 cancelled 半透明显示并给「恢复」入口
+        instParams.cancelled = 'all';
         jobs.push(api.get('/stats/instances', { params: instParams }));
         jobs.push(api.get('/stats/calendar'));
         jobs.push(api.get('/stats/summary', { params: { from_date: fromDate, to_date: toDate, ...(term ? { term } : {}) } }));
@@ -87,13 +94,14 @@ export default function Stats() {
         jobs.push(api.get('/schedules/summary', { params }));
       }
 
-      const [ch, cf, tc, cc, tp, tco, ...rest] = await Promise.all(jobs);
+      const [ch, cf, tc, cc, tp, tco, tgp, ...rest] = await Promise.all(jobs);
       setChanges(ch.data.data);
       setCoefs(cf.data.data);
       setTeachers(tc.data.data);
       setClasses(cc.data.data);
       setTypePays(tp.data.data);
       setTypeCoefs(tco.data.data);
+      setGradePays(tgp.data.data);
       if (mode === 'daily') {
         const [ins, cal, sm] = rest;
         setInstances(ins.data.data);
@@ -111,125 +119,143 @@ export default function Stats() {
   useEffect(() => { load(); }, [mode, term, fromDate, toDate]);
   useEffect(() => { setInstPage(1); }, [instFilter]);
 
-  const saveCoefs = async () => {
-    setError(''); setMsg('');
-    try {
-      await api.put('/schedules/coefficients', { subjects: coefs.subjects, bands: coefs.bands, periods: coefs.periods });
-      setMsg('系数已保存');
-      load();
-    } catch (e) { setError(errMsg(e)); }
+  // ===== 统计配置（分类弹窗 + 条目编辑弹窗） =====
+  const CFG = {
+    subject: { title: '课时系数', desc: '正课折算 = 节数 ×（学科系数 + 班额系数）。', add: '添加学科' },
+    band: { title: '班额系数', desc: '按统计班额匹配最高分档：走班取合班人数之和，分层取分层班人数，行政班取本班人数。', add: '添加分档' },
+    typePay: { title: '按次计酬类型', desc: '晚自习 / 答疑 / 晚练 / 自定义，每节固定课酬，不参与学科/班额折算。', add: '添加类型' },
+    typeCoef: { title: '折算类型', desc: '早自习等，节数 × 系数折算，不计钱（供教学业绩考核用）。', add: '添加折算类型' },
+    gradePay: { title: '分年级课酬', desc: '类型 × 年级覆盖价，未设年级回退类型基准价；年级名需与班级信息一致。', add: '添加分年级价' },
+  };
+  const getArr = (k) => k === 'subject' ? coefs.subjects : k === 'band' ? coefs.bands : k === 'typePay' ? typePays : k === 'typeCoef' ? typeCoefs : gradePays;
+  const setArr = (k, arr) => {
+    if (k === 'subject') setCoefs((c) => ({ ...c, subjects: arr }));
+    else if (k === 'band') setCoefs((c) => ({ ...c, bands: arr }));
+    else if (k === 'typePay') setTypePays(arr);
+    else if (k === 'typeCoef') setTypeCoefs(arr);
+    else setGradePays(arr);
+  };
+  const editDefaults = (k) => k === 'subject' ? { subject: '', coefficient: 1.0 }
+    : k === 'band' ? { min_size: '', coefficient: 1.0 }
+    : k === 'typePay' ? { name: '', pay: 0 }
+    : k === 'typeCoef' ? { name: '', coefficient: 0.5 }
+    : { period_type: '', grade: '', pay: 0 };
+
+  // 分类级保存（显式传 arr，避免 React 状态异步导致读到旧值）
+  const persist = async (k, arr) => {
+    if (k === 'subject' || k === 'band') {
+      await api.put('/schedules/coefficients', {
+        subjects: k === 'subject' ? arr : coefs.subjects,
+        bands: k === 'band' ? arr : coefs.bands,
+        periods: coefs.periods,
+      });
+      toast.success('系数已保存');
+    } else if (k === 'typePay') {
+      await api.put('/stats/type-pays', { items: arr });
+      toast.success('类型已保存');
+    } else if (k === 'typeCoef') {
+      await api.put('/stats/type-coefficients', { items: arr });
+      toast.success('折算类型已保存');
+    } else {
+      await api.put('/stats/type-pays/grade-pays', { items: arr });
+      toast.success('分年级价已保存');
+    }
+    load();
   };
 
-  const setSubj = (i, v) => {
-    const next = [...coefs.subjects];
-    next[i] = { ...next[i], coefficient: v };
-    setCoefs({ ...coefs, subjects: next });
+  const openCat = (k) => { setCat(k); setEdit(null); };
+  const closeCat = () => { setCat(null); setEdit(null); };
+  const openEdit = (k, index) => {
+    setEdit({ key: k, index, data: { ...(index >= 0 ? getArr(k)[index] : editDefaults(k)) } });
   };
-  const addSubj = () => setCoefs({ ...coefs, subjects: [...coefs.subjects, { subject: '', coefficient: 1.0 }] });
-  const addBand = () => setCoefs({ ...coefs, bands: [...coefs.bands, { min_size: '', coefficient: 1.0 }] });
-
-  // ===== 按次计酬类型字典 =====
-  const setTypePay = (i, field, v) => {
-    const next = [...typePays];
-    next[i] = { ...next[i], [field]: v };
-    setTypePays(next);
+  const setData = (field, v) => setEdit((e) => ({ ...e, data: { ...e.data, [field]: v } }));
+  const saveEdit = async () => {
+    const { key, index, data } = edit;
+    const arr = [...getArr(key)];
+    if (index >= 0) arr[index] = data; else arr.push(data);
+    setArr(key, arr);
+    setEdit(null);
+    try { await persist(key, arr); } catch (e) { toast.error(errMsg(e)); }
   };
-  const addTypePay = () => setTypePays([...typePays, { name: '', pay: 0 }]);
-  const saveTypePays = async () => {
-    setError(''); setMsg('');
-    try {
-      await api.put('/stats/type-pays', { items: typePays });
-      setMsg('类型字典已保存');
-      load();
-    } catch (e) { setError(errMsg(e)); }
-  };
-  const delTypePay = async (id) => {
-    if (id == null) { setTypePays(typePays.filter((t) => t.id != null || t.name)); return; }
-    try { await api.delete(`/stats/type-pays/${id}`); setMsg('已删除该类型'); load(); } catch (e) { setError(errMsg(e)); }
-  };
-
-  // ===== 折算类型字典（早自习等，节数×系数） =====
-  const setTypeCoef = (i, field, v) => {
-    const next = [...typeCoefs];
-    next[i] = { ...next[i], [field]: v };
-    setTypeCoefs(next);
-  };
-  const addTypeCoef = () => setTypeCoefs([...typeCoefs, { name: '', coefficient: 0.5 }]);
-  const saveTypeCoefs = async () => {
-    setError(''); setMsg('');
-    try {
-      await api.put('/stats/type-coefficients', { items: typeCoefs });
-      setMsg('折算类型字典已保存');
-      load();
-    } catch (e) { setError(errMsg(e)); }
-  };
-  const delTypeCoef = async (id) => {
-    if (id == null) { setTypeCoefs(typeCoefs.filter((t) => t.id != null || t.name)); return; }
-    try { await api.delete(`/stats/type-coefficients/${id}`); setMsg('已删除该折算类型'); load(); } catch (e) { setError(errMsg(e)); }
+  const delItem = async (k, index) => {
+    const arr = getArr(k);
+    const item = arr[index];
+    if (!(await toast.confirm('确定删除该条目？', { danger: true }))) return;
+    // 系数类（无 id，随统一接口保存）
+    if (k === 'subject' || k === 'band') {
+      const next = arr.filter((_, i) => i !== index);
+      setArr(k, next);
+      try { await persist(k, next); } catch (e) { toast.error(errMsg(e)); }
+      return;
+    }
+    // 字典类：未保存草稿直接移除；已入库走后端删除（被引用时后端会拒绝并提示）
+    if (item?.id == null) { setArr(k, arr.filter((_, i) => i !== index)); return; }
+    const url = k === 'typePay' ? `/stats/type-pays/${item.id}` : k === 'typeCoef' ? `/stats/type-coefficients/${item.id}` : `/stats/type-pays/grade-pays/${item.id}`;
+    try { await api.delete(url); toast.success('已删除'); load(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   // ===== 校历 =====
   const addCal = async () => {
-    setError(''); setMsg('');
     const hasSingle = !!calForm.date;
     const hasRange = !!calForm.from && !!calForm.to;
-    if (!hasSingle && !hasRange) return setError('请选择单日或起止日期区间');
+    if (!hasSingle && !hasRange) return toast.error('请选择单日或起止日期区间');
     try {
       const item = { grade: calForm.grade || null, type: calForm.type, make_up_for: calForm.make_up_for || undefined, make_up_set: calForm.make_up_set || undefined, note: calForm.note || undefined };
       if (hasSingle) item.date = calForm.date;
       else { item.from = calForm.from; item.to = calForm.to; }
       await api.put('/stats/calendar', { items: [item] });
-      setMsg('校历已更新');
+      toast.success('校历已更新');
       setCalForm({ date: '', from: '', to: '', grade: '', type: '上课', make_up_for: '', make_up_set: '', note: '' });
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
   const delCal = async (date, grade) => {
-    try { await api.delete(`/stats/calendar/${date}`, { params: { grade: grade || undefined } }); setMsg('已删除该日校历'); load(); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('确定删除该日校历？', { danger: true }))) return;
+    try { await api.delete(`/stats/calendar/${date}`, { params: { grade: grade || undefined } }); toast.success('已删除该日校历'); load(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   // ===== 生成上课记录 =====
   const generate = async () => {
-    setError(''); setMsg('');
-    if (!fromDate || !toDate) return setError('请先选择开始和结束日期');
+    if (!fromDate || !toDate) return toast.error('请先选择开始和结束日期');
     try {
       const r = await api.post('/stats/generate', { from_date: fromDate, to_date: toDate, replace: regenerate });
       const { created, skipped, deleted } = r.data.data;
-      setMsg(`${regenerate ? `已清空 ${deleted} 条旧记录，` : ''}生成 ${created} 条上课记录（跳过 ${skipped} 条已有）`);
+      toast.success(`${regenerate ? `已清空 ${deleted} 条旧记录，` : ''}生成 ${created} 条上课记录（跳过 ${skipped} 条已有）`);
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   // ===== 上课记录操作 =====
   const adjustInstance = async (id, changeType, toTeacherId) => {
+    if (!(await toast.confirm(changeType === '停课' ? '确定停课？' : '确定代课？', { danger: true }))) return;
     try {
       await api.post(`/stats/instance/${id}/adjust`, { change_type: changeType, to_teacher_id: toTeacherId || null });
-      setMsg(changeType === '停课' ? '已停课' : '已代课');
+      toast.success(changeType === '停课' ? '已停课' : '已代课');
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
   const restoreInstance = async (id) => {
-    try { await api.post(`/stats/instance/${id}/restore`); setMsg('已恢复'); load(); } catch (e) { setError(errMsg(e)); }
+    try { await api.post(`/stats/instance/${id}/restore`); toast.success('已恢复'); load(); } catch (e) { toast.error(errMsg(e)); }
   };
   const deleteInstance = async (id) => {
-    try { await api.delete(`/stats/instance/${id}`); setMsg('已删除'); load(); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('确定删除该上课记录？', { danger: true }))) return;
+    try { await api.delete(`/stats/instance/${id}`); toast.success('已删除'); load(); } catch (e) { toast.error(errMsg(e)); }
   };
   const exportExcel = async () => {
-    setError('');
     try {
       const token = localStorage.getItem('edu_token');
       const params = new URLSearchParams();
       let url;
       let filename;
       if (mode === 'daily') {
-        if (!fromDate || !toDate) return setError('导出需先选择开始和结束日期');
+        if (!fromDate || !toDate) return toast.error('导出需先选择开始和结束日期');
         params.set('from_date', fromDate);
         params.set('to_date', toDate);
         if (term) params.set('term', term);
         url = '/api/stats/export';
         filename = `课酬明细_${fromDate}_${toDate}.xlsx`;
       } else if (mode === 'range') {
-        if (!fromDate || !toDate) return setError('导出需先选择开始和结束日期');
+        if (!fromDate || !toDate) return toast.error('导出需先选择开始和结束日期');
         params.set('from_date', fromDate);
         params.set('to_date', toDate);
         if (term) params.set('term', term);
@@ -241,77 +267,74 @@ export default function Stats() {
         filename = '课表明细.xlsx';
       }
       const r = await fetch(`${url}?${params}`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!r.ok) { setError('导出失败'); return; }
+      if (!r.ok) { toast.error('导出失败'); return; }
       const blob = await r.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = filename;
       a.click();
       URL.revokeObjectURL(a.href);
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
   const exportFinancialReport = async () => {
-    setError('');
     try {
-      if (mode !== 'daily') return setError('财务汇总表基于「按日统计」口径，请先切换到按日统计');
-      if (!fromDate || !toDate) return setError('导出需先选择开始和结束日期');
+      if (mode !== 'daily') return toast.error('财务汇总表基于「按日统计」口径，请先切换到按日统计');
+      if (!fromDate || !toDate) return toast.error('导出需先选择开始和结束日期');
       const token = localStorage.getItem('edu_token');
       const params = new URLSearchParams({ from_date: fromDate, to_date: toDate });
       if (term) params.set('term', term);
       const r = await fetch(`/api/stats/financial-report?${params}`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!r.ok) { setError('导出失败'); return; }
+      if (!r.ok) { toast.error('导出失败'); return; }
       const blob = await r.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = `课酬财务汇总表_${fromDate}_${toDate}.xlsx`;
       a.click();
       URL.revokeObjectURL(a.href);
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   // 导出「财务审核包」：单文件多 sheet（汇总 + 明细 + 勾稽 + 口径说明），一键给财务
   const exportFinancialPack = async () => {
-    setError('');
     try {
-      if (mode !== 'daily') return setError('财务审核包基于「按日统计」口径，请先切换到按日统计');
-      if (!fromDate || !toDate) return setError('导出需先选择开始和结束日期');
+      if (mode !== 'daily') return toast.error('财务审核包基于「按日统计」口径，请先切换到按日统计');
+      if (!fromDate || !toDate) return toast.error('导出需先选择开始和结束日期');
       const token = localStorage.getItem('edu_token');
       const params = new URLSearchParams({ from_date: fromDate, to_date: toDate });
       if (term) params.set('term', term);
       const r = await fetch(`/api/stats/financial-pack?${params}`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!r.ok) { setError('导出失败'); return; }
+      if (!r.ok) { toast.error('导出失败'); return; }
       const blob = await r.blob();
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = `课酬财务审核包_${fromDate}_${toDate}.xlsx`;
       a.click();
       URL.revokeObjectURL(a.href);
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   // 勾稽校验：调 /financial-check 拿对账结果与异常清单，展示给用户
   const [checkResult, setCheckResult] = useState(null);
   const [checking, setChecking] = useState(false);
   const runCheck = async () => {
-    setError(''); setCheckResult(null);
-    if (mode !== 'daily') return setError('勾稽校验基于「按日统计」口径，请先切换到按日统计');
-    if (!fromDate || !toDate) return setError('校验需先选择开始和结束日期');
+    setCheckResult(null);
+    if (mode !== 'daily') return toast.error('勾稽校验基于「按日统计」口径，请先切换到按日统计');
+    if (!fromDate || !toDate) return toast.error('校验需先选择开始和结束日期');
     setChecking(true);
     try {
       const r = await api.get('/stats/financial-check', { params: { from_date: fromDate, to_date: toDate, ...(term ? { term } : {}) } });
       setCheckResult(r.data.data);
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
     finally { setChecking(false); }
   };
   const addExtra = async () => {
-    setError(''); setMsg('');
-    if (!extraForm.class_id || !extraForm.teacher_id || !extraForm.date) return setError('加课需选择班级、教师、日期');
+    if (!extraForm.class_id || !extraForm.teacher_id || !extraForm.date) return toast.error('加课需选择班级、教师、日期');
     try {
       await api.post('/stats/instances', extraForm);
-      setMsg('加课成功');
+      toast.success('加课成功');
       setExtraForm({ class_id: '', teacher_id: '', subject: '', date: '', period_no: '1', period_type: '正课', term: '常规' });
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const totalLessons = summary.reduce((s, r) => s + r.total, 0);
@@ -323,12 +346,26 @@ export default function Stats() {
   const filteredInstances = instances.filter((r) =>
     (!instFilter.date || r.date === instFilter.date) &&
     (!instFilter.class_id || String(r.class_id) === instFilter.class_id) &&
-    (!instFilter.teacher_id || String(r.teacher_id) === instFilter.teacher_id));
+    (!instFilter.teacher_id || String(r.teacher_id) === instFilter.teacher_id) &&
+    (!instFilter.status || (instFilter.status === 'cancelled' ? r.cancelled : !r.cancelled)));
 
   const pagedSummary = summary.slice((summaryPage - 1) * PAGE_SIZE, summaryPage * PAGE_SIZE);
   const pagedInstances = filteredInstances.slice((instPage - 1) * PAGE_SIZE, instPage * PAGE_SIZE);
   const pagedCalendar = calendar.slice((calPage - 1) * PAGE_SIZE, calPage * PAGE_SIZE);
   const pagedChanges = changes.slice((changesPage - 1) * PAGE_SIZE, changesPage * PAGE_SIZE);
+
+  // 汇总表口径：哪些列「计钱」，哪些列「不计钱（折算）」
+  // 计钱列 = 节假补课 + 按次计酬类型字典；其余（早自习/正课/折算类型）只出折算课时、不计钱
+  const moneyCols = new Set([...summaryTypes].filter((t) => t === '节假补课' || typePays.some((x) => x.name === t)));
+  const weightCols = new Set([...summaryTypes].filter((t) => !moneyCols.has(t)));
+  const summaryTotals = summary.reduce((acc, r) => {
+    acc.total += r.total || 0;
+    acc.weighted += r.weighted_total || 0;
+    acc.pay += r.pay_total || 0;
+    for (const t of summaryTypes) acc.byType[t] = (acc.byType[t] || 0) + (r[t] || 0);
+    return acc;
+  }, { total: 0, weighted: 0, pay: 0, byType: {} });
+  const round2 = (v) => Math.round((v || 0) * 100) / 100;
 
   return (
     <div>
@@ -338,11 +375,10 @@ export default function Stats() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       <div className="toolbar" style={{ marginBottom: 16 }}>
         <button className={`btn ${tab === 'payroll' ? 'primary' : ''}`} onClick={() => setTab('payroll')}>课酬统计</button>
-        <button className={`btn ${tab === 'config' ? 'primary' : ''}`} onClick={() => setTab('config')}>统计配置</button>
+        <button className={`btn ${tab === 'config' ? 'primary' : ''}`} onClick={() => setConfigOpen(true)}>统计配置</button>
         <button className={`btn ${tab === 'other' ? 'primary' : ''}`} onClick={() => setTab('other')}>其它统计</button>
       </div>
 
@@ -492,6 +528,11 @@ export default function Stats() {
                     <option value="">全部教师</option>
                     {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
                   </select>
+                  <select value={instFilter.status} onChange={(e) => setInstFilter({ ...instFilter, status: e.target.value })} style={{ width: 110 }}>
+                    <option value="">全部状态</option>
+                    <option value="active">正常上课</option>
+                    <option value="cancelled">已停课/已代课</option>
+                  </select>
                 </div>
                 <div className="table-wrap">
                   <table>
@@ -571,38 +612,51 @@ export default function Stats() {
               </div>
             )}
             <div className="table-wrap">
-              <table>
+              <table className="sum-table">
                 <thead>
                   <tr>
-                    <th>教师</th>
-                    {summaryTypes.map((t) => <th key={t} className="num">{t}</th>)}
-                    <th className="num">原始合计</th><th className="num">折算课时</th><th className="num">课酬(元)</th><th>时段分布</th>
+                    <th rowSpan={2}>教师</th>
+                    {weightCols.size > 0 && <th className="group" colSpan={weightCols.size}>折算课时（不计钱）</th>}
+                    {moneyCols.size > 0 && <th className="group" colSpan={moneyCols.size}>课酬（计钱）</th>}
+                    <th rowSpan={2} className="num">节数合计</th>
+                    <th rowSpan={2} className="num">折算课时</th>
+                    <th rowSpan={2} className="num">课酬(元)</th>
+                  </tr>
+                  <tr>
+                    {summaryTypes.filter((t) => weightCols.has(t)).map((t) => <th key={t} className="num">{t}</th>)}
+                    {summaryTypes.filter((t) => moneyCols.has(t)).map((t) => <th key={t} className="num">{t}</th>)}
                   </tr>
                 </thead>
                 <tbody>
                   {pagedSummary.map((r) => (
                     <tr key={r.teacher_id}>
-                      <td>{r.teacher_name}</td>
-                      {summaryTypes.map((t) => <td key={t} className="num">{r[t] || 0}</td>)}
+                      <td className="strong">{r.teacher_name}</td>
+                      {summaryTypes.filter((t) => weightCols.has(t)).map((t) => <td key={t} className="num num-weight">{r[t] || 0}</td>)}
+                      {summaryTypes.filter((t) => moneyCols.has(t)).map((t) => <td key={t} className="num num-pay">{r[t] || 0}</td>)}
                       <td className="num">{r.total}</td>
                       <td className="num"><span className="strong">{r.weighted_total}</span></td>
-                      <td className="num">{r.pay_total || '-'}</td>
-                      <td>
-                        {Object.entries(r.terms || {}).map(([k, v]) => (
-                          <span key={k} className="badge" style={{ marginRight: 4 }} title={`折算 ${v.weighted}`}>
-                            {k} {v.count}{v.weighted !== v.count ? `→${v.weighted}` : ''}
-                          </span>
-                        ))}
-                      </td>
+                      <td className="num pay-total">{r.pay_total ? round2(r.pay_total) : '-'}</td>
                     </tr>
                   ))}
-                  {summary.length === 0 && <tr><td colSpan={summaryTypes.length + 5} className="muted">暂无统计数据</td></tr>}
+                  {summary.length === 0 && <tr><td colSpan={summaryTypes.length + 4} className="muted">暂无统计数据</td></tr>}
                 </tbody>
+                {summary.length > 0 && (
+                  <tfoot>
+                    <tr>
+                      <td>合计</td>
+                      {summaryTypes.filter((t) => weightCols.has(t)).map((t) => <td key={t} className="num">{summaryTotals.byType[t] || 0}</td>)}
+                      {summaryTypes.filter((t) => moneyCols.has(t)).map((t) => <td key={t} className="num num-pay">{summaryTotals.byType[t] || 0}</td>)}
+                      <td className="num">{summaryTotals.total}</td>
+                      <td className="num">{round2(summaryTotals.weighted)}</td>
+                      <td className="num pay-total">{round2(summaryTotals.pay)}</td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
             <Pagination page={summaryPage} total={summary.length} onPage={setSummaryPage} />
             <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
-              折算课时：正课 = 节数 ×（课时系数 + 班额系数）；折算类型（早自习等）= 节数 × 折算系数；按次计酬类型（晚自习/答疑/晚练/自定义）= 固定单价 × 节数（不计折算课时）；夏/冬令营 = 节数（课酬另按教师课酬标准 × 节数计）。走班班额 = 合班各行政班人数之和。
+              折算课时（不计钱）：正课 = 节数 ×（课时系数 + 班额系数）；折算类型（早自习等）= 节数 × 折算系数。课酬（计钱）：节假补课、按次计酬类型（晚自习/答疑/晚练/自定义）= 单价 × 节数；夏/冬令营 = 节数 × 教师课酬标准。走班班额 = 合班各行政班人数之和。
             </p>
           </div>
 
@@ -635,86 +689,129 @@ export default function Stats() {
         </>
       )}
 
-      {/* ==================== 统计配置 ==================== */}
-      {tab === 'config' && (
-        <>
-          <div className="card">
-            <div className="card-head"><h3>折算系数</h3><button className="btn primary sm" onClick={saveCoefs}>保存系数</button></div>
-            <div className="form-grid">
-              <div>
-                <label>课时系数（正课折算用）</label>
-                <table className="coef-table">
-                  <thead><tr><th>学科</th><th className="num">系数</th></tr></thead>
-                  <tbody>
-                    {coefs.subjects.map((s, i) => (
-                      <tr key={i}>
-                        <td><input value={s.subject} onChange={(e) => { const n = [...coefs.subjects]; n[i] = { ...n[i], subject: e.target.value }; setCoefs({ ...coefs, subjects: n }); }} /></td>
-                        <td className="num"><input type="number" step="0.1" value={s.coefficient} onChange={(e) => setSubj(i, e.target.value)} style={{ width: 80 }} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <button type="button" className="btn sm" style={{ marginTop: 8 }} onClick={addSubj}>+ 添加学科</button>
-              </div>
-              <div>
-                <label>折算类型（早自习等，节数 × 系数）</label>
-                <table className="coef-table">
-                  <thead><tr><th>类型名称</th><th className="num">系数</th><th style={{ width: 70 }}>操作</th></tr></thead>
-                  <tbody>
-                    {typeCoefs.map((t, i) => (
-                      <tr key={t.id ?? i}>
-                        <td><input value={t.name} onChange={(e) => setTypeCoef(i, 'name', e.target.value)} /></td>
-                        <td className="num"><input type="number" step="0.1" value={t.coefficient} onChange={(e) => setTypeCoef(i, 'coefficient', e.target.value)} style={{ width: 80 }} /></td>
-                        <td><button className="btn sm danger" onClick={() => delTypeCoef(t.id)}>删除</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <button type="button" className="btn sm" style={{ marginTop: 8 }} onClick={addTypeCoef}>+ 添加折算类型</button>
-                <button type="button" className="btn sm" style={{ marginTop: 8, marginLeft: 8 }} onClick={saveTypeCoefs}>保存折算类型</button>
-              </div>
+      {/* ==================== 统计配置（目录弹窗） ==================== */}
+      {configOpen && !cat && (
+        <div className="modal-overlay" onClick={() => setConfigOpen(false)}>
+          <div className="modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>统计配置</h3>
+              <button className="btn ghost" onClick={() => setConfigOpen(false)}>关闭</button>
             </div>
-            <div className="mt">
-              <label>班额系数（人数分档，正课折算用）</label>
-              <table className="coef-table">
-                <thead><tr><th>最低人数</th><th className="num">系数</th></tr></thead>
-                <tbody>
-                  {coefs.bands.map((b, i) => (
-                    <tr key={i}>
-                      <td><input type="number" value={b.min_size} onChange={(e) => { const n = [...coefs.bands]; n[i] = { ...n[i], min_size: e.target.value }; setCoefs({ ...coefs, bands: n }); }} /></td>
-                      <td className="num"><input type="number" step="0.1" value={b.coefficient} onChange={(e) => { const n = [...coefs.bands]; n[i] = { ...n[i], coefficient: e.target.value }; setCoefs({ ...coefs, bands: n }); }} style={{ width: 80 }} /></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <button type="button" className="btn sm" style={{ marginTop: 8 }} onClick={addBand}>+ 添加分档</button>
+            <div className="cfg-grid">
+              {Object.entries(CFG).map(([k, c]) => (
+                <button type="button" key={k} className="cfg-tile" onClick={() => openCat(k)}>
+                  <div className="cfg-tile-title">{c.title}</div>
+                  <div className="cfg-tile-desc">{c.desc}</div>
+                  <div className="cfg-tile-count">{getArr(k).length} 项</div>
+                </button>
+              ))}
             </div>
-            <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>班额系数按「统计班额」匹配最高分档：走班取合班人数之和，分层取分层班人数，行政班取本班人数。</p>
           </div>
+        </div>
+      )}
 
-          <div className="card">
-            <div className="card-head">
-              <h3>按次计酬类型（晚自习 / 答疑 / 晚练 / 自定义）</h3>
-              <button className="btn primary sm" onClick={saveTypePays}>保存类型</button>
+      {/* ==================== 分类弹窗（条目列表） ==================== */}
+      {cat && (
+        <div className="modal-overlay" onClick={closeCat}>
+          <div className="modal" style={{ maxWidth: 620 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{CFG[cat].title}</h3>
+              <button className="btn ghost" onClick={closeCat}>返回</button>
             </div>
+            <p className="muted" style={{ marginTop: 0 }}>{CFG[cat].desc}</p>
             <table className="coef-table">
-              <thead><tr><th>类型名称</th><th className="num">固定课酬（元/节）</th><th style={{ width: 90 }}>操作</th></tr></thead>
+              <thead>
+                <tr>
+                  {cat === 'subject' && <><th>学科</th><th className="num">系数</th></>}
+                  {cat === 'band' && <><th>最低人数</th><th className="num">系数</th></>}
+                  {cat === 'typePay' && <><th>类型名称</th><th className="num">固定课酬（元/节）</th></>}
+                  {cat === 'typeCoef' && <><th>类型名称</th><th className="num">系数</th></>}
+                  {cat === 'gradePay' && <><th>类型</th><th>年级</th><th className="num">单价（元/节）</th></>}
+                  <th style={{ width: 110 }}>操作</th>
+                </tr>
+              </thead>
               <tbody>
-                {typePays.map((t, i) => (
-                  <tr key={t.id ?? i}>
-                    <td><input value={t.name} onChange={(e) => setTypePay(i, 'name', e.target.value)} /></td>
-                    <td className="num"><input type="number" step="1" value={t.pay} onChange={(e) => setTypePay(i, 'pay', e.target.value)} style={{ width: 90 }} /></td>
-                    <td><button className="btn sm danger" onClick={() => delTypePay(t.id)}>删除</button></td>
+                {getArr(cat).length === 0 && <tr><td colSpan={6} className="muted">暂无条目，点下方「{CFG[cat].add}」添加。</td></tr>}
+                {getArr(cat).map((it, i) => (
+                  <tr key={it.id ?? i}>
+                    {cat === 'subject' && <td>{it.subject || <span className="muted">未命名</span>}</td>}
+                    {cat === 'band' && <td>≥{it.min_size || 0}</td>}
+                    {cat === 'typePay' && <td>{it.name || <span className="muted">未命名</span>}</td>}
+                    {cat === 'typeCoef' && <td>{it.name || <span className="muted">未命名</span>}</td>}
+                    {cat === 'gradePay' && <td>{it.period_type || <span className="muted">未选</span>}</td>}
+                    {cat === 'gradePay' && <td>{it.grade || <span className="muted">未填</span>}</td>}
+                    {cat === 'subject' && <td className="num">{it.coefficient}</td>}
+                    {cat === 'band' && <td className="num">{it.coefficient}</td>}
+                    {cat === 'typePay' && <td className="num">{it.pay}</td>}
+                    {cat === 'typeCoef' && <td className="num">{it.coefficient}</td>}
+                    {cat === 'gradePay' && <td className="num">{it.pay}</td>}
+                    <td>
+                      <div className="toolbar" style={{ marginBottom: 0, gap: 6 }}>
+                        <button className="btn sm" onClick={() => openEdit(cat, i)}>编辑</button>
+                        <button className="btn sm danger" onClick={() => delItem(cat, i)}>删除</button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            <button type="button" className="btn sm" style={{ marginTop: 8 }} onClick={addTypePay}>+ 添加类型</button>
-            <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
-              这些类型用于「课时申报」（晚自习/答疑/晚练等按次计酬）与「手工加课」：每节按此固定课酬计，不参与学科/班额折算。折算类型（早自习等，节数 × 系数）在上方「折算系数」卡片单独维护。已被记录引用的类型无法删除（避免历史计酬突变），可将其单价改为 0 以停用。
-            </p>
+            <button type="button" className="btn sm" style={{ marginTop: 12 }} onClick={() => openEdit(cat, -1)}>+ {CFG[cat].add}</button>
           </div>
-        </>
+        </div>
+      )}
+
+      {/* ==================== 条目编辑弹窗 ==================== */}
+      {edit && (
+        <div className="modal-overlay" onClick={() => setEdit(null)}>
+          <div className="modal" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{edit.index >= 0 ? '编辑条目' : CFG[edit.key].add}</h3>
+              <button className="btn ghost" onClick={() => setEdit(null)}>取消</button>
+            </div>
+            <div className="form-grid">
+              {edit.key === 'subject' && (
+                <>
+                  <div><label>学科</label><input value={edit.data.subject} onChange={(e) => setData('subject', e.target.value)} placeholder="如 数学" /></div>
+                  <div><label>系数</label><input type="number" step="0.1" value={edit.data.coefficient} onChange={(e) => setData('coefficient', e.target.value)} /></div>
+                </>
+              )}
+              {edit.key === 'band' && (
+                <>
+                  <div><label>最低人数</label><input type="number" value={edit.data.min_size} onChange={(e) => setData('min_size', e.target.value)} /></div>
+                  <div><label>系数</label><input type="number" step="0.1" value={edit.data.coefficient} onChange={(e) => setData('coefficient', e.target.value)} /></div>
+                </>
+              )}
+              {edit.key === 'typePay' && (
+                <>
+                  <div><label>类型名称</label><input value={edit.data.name} onChange={(e) => setData('name', e.target.value)} placeholder="如 晚自习" /></div>
+                  <div><label>固定课酬（元/节）</label><input type="number" step="1" value={edit.data.pay} onChange={(e) => setData('pay', e.target.value)} /></div>
+                </>
+              )}
+              {edit.key === 'typeCoef' && (
+                <>
+                  <div><label>类型名称</label><input value={edit.data.name} onChange={(e) => setData('name', e.target.value)} placeholder="如 早自习" /></div>
+                  <div><label>系数</label><input type="number" step="0.1" value={edit.data.coefficient} onChange={(e) => setData('coefficient', e.target.value)} /></div>
+                </>
+              )}
+              {edit.key === 'gradePay' && (
+                <>
+                  <div><label>类型</label>
+                    <select value={edit.data.period_type} onChange={(e) => setData('period_type', e.target.value)}>
+                      <option value="">选择类型</option>
+                      {typePays.map((x) => <option key={x.id} value={x.name}>{x.name}</option>)}
+                    </select>
+                  </div>
+                  <div><label>年级</label><input value={edit.data.grade} onChange={(e) => setData('grade', e.target.value)} placeholder="如 高一" /></div>
+                  <div><label>单价（元/节）</label><input type="number" step="1" value={edit.data.pay} onChange={(e) => setData('pay', e.target.value)} /></div>
+                </>
+              )}
+            </div>
+            <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 14 }}>
+              <button className="btn" onClick={() => setEdit(null)}>取消</button>
+              <button className="btn primary" onClick={saveEdit}>保存</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ==================== 其它统计（待开发） ==================== */}

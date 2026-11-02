@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { useToast } from '../components/feedback.jsx';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const CYCLE_BADGE = { daily: 'ok', periodic: 'info' };
@@ -54,7 +55,7 @@ export default function Inspections() {
   const [classes, setClasses] = useState([]);
   const [teachers, setTeachers] = useState([]);
   const [error, setError] = useState('');
-  const [msg, setMsg] = useState('');
+  const toast = useToast();
 
   // 列表过滤
   const [fDate, setFDate] = useState('');
@@ -75,6 +76,10 @@ export default function Inspections() {
   const [cycleLabel, setCycleLabel] = useState('');
   const [photos, setPhotos] = useState([]);
   const [detail, setDetail] = useState(null);
+  const [editingDetail, setEditingDetail] = useState(false); // 详情弹窗内编辑态
+  const [editValues, setEditValues] = useState({});          // 编辑态：检查项
+  const [editScores, setEditScores] = useState({});          // 编辑态：打分 name->score
+  const [editDate, setEditDate] = useState('');              // 编辑态：检查日期
 
   // 类型管理状态
   const [catForm, setCatForm] = useState({ name: '' });
@@ -128,6 +133,13 @@ export default function Inspections() {
   const catById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const typeDims = currentType?.dimensions || [];
   const linkType = currentType && currentType.schedule_link !== 0; // 该类型是否需要课表联动
+  // 详情编辑用的打分维度（从已固化的 scores 快照还原 name/label/weight）
+  const typeDimsOfDetail = useMemo(() => {
+    if (!detail?.scores || typeof detail.scores !== 'object') return [];
+    return Object.entries(detail.scores).map(([name, v]) => ({ name, label: v?.label || name, weight: Number(v?.weight) || 1 }));
+  }, [detail]);
+  // 详情对应的检查类型模板（用于编辑态渲染检查项）
+  const detailType = useMemo(() => types.find((t) => t.id === Number(detail?.template_id)), [types, detail]);
 
   // 课表联动：选班 + 日期后拉取当天该班课程
   const loadDayLessons = async (date, cid) => {
@@ -178,12 +190,11 @@ export default function Inspections() {
   };
 
   const submit = async () => {
-    if (!typeId) return setError('请选择检查类型');
-    if (!lessonDate) return setError('请选择检查日期');
-    setError(''); setMsg('');
+    if (!typeId) return toast.error('请选择检查类型');
+    if (!lessonDate) return toast.error('请选择检查日期');
     try {
       const scoreArr = typeDims.map((d) => ({ name: d.name, score: Number(scores[d.name]) || 0 }));
-      const res = await api.post('/inspections', {
+      const payload = {
         type_id: Number(typeId),
         class_id: classId ? Number(classId) : null,
         teacher_id: teacherId ? Number(teacherId) : null,
@@ -194,32 +205,85 @@ export default function Inspections() {
         cycle_label: currentType?.cycle === 'periodic' ? cycleLabel : null,
         data: { ...values },
         scores: scoreArr,
-      });
-      const inspId = res.data.data.id;
+      };
+      let inspId;
+      const res = await api.post('/inspections', payload);
+      inspId = res.data.data.id;
+      toast.success('检查已提交');
       if (photos.length) {
         const fd = new FormData();
         photos.forEach((p) => fd.append('photos', p));
         await api.post(`/inspections/${inspId}/photos`, fd);
       }
-      setMsg('检查已提交');
       resetSubmit();
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  // 详情弹窗内编辑：进入编辑态，回填当前记录的检查项与打分
+  const beginEdit = () => {
+    const d = detail;
+    if (!d) return;
+    setEditingDetail(true);
+    setEditValues(d.data || {});
+    setEditDate(d.lesson_date || '');
+    const sc = {};
+    if (d.scores && typeof d.scores === 'object') {
+      Object.values(d.scores).forEach((v) => { if (v && v.name != null) sc[v.name] = v.score; });
+    }
+    setEditScores(sc);
+  };
+  const cancelEdit = () => { setEditingDetail(false); setEditValues({}); setEditScores({}); setEditDate(''); };
+  const setEditValue = (key, v) => setEditValues((prev) => ({ ...prev, [key]: v }));
+  const setEditScore = (name, v) => setEditScores((prev) => ({ ...prev, [name]: v }));
+  const setAllEditScores = (v) => {
+    const next = {};
+    typeDimsOfDetail.forEach((d) => { next[d.name] = v; });
+    setEditScores(next);
+  };
+
+  // 保存编辑（仅改日期 + 检查项 + 打分，类型/班级/教师不动）
+  const saveEdit = async () => {
+    if (!detail) return;
+    try {
+      const scoreArr = typeDimsOfDetail.map((d) => ({ name: d.name, score: Number(editScores[d.name]) || 0 }));
+      await api.patch(`/inspections/${detail.id}`, {
+        lesson_date: editDate || null,
+        day_of_week: editDate ? dowOf(editDate) : null,
+        data: { ...editValues },
+        scores: scoreArr,
+      });
+      toast.success('检查记录已修改');
+      // 刷新详情
+      const refreshed = (await api.get(`/inspections/${detail.id}`)).data.data;
+      setDetail(refreshed);
+      cancelEdit();
+      load();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  const removeRecord = async (id) => {
+    if (!(await toast.confirm('确定删除这条检查记录？删除后不可恢复。', { danger: true }))) return false;
+    try {
+      await api.delete(`/inspections/${id}`);
+      toast.success('检查记录已删除');
+      load();
+      return true;
+    } catch (e) { toast.error(errMsg(e)); return false; }
   };
 
   // ===== 类型管理 =====
   const addCat = async () => {
-    setError(''); setMsg('');
-    if (!catForm.name.trim()) return setError('分类名称必填');
+    if (!catForm.name.trim()) return toast.error('分类名称必填');
     try {
       await api.post('/inspections/categories', { name: catForm.name.trim() });
       setCatForm({ name: '' });
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
   const delCat = async (id) => {
-    if (!confirm('删除该大类？需先清空其下检查类型。')) return;
-    try { await api.delete(`/inspections/categories/${id}`); load(); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('删除该大类？需先清空其下检查类型。', { danger: true }))) return;
+    try { await api.delete(`/inspections/categories/${id}`); load(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const setTplItem = (i, field, v) => {
@@ -233,13 +297,12 @@ export default function Inspections() {
 
   const saveType = async (e) => {
     e.preventDefault();
-    setError(''); setMsg('');
     try {
       const items = typeForm.items
         .filter((it) => it.label)
         .map((it) => ({ key: it.key || it.label, label: it.label, type: it.type, options: it.type === 'select' ? it.options.split(/[,，]/).map((s) => s.trim()).filter(Boolean) : undefined }));
-      if (!items.length) return setError('请至少添加一个检查项');
-      if (!typeForm.category_id) return setError('请选择检查大类');
+      if (!items.length) return toast.error('请至少添加一个检查项');
+      if (!typeForm.category_id) return toast.error('请选择检查大类');
       const payload = {
         name: typeForm.name.trim(),
         category_id: Number(typeForm.category_id),
@@ -250,15 +313,15 @@ export default function Inspections() {
       };
       if (typeEditId != null) {
         await api.patch(`/inspections/types/${typeEditId}`, payload);
-        setMsg('检查类型已更新');
+        toast.success('检查类型已更新');
       } else {
         await api.post('/inspections/types', payload);
-        setMsg('检查类型已创建');
+        toast.success('检查类型已创建');
       }
       setTypeForm(emptyTypeForm());
       setTypeEditId(null);
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   // 编辑检查类型：把类型现有字段填进表单
@@ -281,8 +344,8 @@ export default function Inspections() {
     setTypeEditId(null);
   };
   const delType = async (id) => {
-    if (!confirm('删除该检查类型？已有检查记录则不可删。')) return;
-    try { await api.delete(`/inspections/types/${id}`); if (typeEditId === id) cancelTypeEdit(); load(); } catch (e) { setError(errMsg(e)); }
+    if (!(await toast.confirm('删除该检查类型？已有检查记录则不可删。', { danger: true }))) return;
+    try { await api.delete(`/inspections/types/${id}`); if (typeEditId === id) cancelTypeEdit(); load(); } catch (e) { toast.error(errMsg(e)); }
   };
 
   // 编辑某类型维度
@@ -294,19 +357,17 @@ export default function Inspections() {
   const addDimItem = () => setDimForm([...dimForm, { name: '', label: '', weight: 1 }]);
   const removeDimItem = (i) => setDimForm(dimForm.filter((_, idx) => idx !== i));
   const saveDim = async () => {
-    setError(''); setMsg('');
     try {
       const items = dimForm.filter((it) => it.name && it.label).map((it) => ({ name: it.name.trim(), label: it.label.trim(), weight: Number(it.weight) || 1 }));
       await api.put(`/inspections/types/${editingType}/dimensions`, { items });
       setEditingType(null);
-      setMsg('打分维度已保存');
+      toast.success('打分维度已保存');
       load();
-    } catch (e) { setError(errMsg(e)); }
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   // 保存检查配置（学期起始 + 达标线）
   const saveConfig = async () => {
-    setError(''); setMsg('');
     try {
       const res = await api.put('/inspections/config', {
         semester_start: config.semester_start,
@@ -314,12 +375,12 @@ export default function Inspections() {
       });
       setConfig(res.data.data);
       setPassLine(res.data.data.pass_line);
-      setMsg('检查配置已保存');
-    } catch (e) { setError(errMsg(e)); }
+      toast.success('检查配置已保存');
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const openDetail = async (id) => {
-    try { setDetail((await api.get(`/inspections/${id}`)).data.data); } catch (e) { setError(errMsg(e)); }
+    try { setDetail((await api.get(`/inspections/${id}`)).data.data); } catch (e) { toast.error(errMsg(e)); }
   };
 
   // ===== 统计 =====
@@ -357,7 +418,6 @@ export default function Inspections() {
       </div>
 
       {error && <div className="alert error">{error}</div>}
-      {msg && <div className="alert success">{msg}</div>}
 
       <div className="toolbar insp-tabs">
         <button className={`btn ${tab === 'list' ? 'primary' : ''}`} onClick={() => setTab('list')}>检查记录</button>
@@ -823,55 +883,120 @@ export default function Inspections() {
 
       {/* ============ 详情弹层 ============ */}
       {detail && (
-        <div className="modal-overlay" onClick={() => setDetail(null)}>
+        <div className="modal-overlay" onClick={() => { if (!editingDetail) setDetail(null); }}>
           <div className="modal insp-detail" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <h3>{detail.template_name}</h3>
-              <button className="btn ghost" onClick={() => setDetail(null)}>关闭</button>
-            </div>
-            <div className="detail-meta">
-              <span className={`badge ${categoryBadge(detail.category)}`}>{detail.category}</span>
-              {detail.cycle_label && <span className="badge info">{detail.cycle_label}</span>}
-              {detail.lesson_date && <span className="badge">{detail.lesson_date}{detail.period_no ? ` 第${detail.period_no}节` : ''}</span>}
-              <span className="muted">{[detail.class_name, detail.teacher_name, detail.subject].filter(Boolean).join(' · ') || '未关联'} · {detail.checker_name} · {detail.created_at}</span>
+              <h3>{detail.template_name}{editingDetail ? '（编辑）' : ''}</h3>
+              <div className="toolbar" style={{ marginBottom: 0, gap: 6 }}>
+                {canSubmit && !editingDetail && <button className="btn sm" onClick={beginEdit}>编辑</button>}
+                {canSubmit && !editingDetail && <button className="btn sm danger" onClick={async () => { if (await removeRecord(detail.id)) setDetail(null); }}>删除</button>}
+                {editingDetail
+                  ? <button className="btn ghost" onClick={cancelEdit}>取消</button>
+                  : <button className="btn ghost" onClick={() => setDetail(null)}>关闭</button>}
+              </div>
             </div>
 
-            {detail.score_total != null && (
-              <div className="detail-score">
-                <div className="detail-score-total">
-                  检查得分 <strong>{detail.score_total}</strong><em> / {detail.score_max}</em>
+            {editingDetail ? (
+              <div>
+                <div className="form-row">
+                  <label>检查日期</label>
+                  <input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} />
                 </div>
-                {detail.scores && Object.entries(detail.scores).length > 0 && (
-                  <div className="detail-score-dims">
-                    {Object.entries(detail.scores).map(([k, v]) => (
-                      <div key={k} className="dim-item">
-                        <span className="dim-label">{v.label || k}</span>
-                        <div className="dim-bar"><div className="dim-fill" style={{ width: `${Math.min(100, (v.score / 100) * 100)}%` }} /></div>
-                        <span className="dim-score">{v.score}{Number(v.weight) !== 1 ? ` ×${v.weight}` : ''}</span>
+
+                {detailType?.items?.length > 0 && (
+                  <div className="mt">
+                    <div className="sec-label">检查项</div>
+                    {detailType.items.map((item) => (
+                      <div className="form-row" key={item.key}>
+                        <label>{item.label}</label>
+                        <Field item={item} value={editValues[item.key]} onChange={setEditValue} />
                       </div>
                     ))}
                   </div>
                 )}
-              </div>
-            )}
 
-            <div className="sec-label">检查内容</div>
-            <table>
-              <tbody>
-                {Object.entries(detail.data || {}).map(([k, v]) => (
-                  <tr key={k}><td style={{ width: 140, color: 'var(--muted)' }}>{k}</td><td>{String(v)}</td></tr>
-                ))}
-                {Object.keys(detail.data || {}).length === 0 && <tr><td className="muted">无</td></tr>}
-              </tbody>
-            </table>
-            {detail.photos?.length > 0 && (
-              <div className="mt">
-                <div className="sec-label">照片</div>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  {detail.photos.map((p) => (
-                    <AuthImage key={p.id} src={`/api/inspections/photos/${p.id}`} alt={p.filename} />
-                  ))}
+                {typeDimsOfDetail.length > 0 && (
+                  <div className="mt-lg">
+                    <div className="sec-label">检查打分</div>
+                    <div className="score-quick-all">
+                      <button type="button" className={`score-q-btn ${typeDimsOfDetail.every((d) => (Number(editScores[d.name]) || 0) === 100) ? 'on' : ''}`} onClick={() => setAllEditScores(100)}>全部满分</button>
+                      <button type="button" className={`score-q-btn ${typeDimsOfDetail.every((d) => (Number(editScores[d.name]) || 0) === 90) ? 'on' : ''}`} onClick={() => setAllEditScores(90)}>全部优秀</button>
+                      <button type="button" className={`score-q-btn ${typeDimsOfDetail.every((d) => (Number(editScores[d.name]) || 0) === 80) ? 'on' : ''}`} onClick={() => setAllEditScores(80)}>全部良好</button>
+                      <button type="button" className={`score-q-btn ${typeDimsOfDetail.every((d) => (Number(editScores[d.name]) || 0) === 60) ? 'on' : ''}`} onClick={() => setAllEditScores(60)}>全部及格</button>
+                    </div>
+                    {typeDimsOfDetail.map((d) => (
+                      <div className="score-row" key={d.name}>
+                        <div className="score-row-head">
+                          <span className="score-label">{d.label}</span>
+                          <span className="score-val">{Number(editScores[d.name]) || 0}</span>
+                        </div>
+                        <input type="range" min="0" max="100" step="5"
+                          value={Number(editScores[d.name]) || 0}
+                          onChange={(e) => setEditScore(d.name, Number(e.target.value))}
+                          className="score-range" />
+                        <div className="score-quick">
+                          {[100, 90, 80, 70, 60].map((v) => (
+                            <button key={v} type="button" className={`score-q-btn ${Number(editScores[d.name]) === v ? 'on' : ''}`} onClick={() => setEditScore(d.name, v)}>{v}</button>
+                          ))}
+                        </div>
+                        {Number(d.weight) !== 1 && <span className="score-weight">权重 ×{d.weight}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, gap: 8 }}>
+                  <button className="btn" onClick={cancelEdit}>取消</button>
+                  <button className="btn primary" onClick={saveEdit}>保存修改</button>
                 </div>
+              </div>
+            ) : (
+              <div>
+                <div className="detail-meta">
+                  <span className={`badge ${categoryBadge(detail.category)}`}>{detail.category}</span>
+                  {detail.cycle_label && <span className="badge info">{detail.cycle_label}</span>}
+                  {detail.lesson_date && <span className="badge">{detail.lesson_date}{detail.period_no ? ` 第${detail.period_no}节` : ''}</span>}
+                  <span className="muted">{[detail.class_name, detail.teacher_name, detail.subject].filter(Boolean).join(' · ') || '未关联'} · {detail.checker_name} · {detail.created_at}</span>
+                </div>
+
+                {detail.score_total != null && (
+                  <div className="detail-score">
+                    <div className="detail-score-total">
+                      检查得分 <strong>{detail.score_total}</strong><em> / {detail.score_max}</em>
+                    </div>
+                    {detail.scores && Object.entries(detail.scores).length > 0 && (
+                      <div className="detail-score-dims">
+                        {Object.entries(detail.scores).map(([k, v]) => (
+                          <div key={k} className="dim-item">
+                            <span className="dim-label">{v.label || k}</span>
+                            <div className="dim-bar"><div className="dim-fill" style={{ width: `${Math.min(100, (v.score / 100) * 100)}%` }} /></div>
+                            <span className="dim-score">{v.score}{Number(v.weight) !== 1 ? ` ×${v.weight}` : ''}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="sec-label">检查内容</div>
+                <table>
+                  <tbody>
+                    {Object.entries(detail.data || {}).map(([k, v]) => (
+                      <tr key={k}><td style={{ width: 140, color: 'var(--muted)' }}>{k}</td><td>{String(v)}</td></tr>
+                    ))}
+                    {Object.keys(detail.data || {}).length === 0 && <tr><td className="muted">无</td></tr>}
+                  </tbody>
+                </table>
+                {detail.photos?.length > 0 && (
+                  <div className="mt">
+                    <div className="sec-label">照片</div>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      {detail.photos.map((p) => (
+                        <AuthImage key={p.id} src={`/api/inspections/photos/${p.id}`} alt={p.filename} />
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
