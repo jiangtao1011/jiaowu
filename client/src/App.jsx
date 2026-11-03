@@ -43,8 +43,11 @@ function isMobileDevice() {
   return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
 }
 
-function MobileRedirect() {
-  return isMobileDevice() ? <Navigate to="/m" replace /> : <Dashboard />;
+// 全局移动端守卫：登录用户 + 手机设备时，访问桌面端路由一律重定向到 /m 首页。
+// 覆盖深链进入（/stats、/schedules 等）与登录后落地，/m 下不拦截。
+function MobileGuard({ children }) {
+  if (isMobileDevice()) return <Navigate to="/m" replace />;
+  return children;
 }
 
 function AppRoutes() {
@@ -95,11 +98,13 @@ function AppRoutes() {
         path="/"
         element={
           <AuthGuard>
-            <Layout user={user} onLogout={logout} />
+            <MobileGuard>
+              <Layout user={user} onLogout={logout} />
+            </MobileGuard>
           </AuthGuard>
         }
       >
-        <Route index element={<MobileRedirect />} />
+        <Route index element={<Dashboard />} />
         <Route path="classes" element={<Classes />} />
         <Route path="teachers" element={<Teachers />} />
         <Route path="schedules" element={<Schedules />} />

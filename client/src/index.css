@@ -1568,3 +1568,77 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 
 /* 通知页筛选栏：横向滚动限制在自身内，不撑破父级 */
 .mobile-body .toolbar[style*="nowrap"] { width: 100%; }
+
+/* ===== 移动端 UI 美化（2026-11-03）===== */
+
+/* 底部导航：选中态胶囊高亮 + 顶部微阴影 */
+.mobile-tabbar {
+  box-shadow: 0 -1px 8px rgba(16, 24, 40, 0.06);
+  padding-top: 8px;
+}
+.mobile-tab {
+  min-height: 52px;
+  gap: 4px;
+  border-radius: 12px;
+  transition: color 0.15s ease;
+}
+.mobile-tab .mt-ico {
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+.mobile-tab.on .mt-ico { background: var(--primary-soft); }
+.mobile-tab.on { color: var(--primary); }
+
+/* 卡片：统一圆角 + 标题左侧主色竖条 */
+.mcard { border-radius: 14px; }
+.mcard-title { gap: 8px; }
+.mcard-title::before {
+  content: ''; flex-shrink: 0;
+  width: 3px; height: 16px; border-radius: 2px;
+  background: var(--primary);
+}
+
+/* 数字卡片：更紧凑的排版 + 更柔和的底 */
+.mstat { border-radius: 12px; padding: 12px 8px; }
+.mstat .mstat-v { font-variant-numeric: tabular-nums; }
+
+/* 列表项触控高度保证（≥44px） */
+.mitem { min-height: 44px; }
+
+/* 空状态统一占位 */
+.mempty { color: var(--muted); }
+
+/* ===== 数据看板（手机端管理角色首页）===== */
+.dc-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
+}
+.dc-metric {
+  text-decoration: none; color: inherit;
+  background: var(--bg); border-radius: 12px;
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 4px;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+.dc-metric:active { transform: scale(0.97); }
+.dc-v {
+  font-size: 22px; font-weight: 800; line-height: 1.1;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+.dc-v.money { color: var(--warn); }
+.dc-l { font-size: 12px; color: var(--muted); }
+
+/* 检查考核组列表：整行可点，状态徽标清晰 */
+.dc-group-head {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; background: none; border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer; text-align: left;
+  padding: 11px 0; min-height: 48px;
+}
+
+/* PAD 两列栅格 */
+@media (min-width: 600px) {
+  .dc-grid { grid-template-columns: repeat(4, 1fr); }
+}

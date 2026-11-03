@@ -20,8 +20,8 @@
 #   ./start.sh dev-stop           # 停止开发模式
 #
 # 访问地址（启动后按 status 显示的为准）：
-#   固定（mDNS）: http://<本机名>.local:4000   —— 手机/桌面都收藏这个，IP 变了不受影响
-#   本机调试:     http://localhost:4000
+#   局域网 IP:   http://<本机IP>:4000     —— 手机/桌面都填这个；有域名时用域名
+#   本机调试:    http://localhost:4000
 # =============================================================================
 
 set -euo pipefail
@@ -73,11 +73,6 @@ lan_ip() {
   ipconfig getifaddr en0 2>/dev/null \
     || ipconfig getifaddr en1 2>/dev/null \
     || echo ""
-}
-
-# 本机名（mDNS 固定地址）
-host_name() {
-  scutil --get LocalHostName 2>/dev/null | tr 'A-Z' 'a-z' || echo "localhost"
 }
 
 # ---------- 生产模式 ----------
@@ -148,12 +143,14 @@ stop_all() {
 
 # ---------- 状态 ----------
 show_status() {
-  local hp; hp="$(host_name)"
   local ip; ip="$(lan_ip)"
   echo ""
-  echo "  ★ 固定访问地址: http://${hp}.local:${SERVER_PORT}   （手机/桌面都填这个，IP 变了也不受影响）"
-  [ -n "$ip" ] && echo "    （临时直连备用：http://${ip}:${SERVER_PORT}，IP 会变，不建议收藏）"
-  echo "    本机调试:     http://localhost:${SERVER_PORT}"
+  if [ -n "$ip" ]; then
+    echo "  ★ 局域网访问地址: http://${ip}:${SERVER_PORT}   （手机/桌面都填这个；有域名时用域名）"
+  else
+    echo "  ★ 局域网访问地址: 未检测到，请手动查本机 IP 后访问 http://<IP>:${SERVER_PORT}"
+  fi
+  echo "    本机调试:        http://localhost:${SERVER_PORT}"
   echo ""
   local spid cpid
   spid="$(pid_of_port "$SERVER_PORT")"

@@ -52,19 +52,17 @@ npm run build      # 构建产物到 client/dist，供后端托管
 npm run dev        # 可选：开发热更新，http://localhost:5173
 ```
 
-## 固定访问地址
+## 访问地址
 
-服务通过 **mDNS 主机名** 提供稳定访问地址，**局域网 IP 变化不影响**：
+通过 **本机局域网 IP** 访问；有域名时用域名：
 
 ```
-http://jiaowu.local:4000
+http://<本机IP>:4000
 ```
 
-- 首次使用需先改一次主机名（终端运行）：`sudo scutil --set LocalHostName jiaowu`
-- Mac / iPhone / iPad 开箱即用
-- Windows 需安装 Apple Bonjour 才能解析 `.local`
-- 若局域网做了客户端隔离（AP isolation）导致 mDNS 不通，改用「DHCP 静态绑定」：
-  在路由器（网关 172.16.31.254 / DHCP 172.16.0.1）按本机 MAC `72:a0:dd:e6:17:8b` 固定分配 IP，之后用 `http://<固定IP>:4000` 访问。
+- 启动后运行 `./start.sh status` 会显示当前可访问的 IP 地址
+- 手机 / 桌面浏览器均用同一地址访问
+- 若 IP 不固定，建议在路由器做 DHCP 静态绑定，或在服务器部署时用域名
 
 > ⚠️ 改了 `client/` 下的前端代码后，需重新 `npm run build`（或 `./start.sh build`）才会生效；后端是启动时读取静态文件。
 

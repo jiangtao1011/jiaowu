@@ -13,6 +13,8 @@ export default function MobileHome() {
   const { isAdmin } = useOutletContext();
   const [dash, setDash] = useState(null);
   const [mine, setMine] = useState(null);
+  const [dc, setDc] = useState(null); // 数据看板（管理角色）
+  const [expandedGroup, setExpandedGroup] = useState(null); // 检查考核展开的组
   const [error, setError] = useState('');
 
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
@@ -23,11 +25,13 @@ export default function MobileHome() {
     (async () => {
       try {
         const reqs = [api.get('/dashboard')];
-        if (isGradeLeader) reqs.push(api.get('/dashboard/grade-leader'));
+        if (isAdmin) reqs.push(api.get('/datacenter'));
+        else if (isGradeLeader) reqs.push(api.get('/dashboard/grade-leader'));
         else if (isTeacher || user.teacher_id) reqs.push(api.get('/dashboard/teacher'));
         const res = await Promise.all(reqs);
         setDash(res[0].data.data);
-        if (res[1]) setMine(res[1].data.data);
+        if (isAdmin) setDc(res[1].data.data);
+        else if (res[1]) setMine(res[1].data.data);
       } catch (e) { setError(e?.response?.data?.error || e?.message || '加载失败'); }
     })();
   }, []);
@@ -39,6 +43,122 @@ export default function MobileHome() {
   const weekByDay = {};
   (mine?.week_schedule || []).forEach((r) => { (weekByDay[r.day_of_week] ||= []).push(r); });
 
+  // ==================== 管理角色：数据看板 ====================
+  if (isAdmin && dc) {
+    const { overview, todo, inspection } = dc;
+    const metrics = [
+      { label: '班级', value: overview.classes, to: '/m' },
+      { label: '教师', value: overview.teachers, to: '/m' },
+      { label: '账号', value: overview.users, to: '/m' },
+      { label: '本月课时', value: overview.month_lessons, to: '/m/stats' },
+      { label: '折算课时', value: overview.month_weighted, to: '/m/stats' },
+      { label: '本月课酬', value: overview.month_pay, to: '/m/stats', money: true },
+      { label: '检查记录', value: overview.inspections, to: '/m/inspection' },
+      { label: '待审申报', value: overview.pending_qna + overview.pending_applications, to: '/m/apply' },
+    ];
+    const todoList = [
+      { label: '课时申报', n: todo.qna, to: '/applications' },
+      { label: '课程申报', n: todo.applications, to: '/applications' },
+      { label: '通知回复', n: todo.replies, to: '/notices' },
+      { label: '逾期上传任务', n: todo.overdue_uploads, to: '/uploads' },
+    ];
+
+    return (
+      <div>
+        <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
+          <div>
+            <div className="mt-title">教务数据看板</div>
+            <div className="mt-sub">{dash.date_str} · {ROLE_LABELS[user?.role]}</div>
+          </div>
+        </div>
+
+        {/* 核心指标总览 */}
+        <div className="mcard">
+          <div className="mcard-title">核心指标</div>
+          <div className="dc-grid">
+            {metrics.map((m) => (
+              <Link key={m.label} to={m.to} className="dc-metric">
+                <div className={`dc-v${m.money ? ' money' : ''}`}>{m.value}</div>
+                <div className="dc-l">{m.label}</div>
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        {/* 待办聚合 */}
+        <div className="mcard">
+          <div className="mcard-title">待办</div>
+          {todoList.map((t) => (
+            <Link key={t.label} to={t.to} className="mitem mlist-link">
+              <div className="mitem-main"><div className="mitem-title">{t.label}</div></div>
+              <div className="mitem-side">
+                {t.n > 0 ? <span className="badge warn">{t.n}</span> : <span className="mitem-sub">无</span>}
+              </div>
+            </Link>
+          ))}
+          {todo.reminders.length > 0 && (
+            <div style={{ marginTop: 6 }}>
+              <div className="mitem-sub" style={{ marginBottom: 4 }}>近期工作提醒</div>
+              {todo.reminders.map((r) => (
+                <div key={r.id} className="mitem">
+                  <div className="mitem-main"><div className="mitem-title" style={{ fontSize: 13 }}>{r.title}</div><div className="mitem-sub">{r.date} · {r.category}</div></div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* 检查与考核 */}
+        <div className="mcard">
+          <div className="mcard-title">检查与考核<span className="mitem-sub">达标线 {inspection.pass_line} 分</span></div>
+          {inspection.groups.length === 0 && <div className="mempty">暂无备课组/教研组</div>}
+          {inspection.groups.slice(0, 20).map((g) => {
+            const open = expandedGroup === g.key;
+            const members = inspection.by_teacher[g.key] || [];
+            const lowCoverage = g.coverage != null && g.coverage < 100;
+            const lowPass = g.pass_rate != null && g.pass_rate < 100;
+            return (
+              <div key={g.key}>
+                <button
+                  className="mitem"
+                  style={{ width: '100%', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', cursor: 'pointer', textAlign: 'left' }}
+                  onClick={() => setExpandedGroup(open ? null : g.key)}
+                >
+                  <div className="mitem-main">
+                    <div className="mitem-title">
+                      {g.name}
+                      {(lowCoverage || lowPass) && <span className="badge warn" style={{ marginLeft: 6, fontSize: 11 }}>需关注</span>}
+                    </div>
+                    <div className="mitem-sub">覆盖率 {g.coverage ?? '—'}% · 平均分 {g.avg_score ?? '—'} · 合格率 {g.pass_rate ?? '—'}%</div>
+                  </div>
+                  <div className="mitem-side"><span className="mitem-sub">{open ? '▴' : '▾'}</span></div>
+                </button>
+                {open && (
+                  <div style={{ padding: '4px 0 8px 8px' }}>
+                    {members.map((t) => (
+                      <div key={t.teacher_id} className="mitem" style={{ padding: '6px 0' }}>
+                        <div className="mitem-main">
+                          <div className="mitem-title" style={{ fontSize: 13.5 }}>{t.name}{t.subject ? ` · ${t.subject}` : ''}</div>
+                          <div className="mitem-sub">被查 {t.count} 次</div>
+                        </div>
+                        <div className="mitem-side">
+                          <span className={`badge ${t.status === '合格' ? 'ok' : t.status === '未合格' ? 'danger' : ''}`}>{t.status === '未检查' ? '未检查' : `${t.avg_score ?? '—'} 分`}</span>
+                        </div>
+                      </div>
+                    ))}
+                    {members.length === 0 && <div className="muted" style={{ fontSize: 13 }}>该组暂无教师</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {inspection.groups.length > 20 && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>仅显示前 20 个组</div>}
+        </div>
+      </div>
+    );
+  }
+
+  // ==================== 教师视角 ====================
   return (
     <div>
       <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
@@ -48,7 +168,6 @@ export default function MobileHome() {
         </div>
       </div>
 
-      {/* ===== 教师视角 ===== */}
       {mine?.bound && Array.isArray(mine.today) && (
         <>
           {/* 今日课程（时间线） */}
@@ -126,7 +245,7 @@ export default function MobileHome() {
         </>
       )}
 
-      {/* ===== 年级组长视角 ===== */}
+      {/* ==================== 年级组长视角 ==================== */}
       {isGradeLeader && mine?.bound && (
         <>
           <div className="mcard">
@@ -151,24 +270,6 @@ export default function MobileHome() {
             {mine.teachers.length === 0 && <div className="mempty">本月暂无课时记录</div>}
           </div>
         </>
-      )}
-
-      {/* ===== 教务员/组长视角 ===== */}
-      {isAdmin && (
-        <div className="mcard">
-          <div className="mcard-title">待办审核</div>
-          <div className="mstat-row">
-            <Link to="/applications" className="mstat" style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div className="mstat-v">{dash.todo.qna}</div><div className="mstat-l">课时申报</div>
-            </Link>
-            <Link to="/applications" className="mstat" style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div className="mstat-v">{dash.todo.applications}</div><div className="mstat-l">课程申报</div>
-            </Link>
-            <Link to="/notices" className="mstat" style={{ textDecoration: 'none', color: 'inherit' }}>
-              <div className="mstat-v">{dash.todo.replies}</div><div className="mstat-l">通知回复</div>
-            </Link>
-          </div>
-        </div>
       )}
 
       {/* 今日校历（所有人） */}
