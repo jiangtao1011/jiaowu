@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
 
-const ROLES = ['教务员', '教务处', '教研组长', '备课组长', '教师'];
+const ROLES = ['教务主任', '教务员', '教研组长', '备课组长', '教师'];
 
 export default function UploadTasks() {
   const [tasks, setTasks] = useState([]);

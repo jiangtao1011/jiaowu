@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { db, logAudit } from '../db.js';
-import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { authRequired, roleRequired, CLERK_ROLES } from '../auth.js';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
 
 const router = Router();
@@ -34,7 +34,7 @@ router.get('/template', (req, res) => {
 });
 
 // 批量导入
-router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req, res) => {
+router.post('/import', roleRequired(...CLERK_ROLES), upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: '请上传教师文件' });
   let rows;
   try {
@@ -71,7 +71,7 @@ router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req
   return res.json({ ok: true, data: { inserted, skipped, errors } });
 });
 
-router.post('/', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/', roleRequired(...CLERK_ROLES), (req, res) => {
   const { name, phone, subject, pay_standard } = req.body || {};
   if (!name) return res.status(400).json({ ok: false, error: '教师姓名必填' });
   const info = db
@@ -81,7 +81,7 @@ router.post('/', roleRequired(...ADMIN_ROLES), (req, res) => {
   return res.json({ ok: true, data: { id: Number(info.lastInsertRowid) } });
 });
 
-router.patch('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.patch('/:id', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const target = db.prepare('SELECT * FROM teachers WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ ok: false, error: '教师不存在' });
@@ -95,7 +95,7 @@ router.patch('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 任课关系（带时间版本，保留历史）
-router.post('/:id/classes', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/:id/classes', roleRequired(...CLERK_ROLES), (req, res) => {
   const teacherId = Number(req.params.id);
   const { class_id, subject, effective_from } = req.body || {};
   if (!class_id) return res.status(400).json({ ok: false, error: '请选择班级' });
@@ -106,7 +106,7 @@ router.post('/:id/classes', roleRequired(...ADMIN_ROLES), (req, res) => {
   return res.json({ ok: true, data: { id: Number(info.lastInsertRowid) } });
 });
 
-router.delete('/:id/classes/:linkId', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/:id/classes/:linkId', roleRequired(...CLERK_ROLES), (req, res) => {
   const linkId = Number(req.params.linkId);
   const link = db.prepare('SELECT * FROM teacher_classes WHERE id = ?').get(linkId);
   if (!link) return res.status(404).json({ ok: false, error: '任课关系不存在' });

@@ -55,7 +55,7 @@ export default function MobileSubstitute() {
         reason: reason || null,
       };
       await api.post('/schedules/requests', payload);
-      toast.success('申请已提交，待教务处审核');
+      toast.success('申请已提交，待教务主任审核');
       setScheduleId(''); setToTeacherId(''); setDate(''); setToDate(''); setReason(''); setDuration('day');
       load();
     } catch (e) { toast.error(errMsg(e)); }
@@ -89,7 +89,7 @@ export default function MobileSubstitute() {
       <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
         <div>
           <div className="mt-title">代课调课</div>
-          <div className="mt-sub">申请由教务处审核后生效</div>
+          <div className="mt-sub">申请由教务主任审核后生效</div>
         </div>
       </div>
 

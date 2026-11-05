@@ -430,6 +430,9 @@ ensureColumn('qna_lessons', 'date', 'TEXT');
 ensureColumn('qna_lessons', 'period_count', 'INTEGER NOT NULL DEFAULT 1');
 // 迁移：qna_lessons 增加 period_type（按次计酬类型，默认答疑）
 ensureColumn('qna_lessons', 'period_type', "TEXT NOT NULL DEFAULT '答疑'");
+// 迁移：qna_lessons 两级审批——年级组长一审人与时间（pending→grade_approved 由年级组长操作）
+ensureColumn('qna_lessons', 'grade_reviewed_by', 'INTEGER REFERENCES users(id)');
+ensureColumn('qna_lessons', 'grade_reviewed_at', 'TEXT');
 // 迁移：schedules 增加 makeup_set（补课课表套号，用于多套补课课表轮换；NULL=普通课表或旧补课课表）
 ensureColumn('schedules', 'makeup_set', 'INTEGER');
 // 迁移：school_calendar 增加 make_up_set（补课日指定用第几套补课课表）
@@ -496,6 +499,10 @@ if (!db.prepare(`PRAGMA table_info(school_calendar)`).all().some((c) => c.name =
 }
 // 唯一索引兜底（幂等）：旧库/新库都保证 (date, grade) 唯一
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_school_calendar_date_grade ON school_calendar(date, COALESCE(grade, ''));`);
+
+// 迁移：角色岗位制重构（2026-11-05）——「教务处」正名为「教务主任」，现有账号自动继承。
+// 幂等：已迁移过的库无「教务处」角色，不会重复执行。
+db.prepare("UPDATE users SET role = '教务主任' WHERE role = '教务处'").run();
 
 // 初始化系数表：课时系数、班额系数（仅常规时段使用）
 function seedIfEmpty(table, insert) {

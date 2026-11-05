@@ -121,7 +121,7 @@ export default function NoticeView() {
               </div>
               <h1 className="n-title">{notice.title}</h1>
               <p className="n-meta">
-                {notice.creator_name || '教务处'} 发布 · {fmt(notice.published_at || notice.created_at)}
+                {notice.creator_name || '教务主任'} 发布 · {fmt(notice.published_at || notice.created_at)}
               </p>
             </header>
 

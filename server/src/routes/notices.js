@@ -4,7 +4,7 @@ import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
 import { db, logAudit, UPLOAD_DIR } from '../db.js';
-import { authRequired, authOptional, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { authRequired, authOptional, roleRequired, CLERK_ROLES, DIRECTOR_ROLES, RESULT_VIEW_ROLES } from '../auth.js';
 import { publicBase } from '../share.js';
 
 const router = Router();
@@ -135,7 +135,7 @@ router.get('/', (req, res) => {
   const params = [];
   if (publish_status) { sql += ' AND n.publish_status = ?'; params.push(publish_status); }
   // 定向通知过滤：管理员看全部；非管理员仅看「广播 + 定向到自己」的通知
-  const isAdmin = ADMIN_ROLES.includes(req.user.role);
+  const isAdmin = RESULT_VIEW_ROLES.includes(req.user.role);
   if (!isAdmin) {
     const tid = req.user.teacher_id ?? null;
     sql += ` AND (n.target_teacher_ids IS NULL OR n.target_teacher_ids = '' OR (? IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(n.target_teacher_ids) WHERE CAST(json_each.value AS TEXT) = ?)))`;
@@ -185,7 +185,7 @@ router.get('/my-replies', (req, res) => {
 });
 
 // 详情：已读名单 + 回复（全状态）
-router.get('/:id/detail', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.get('/:id/detail', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const notice = db.prepare('SELECT * FROM notices WHERE id = ?').get(id);
   if (!notice) return res.status(404).json({ ok: false, error: '通知不存在' });
@@ -211,7 +211,7 @@ router.get('/:id/detail', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 新建（支持附件 files[]）
-router.post('/', roleRequired(...ADMIN_ROLES), upload.array('files', 10), (req, res) => {
+router.post('/', roleRequired(...CLERK_ROLES), upload.array('files', 10), (req, res) => {
   const { title, type, content } = req.body || {};
   if (!title) return res.status(400).json({ ok: false, error: '标题必填' });
   const share_token = crypto.randomBytes(12).toString('hex');
@@ -230,7 +230,7 @@ router.post('/', roleRequired(...ADMIN_ROLES), upload.array('files', 10), (req, 
 });
 
 // 修改通知（标题/类型/正文），需管理员权限
-router.patch('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.patch('/:id', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const notice = db.prepare('SELECT * FROM notices WHERE id = ?').get(id);
   if (!notice) return res.status(404).json({ ok: false, error: '通知不存在' });
@@ -246,7 +246,7 @@ router.patch('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 发布 / 下线
-router.patch('/:id/publish', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.patch('/:id/publish', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const notice = db.prepare('SELECT * FROM notices WHERE id = ?').get(id);
   if (!notice) return res.status(404).json({ ok: false, error: '通知不存在' });
@@ -258,7 +258,7 @@ router.patch('/:id/publish', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 审核回复
-router.patch('/replies/:id/review', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.patch('/replies/:id/review', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const reply = db.prepare('SELECT * FROM notice_replies WHERE id = ?').get(id);
   if (!reply) return res.status(404).json({ ok: false, error: '回复不存在' });
@@ -270,7 +270,7 @@ router.patch('/replies/:id/review', roleRequired(...ADMIN_ROLES), (req, res) => 
 });
 
 // 删除通知（级联删附件文件、已读、回复、点赞）
-router.delete('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/:id', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const notice = db.prepare('SELECT * FROM notices WHERE id = ?').get(id);
   if (!notice) return res.status(404).json({ ok: false, error: '通知不存在' });

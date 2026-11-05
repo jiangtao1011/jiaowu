@@ -1,10 +1,9 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { db, logAudit } from '../db.js';
-import { authRequired, roleRequired, USER_EDIT_ROLES } from '../auth.js';
+import { authRequired, roleRequired, USER_EDIT_ROLES, VALID_ROLES } from '../auth.js';
 
 const router = Router();
-const VALID_ROLES = ['admin', '教务员', '教务处', '教研组长', '备课组长', '年级组长', '教师'];
 
 router.use(authRequired);
 

@@ -1,8 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import { isAdmin } from '../roles.js';
 import { useToast } from '../components/feedback.jsx';
-
-const isAdmin = (u) => ['admin', '教务员', '教务处'].includes(u?.role);
 
 // 率输入框：0~100，步进 0.1
 function RateInput({ value, onChange, label }) {

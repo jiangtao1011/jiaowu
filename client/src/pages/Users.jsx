@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
-import { canEditUser } from '../roles.js';
+import { canEditUser, VALID_ROLES } from '../roles.js';
 import { useToast } from '../components/feedback.jsx';
 
-const ROLES = ['admin', '教务员', '教务处', '教研组长', '备课组长', '年级组长', '教师'];
+const ROLES = VALID_ROLES;
 
 export default function Users() {
   const toast = useToast();
@@ -15,7 +15,7 @@ export default function Users() {
   const [showForm, setShowForm] = useState(false); // 新建/编辑弹窗
 
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
-  const canManage = canEditUser(user); // admin + 教务员；教务处无账号管理权
+  const canManage = canEditUser(user); // admin + 教务主任
 
   const load = async () => {
     try { setRows((await api.get('/users')).data.data); } catch (e) { setError(errMsg(e)); }

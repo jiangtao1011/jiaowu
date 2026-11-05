@@ -3,7 +3,7 @@ import multer from 'multer';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { db, logAudit, UPLOAD_DIR } from '../db.js';
-import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { authRequired, roleRequired, CLERK_ROLES } from '../auth.js';
 
 const router = Router();
 router.use(authRequired);
@@ -31,7 +31,7 @@ router.get('/', (req, res) => {
 });
 
 // 创建上传任务（教务员自定义）
-router.post('/', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/', roleRequired(...CLERK_ROLES), (req, res) => {
   const { title, description, target_role, target_user_ids, requirement, deadline, allow_file_types } = req.body || {};
   if (!title) return res.status(400).json({ ok: false, error: '任务标题必填' });
   const info = db

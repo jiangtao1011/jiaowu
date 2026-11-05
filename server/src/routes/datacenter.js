@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db.js';
-import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { authRequired, roleRequired, RESULT_VIEW_ROLES } from '../auth.js';
 import { listGroups } from '../groups.js';
 import { loadContext, computePay } from '../context.js';
 
@@ -33,9 +33,9 @@ function passLineConfig() {
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 90;
 }
 
-// 手机端「数据看板」聚合接口（仅管理员/教务处/教务员）。
+// 手机端「数据看板」聚合接口（管理员/教务主任/教务员 + 分管领导只读）。
 // 一次返回：核心指标总览 + 待办聚合 + 检查考核（组级排行 + 组内教师下钻）。
-router.get('/', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.get('/', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const today = localDate();
   const monthStart = `${today.slice(0, 7)}-01`;
   const in7 = addDays(today, 7);
@@ -49,7 +49,7 @@ router.get('/', roleRequired(...ADMIN_ROLES), (req, res) => {
     month_weighted: 0,
     month_pay: 0,
     inspections: count('SELECT COUNT(*) n FROM inspections'),
-    pending_qna: count("SELECT COUNT(*) n FROM qna_lessons WHERE status = 'pending'"),
+    pending_qna: count("SELECT COUNT(*) n FROM qna_lessons WHERE status IN ('pending','grade_approved')"),
     pending_applications: count("SELECT COUNT(*) n FROM applications WHERE status = 'pending'"),
     pending_replies: count("SELECT COUNT(*) n FROM notice_replies WHERE status = 'pending'"),
   };

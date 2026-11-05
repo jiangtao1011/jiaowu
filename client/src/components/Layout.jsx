@@ -2,16 +2,16 @@ import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import QRCode from 'qrcode';
 import api from '../api.js';
-import { canEditUser } from '../roles.js';
+import { ADMIN_ROLES, canEditUser, isReadonly } from '../roles.js';
 
 const GROUPS = [
   {
     label: '日常事务',
     items: [
       { to: '/', label: '工作台', end: true },
-      { to: '/schedules', label: '课表与调课' },
+      { to: '/schedules', label: '课表与调课', hideReadonly: true },
       { to: '/inspections', label: '常规检查' },
-      { to: '/applications', label: '课务申报', adminOnly: true },
+      { to: '/applications', label: '课务申报', applicationsOnly: true, hideReadonly: true },
     ],
   },
   {
@@ -20,24 +20,25 @@ const GROUPS = [
       { to: '/stats', label: '统计中心' },
       { to: '/assessment', label: '教学业绩' },
       { to: '/notices', label: '通知' },
-      { to: '/uploads', label: '教学计划上传' },
+      { to: '/uploads', label: '教学计划上传', hideReadonly: true },
     ],
   },
   {
     label: '基础信息',
     items: [
-      { to: '/teachers', label: '教师信息' },
-      { to: '/classes', label: '班级信息' },
-      { to: '/users', label: '账号管理', editOnly: true },
-      { to: '/admin', label: '数据库管理', dbAdminOnly: true },
+      { to: '/teachers', label: '教师信息', hideReadonly: true },
+      { to: '/classes', label: '班级信息', hideReadonly: true },
+      { to: '/users', label: '账号管理', editOnly: true, hideReadonly: true },
+      { to: '/admin', label: '数据库管理', dbAdminOnly: true, hideReadonly: true },
     ],
   },
 ];
 
 const ROLE_LABELS = {
   admin: '管理员',
+  分管领导: '分管领导',
+  教务主任: '教务主任',
   教务员: '教务员',
-  教务处: '教务处',
   教研组长: '教研组长',
   备课组长: '备课组长',
   年级组长: '年级组长',
@@ -46,9 +47,12 @@ const ROLE_LABELS = {
 
 export default function Layout({ user, onLogout }) {
   const initial = (user?.name || user?.username || '?').charAt(0);
-  const isAdmin = ['admin', '教务员', '教务处'].includes(user?.role);
+  const isAdmin = ADMIN_ROLES.includes(user?.role);
+  const isGradeLeader = user?.role === '年级组长';
+  const readonly = isReadonly(user);
   const isDbAdmin = user?.role === 'admin';
   const showUsers = canEditUser(user);
+  const showApplications = isAdmin || isGradeLeader;
   const [scanQr, setScanQr] = useState(null);
   const [scanUrl, setScanUrl] = useState('');
 
@@ -78,7 +82,7 @@ export default function Layout({ user, onLogout }) {
           {GROUPS.map((g) => (
             <React.Fragment key={g.label}>
               <div className="group">{g.label}</div>
-              {g.items.filter((n) => (!n.adminOnly || isAdmin) && (!n.dbAdminOnly || isDbAdmin) && (!n.editOnly || showUsers)).map((n) => (
+              {g.items.filter((n) => (!n.applicationsOnly || showApplications) && (!n.dbAdminOnly || isDbAdmin) && (!n.editOnly || showUsers) && (!n.hideReadonly || !readonly)).map((n) => (
                 <NavLink key={n.to} to={n.to} end={n.end} className={({ isActive }) => (isActive ? 'active' : '')}>
                   <span className="dot" />
                   {n.label}

@@ -25,10 +25,16 @@ function count(sql, ...params) {
   return Number(db.prepare(sql).get(...params).n);
 }
 
-// 工作台聚合：概览计数 + 今日课务 + 待办审核 + 近期通知 + 工作提醒
+// 工作台聚合：概览计数 + 今日课务 + 待办审核 + 近期通知 + 工作提醒 + 课务类型构成
 router.get('/', (req, res) => {
   const today = localDate();
   const in7 = addDays(today, 7);
+
+  // 课务类型构成：时间范围（默认本月 1 号 ~ 今天），按 period_type 聚合节数
+  const { from_date, to_date } = req.query;
+  const defaultFrom = `${today.slice(0, 7)}-01`;
+  const lFrom = typeof from_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(from_date) ? from_date : defaultFrom;
+  const lTo = typeof to_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(to_date) ? to_date : today;
 
   const overview = {
     classes: count('SELECT COUNT(*) n FROM classes'),
@@ -43,12 +49,20 @@ router.get('/', (req, res) => {
   const todayCalendar = db.prepare('SELECT date, grade, type, note FROM school_calendar WHERE date = ? ORDER BY COALESCE(grade, \'\')').all(today);
   const todayWorks = db.prepare('SELECT * FROM work_plan WHERE date = ? ORDER BY done, id').all(today);
 
-  // 待办审核
+  // 待办审核（课程中心终审口径：待一审 + 已过年级组长一审待终审）
   const todo = {
-    qna: count("SELECT COUNT(*) n FROM qna_lessons WHERE status = 'pending'"),
+    qna: count("SELECT COUNT(*) n FROM qna_lessons WHERE status IN ('pending','grade_approved')"),
     applications: count("SELECT COUNT(*) n FROM applications WHERE status = 'pending'"),
     replies: count("SELECT COUNT(*) n FROM notice_replies WHERE status = 'pending'"),
   };
+
+  // 课务类型构成：时间范围内按 period_type 聚合节数（只统计未取消的记录，不含金额）
+  const lessonTypeStats = db.prepare(`
+    SELECT COALESCE(NULLIF(period_type, ''), '正课') AS type, COUNT(*) AS count
+    FROM lesson_instances
+    WHERE cancelled = 0 AND date >= ? AND date <= ?
+    GROUP BY COALESCE(NULLIF(period_type, ''), '正课')
+    ORDER BY count DESC`).all(lFrom, lTo);
 
   // 近期通知（已发布，按发布时间倒序）
   const recentNotices = db.prepare(`
@@ -82,6 +96,7 @@ router.get('/', (req, res) => {
       overview,
       today: { lessons: todayLessons, calendar: todayCalendar, works: todayWorks },
       todo,
+      lessonTypeStats,
       recentNotices,
       reminders,
       overdue,
@@ -131,7 +146,7 @@ router.get('/teacher', (req, res) => {
   const myApplications = db.prepare(`
     SELECT q.id, q.grade, q.subject, q.period_type, q.date, q.period_count, q.status, c.name AS class_name
     FROM qna_lessons q LEFT JOIN classes c ON c.id = q.class_id
-    WHERE q.teacher_id = ? AND q.status IN ('pending', 'approved')
+    WHERE q.teacher_id = ? AND q.status IN ('pending', 'grade_approved', 'approved')
     ORDER BY q.id DESC LIMIT 10`).all(tid);
 
   // 未读通知数

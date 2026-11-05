@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import { CLERK_ROLES, DIRECTOR_ROLES } from '../roles.js';
 
-const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
-const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '', withdrawn: 'info' };
+const STATUS = { pending: '待年级组长审核', grade_approved: '待课程中心终审', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
+const STATUS_CLS = { pending: 'warn', grade_approved: 'info', approved: 'ok', rejected: '', withdrawn: 'info' };
 const TYPE_ICON = { 答疑: '问', 晚自习: '晚', 晚练: '练', 早自习: '早' };
 
 export default function MobileApply() {
@@ -14,13 +15,15 @@ export default function MobileApply() {
   const [self, setSelf] = useState(null);
   const [error, setError] = useState('');
   const toast = useToast();
-  const [mode, setMode] = useState(null); // '答疑' | '晚自习' | '早自习' | '批量' | null(首页)
+  const [mode, setMode] = useState(null); // '答疑' | '晚自习' | '早自习' | '批量' | '审核' | null(首页)
   const [loading, setLoading] = useState(true);
 
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
-  const isAdmin = ['admin', '教务员', '教务处'].includes(user.role);
+  const isAdmin = CLERK_ROLES.includes(user.role); // 批量申报：admin/教务主任/教务员
   const isGradeLeader = user.role === '年级组长';
+  const isDirector = DIRECTOR_ROLES.includes(user.role); // 终审：admin/教务主任
   const canBatch = isAdmin || isGradeLeader;
+  const canReview = isGradeLeader || isDirector; // 可审核：年级组长(一审) / 教务主任·admin(终审)
 
   // 表单
   const [grade, setGrade] = useState('');
@@ -43,6 +46,31 @@ export default function MobileApply() {
   const [batchContent, setBatchContent] = useState('');
   const [selectedTeachers, setSelectedTeachers] = useState([]); // 选中的教师 id 数组
   const [teacherQuery, setTeacherQuery] = useState(''); // 教师搜索过滤
+
+  // 审核（年级组长一审 / 教务主任·admin 终审）
+  const [reviewList, setReviewList] = useState([]);
+  const [reviewFilter, setReviewFilter] = useState(''); // '' | pending | grade_approved
+
+  const loadReviews = async () => {
+    setError('');
+    try {
+      const params = {};
+      // 年级组长看本年级待一审；教务主任/admin 看待终审
+      if (isGradeLeader) params.status = 'pending';
+      const r = await api.get('/applications', { params });
+      setReviewList(r.data.data);
+    } catch (e) { setError(errMsg(e)); }
+  };
+  useEffect(() => { if (canReview) loadReviews(); }, []);
+
+  const doReview = async (id, approved) => {
+    try {
+      await api.patch(`/applications/${id}/review`, { approved });
+      toast.success(approved ? '已通过' : '已驳回');
+      loadReviews();
+      load();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -79,6 +107,10 @@ export default function MobileApply() {
       setSelectedTeachers([]);
       setTeacherQuery('');
     }
+    if (m === '审核') {
+      setReviewFilter('');
+      loadReviews();
+    }
   };
 
   const submit = async () => {
@@ -103,7 +135,7 @@ export default function MobileApply() {
         content: content || null,
       };
       await api.post('/applications', payload);
-      toast.success(`${mode}申报已提交，待教务处审核`);
+      toast.success(`${mode}申报已提交，待年级组长审核`);
       setMode(null);
       load();
     } catch (e) { toast.error(errMsg(e)); }
@@ -139,7 +171,7 @@ export default function MobileApply() {
     try {
       const res = await api.post('/applications/batch', { items });
       const { inserted, errors } = res.data.data;
-      toast.success(`批量申报已提交 ${inserted} 条待审核${errors.length ? `，${errors.length} 条失败` : ''}`);
+      toast.success(`批量申报已提交 ${inserted} 条，待年级组长审核${errors.length ? `，${errors.length} 条失败` : ''}`);
       if (errors.length) toast.error(errors.join('；'));
       setSelectedTeachers([]);
       setMode(null);
@@ -195,7 +227,7 @@ export default function MobileApply() {
         <>
           <div className="mapply-hero">
             <h1>老师好，今天要申报什么课务？</h1>
-            <p>提交后由教务处审核，通过即计酬（答疑/晚自习按次计酬，早自习按课时折算）。</p>
+            <p>提交后先由年级组长审核，再由课程中心终审，通过即计酬（答疑/晚自习按次计酬，早自习按课时折算）。</p>
           </div>
           <div className="mapply-cards">
             <button className="mapply-card" disabled={notBound} onClick={() => openMode('答疑')}>
@@ -232,6 +264,16 @@ export default function MobileApply() {
                 <div className="mapply-card-arrow">›</div>
               </button>
             )}
+            {canReview && (
+              <button className="mapply-card" onClick={() => openMode('审核')}>
+                <div className="mapply-card-icon review">审</div>
+                <div className="mapply-card-body">
+                  <div className="mapply-card-title">{isGradeLeader ? '审核申报' : '终审申报'}</div>
+                  <div className="mapply-card-desc">{isGradeLeader ? '本年级 · 一审' : '课程中心 · 终审'}</div>
+                </div>
+                <div className="mapply-card-arrow">›</div>
+              </button>
+            )}
           </div>
 
           <div className="mapply-records">
@@ -255,6 +297,9 @@ export default function MobileApply() {
                 <div className="mapply-record-side">
                   <span className={`badge ${STATUS_CLS[q.status]}`}>{STATUS[q.status]}</span>
                   {q.status === 'pending' && (
+                    <button className="mapply-del" onClick={() => del(q.id)}>删除</button>
+                  )}
+                  {q.status === 'grade_approved' && (
                     <button className="mapply-del" onClick={() => del(q.id)}>删除</button>
                   )}
                 </div>
@@ -478,6 +523,95 @@ export default function MobileApply() {
           </div>
 
           <button className="mapply-submit" onClick={submitBatch} disabled={!selectedTeachers.length}>批量提交（{selectedTeachers.length} 人）</button>
+        </div>
+      )}
+
+      {/* 审核视图（年级组长一审 / 教务主任·admin 终审） */}
+      {mode === '审核' && (
+        <div className="mapply-form">
+          <button className="mapply-back" onClick={() => setMode(null)}>‹ 返回</button>
+          <h2>{isGradeLeader ? '审核申报' : '终审申报'}</h2>
+          <p className="mapply-form-hint">
+            {isGradeLeader ? '审核本年级教师的申报，通过后交课程中心终审。' : '课程中心终审，通过后即计酬。'}
+          </p>
+
+          <div className="mapply-field">
+            <label>状态筛选</label>
+            <div className="mapply-chips">
+              {isGradeLeader ? (
+                <button className={`mapply-chip ${reviewFilter === '' ? 'on' : ''}`} onClick={() => setReviewFilter('')}>待一审（{reviewList.length}）</button>
+              ) : (
+                <>
+                  <button className={`mapply-chip ${reviewFilter === '' ? 'on' : ''}`} onClick={() => setReviewFilter('')}>全部（{reviewList.length}）</button>
+                  <button className={`mapply-chip ${reviewFilter === 'grade_approved' ? 'on' : ''}`} onClick={() => setReviewFilter('grade_approved')}>待终审</button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {(() => {
+            const visible = reviewList.filter((q) => {
+              if (!reviewFilter) return true;
+              return q.status === reviewFilter;
+            });
+            // 年级组长只看待一审（后端已按 status=pending 过滤，这里再兜底）
+            if (isGradeLeader) {
+              const list = visible.filter((q) => q.status === 'pending');
+              return (
+                <div className="mapply-records">
+                  {list.length === 0 && <p className="mapply-empty">暂无待审核的申报</p>}
+                  {list.map((q) => (
+                    <div key={q.id} className="mapply-record">
+                      <div className="mapply-record-icon">{TYPE_ICON[q.period_type] || '课'}</div>
+                      <div className="mapply-record-body">
+                        <div className="mapply-record-line1">
+                          <span className={`period-tag period-${q.period_type}`}>{q.period_type}</span>
+                          <span className="mapply-record-title">{q.grade} · {q.subject}</span>
+                        </div>
+                        <div className="mapply-record-line2">
+                          {q.teacher_name} · {q.date} · {q.period_count}节{q.class_name ? ` · ${q.class_name}` : ''}
+                        </div>
+                      </div>
+                      <div className="mapply-record-actions">
+                        <button className="mbtn primary" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => doReview(q.id, true)}>通过</button>
+                        <button className="mbtn danger" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => doReview(q.id, false)}>驳回</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            }
+            // 教务主任/admin：终审（待一审 pending 兜底 + 待终审 grade_approved）
+            return (
+              <div className="mapply-records">
+                {visible.length === 0 && <p className="mapply-empty">暂无待终审的申报</p>}
+                {visible.map((q) => (
+                  <div key={q.id} className={`mapply-record st-${q.status}`}>
+                    <div className="mapply-record-icon">{TYPE_ICON[q.period_type] || '课'}</div>
+                    <div className="mapply-record-body">
+                      <div className="mapply-record-line1">
+                        <span className={`period-tag period-${q.period_type}`}>{q.period_type}</span>
+                        <span className="mapply-record-title">{q.grade} · {q.subject}</span>
+                      </div>
+                      <div className="mapply-record-line2">
+                        {q.teacher_name} · {q.date} · {q.period_count}节{q.class_name ? ` · ${q.class_name}` : ''}
+                      </div>
+                      {q.grade_reviewed_by_name && <div className="mapply-record-line2">一审：{q.grade_reviewed_by_name}</div>}
+                    </div>
+                    <div className="mapply-record-side">
+                      <span className={`badge ${STATUS_CLS[q.status]}`}>{STATUS[q.status]}</span>
+                      {(q.status === 'pending' || q.status === 'grade_approved') && (
+                        <div className="mapply-record-actions">
+                          <button className="mbtn primary" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => doReview(q.id, true)}>通过</button>
+                          <button className="mbtn danger" style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => doReview(q.id, false)}>驳回</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

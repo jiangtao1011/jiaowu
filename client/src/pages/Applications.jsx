@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import { DIRECTOR_ROLES } from '../roles.js';
 
-const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
-const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '', withdrawn: 'info' };
+const STATUS = { pending: '待年级组长审核', grade_approved: '待课程中心终审', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
+const STATUS_CLS = { pending: 'warn', grade_approved: 'info', approved: 'ok', rejected: '', withdrawn: 'info' };
 
 export default function Applications() {
   const [tab, setTab] = useState('qna');
@@ -12,9 +13,9 @@ export default function Applications() {
   const toast = useToast();
 
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
-  const isAdmin = ['admin', '教务员', '教务处'].includes(user.role);
+  const isAdmin = DIRECTOR_ROLES.includes(user.role); // 教务主任/admin：全权（编辑/删除/撤回/创建课程/终审）
   const isGradeLeader = user.role === '年级组长';
-  // 可审核申报的角色：admin/教务员/教务处 + 年级组长（年级组长限本年级，后端已过滤）
+  // 可审核申报的角色：admin/教务主任 + 年级组长（年级组长限本年级，后端已过滤）
   const canReview = isAdmin || isGradeLeader;
 
   // 课时申报状态（晚自习/答疑/晚练等按次计酬 + 早自习折算）
@@ -71,7 +72,7 @@ export default function Applications() {
         toast.success('申报已更新');
       } else {
         await api.post('/applications', { ...qnaForm, teacher_id: qnaForm.teacher_id || null, class_id: qnaForm.class_id || null, date: qnaForm.date || null });
-        toast.success('申报已填报，待教务处审核');
+        toast.success('申报已填报，待年级组长审核');
       }
       setQnaForm({ grade: '', subject: '', teacher_id: '', class_id: '', day_of_week: '', period_no: '', content: '', date: '', period_count: '1', period_type: '答疑' });
       setEditingQna(null);
@@ -230,14 +231,14 @@ export default function Applications() {
     a.click();
   };
 
-  // 课务申报：admin/教务员/教务处 全权；年级组长仅审核本年级申报
+  // 课务申报：admin/教务主任 全权；年级组长仅一审本年级申报
   if (!canReview) {
     return (
       <div>
         <div className="page-head">
           <h2 className="page-title">课务申报</h2>
         </div>
-        <div className="alert error">无权限：课务申报仅教务员/教务处/年级组长可用，请使用「自主申报」提交课时申报。</div>
+        <div className="alert error">无权限：课务申报仅教务主任/年级组长可用，请使用「自主申报」提交课时申报。</div>
       </div>
     );
   }
@@ -246,7 +247,7 @@ export default function Applications() {
     <div>
       <div className="page-head">
         <h2 className="page-title">课务申报</h2>
-        <p className="page-sub">课时申报（晚自习/答疑/晚练等按次计酬 + 早自习折算，审核后进入课表）· 竞赛课/私人定制课申报</p>
+        <p className="page-sub">课时申报（晚自习/答疑/晚练等按次计酬 + 早自习折算，年级组长一审 → 课程中心终审后进入课表）· 竞赛课/私人定制课申报</p>
       </div>
 
       {error && <div className="alert error">{error}</div>}
@@ -312,7 +313,8 @@ export default function Applications() {
             <div className="toolbar">
               <select value={qnaFilter.status} onChange={(e) => setQnaFilter({ ...qnaFilter, status: e.target.value })} style={{ width: 120 }}>
                 <option value="">全部状态</option>
-                <option value="pending">待审核</option>
+                <option value="pending">待年级组长审核</option>
+                <option value="grade_approved">待课程中心终审</option>
                 <option value="approved">已通过</option>
                 <option value="rejected">已驳回</option>
                 <option value="withdrawn">已撤回</option>
@@ -335,17 +337,25 @@ export default function Applications() {
                   <tr key={q.id}>
                     <td>{q.grade}</td><td>{q.subject}</td><td><span className={`period-tag period-${q.period_type}`}>{q.period_type}</span></td><td>{q.teacher_name || '-'}</td><td>{q.class_name || '-'}</td>
                     <td>{q.date ? `${q.date} ${q.period_count ? `×${q.period_count}节` : ''}` : (q.day_of_week ? `周${q.day_of_week} 第${q.period_no}节` : '-')}</td>
-                    <td><span className={`badge ${STATUS_CLS[q.status]}`}>{STATUS[q.status]}</span></td>
+                    <td><span className={`badge ${STATUS_CLS[q.status]}`}>{STATUS[q.status]}</span>
+                      {q.grade_reviewed_by_name && <div className="muted" style={{ fontSize: 11 }}>一审：{q.grade_reviewed_by_name}</div>}
+                    </td>
                     <td>
                       <div className="toolbar" style={{ marginBottom: 0 }}>
                         {/* 编辑：仅管理员（年级组长只审不改） */}
                         {isAdmin && q.status !== 'withdrawn' && (
                           <button className="btn sm" onClick={() => startEditQna(q)}>编辑</button>
                         )}
-                        {/* 审核：管理员 + 年级组长 对 pending 记录 */}
-                        {canReview && q.status === 'pending' && (
+                        {/* 审核：年级组长对 pending 一审；管理员对 pending（兜底）与 grade_approved 终审 */}
+                        {isGradeLeader && !isAdmin && q.status === 'pending' && (
                           <>
-                            <button className="btn sm primary" onClick={() => reviewQna(q.id, true)}>通过</button>
+                            <button className="btn sm primary" onClick={() => reviewQna(q.id, true)}>一审通过</button>
+                            <button className="btn sm danger" onClick={() => reviewQna(q.id, false)}>驳回</button>
+                          </>
+                        )}
+                        {isAdmin && (q.status === 'pending' || q.status === 'grade_approved') && (
+                          <>
+                            <button className="btn sm primary" onClick={() => reviewQna(q.id, true)}>终审通过</button>
                             <button className="btn sm danger" onClick={() => reviewQna(q.id, false)}>驳回</button>
                           </>
                         )}

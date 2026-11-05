@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import { ADMIN_ROLES, INSPECTION_SUBMIT_ROLES, RESULT_VIEW_ROLES } from '../roles.js';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const GRADE_ORDER = ['高一', '高二', '高三', '初一', '初二', '初三'];
@@ -20,8 +21,11 @@ function dowOf(dateStr) {
 export default function MobileInspection() {
   const toast = useToast();
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
-  const isAdmin = ['admin', '教务员', '教务处'].includes(user.role);
-  const canSubmit = ['admin', '教务员', '教务处', '教研组长', '备课组长'].includes(user.role);
+  const isAdmin = ADMIN_ROLES.includes(user.role);
+  const canSubmit = INSPECTION_SUBMIT_ROLES.includes(user.role);
+  const canView = RESULT_VIEW_ROLES.includes(user.role); // 分管领导可查看（只读）
+
+  const [tab, setTab] = useState(canSubmit ? 'submit' : 'view'); // submit | view(记录) | stats(统计)
 
   const [types, setTypes] = useState([]);
   const [classes, setClasses] = useState([]);
@@ -61,6 +65,37 @@ export default function MobileInspection() {
     } catch (e) { setError(errMsg(e)); }
   };
   useEffect(() => { load(); }, []);
+
+  // ===== 只读查看：检查记录 + 统计 =====
+  const [records, setRecords] = useState([]);
+  const [statMode, setStatMode] = useState('teachers'); // teachers | groups
+  const [statTeachers, setStatTeachers] = useState([]);
+  const [statGroups, setStatGroups] = useState([]);
+  const [detail, setDetail] = useState(null);
+  const [fCategory, setFCategory] = useState('');
+
+  const loadRecords = async () => {
+    setError('');
+    try {
+      const r = await api.get('/inspections');
+      setRecords(r.data.data);
+    } catch (e) { setError(errMsg(e)); }
+  };
+  const loadStats = async () => {
+    setError('');
+    try {
+      const [tr, gr] = await Promise.all([
+        api.get('/inspections/stats/teachers'),
+        api.get('/inspections/stats/groups'),
+      ]);
+      setStatTeachers(tr.data.data);
+      setStatGroups(gr.data.data);
+    } catch (e) { setError(errMsg(e)); }
+  };
+  useEffect(() => { if (tab === 'view') loadRecords(); if (tab === 'stats') loadStats(); }, [tab]);
+  const openDetail = async (id) => {
+    try { setDetail((await api.get(`/inspections/${id}`)).data.data); } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const currentType = types.find((t) => t.id === Number(typeId));
   const typeDims = currentType?.dimensions || [];
@@ -166,13 +201,13 @@ export default function MobileInspection() {
   const onFiles = (e) => setPhotos((prev) => [...prev, ...Array.from(e.target.files || [])]);
   const removePhoto = (i) => setPhotos((prev) => prev.filter((_, idx) => idx !== i));
 
-  if (!canSubmit) {
+  if (!canSubmit && !canView) {
     return (
       <div>
         <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
           <div className="mt-title">常规检查</div>
         </div>
-        <div className="alert error">无权限：常规检查仅教务员、教务处、教研组长、备课组长可用。</div>
+        <div className="alert error">无权限：常规检查仅教务员、教务主任、教研组长、备课组长可提交；分管领导可查看。</div>
       </div>
     );
   }
@@ -224,14 +259,132 @@ export default function MobileInspection() {
 
   const filteredTeachers = teachers.filter((t) => !teacherQuery || t.name.includes(teacherQuery));
 
+  // 只读查看视图（分管领导 / 无提交权但有查看权）
+  const readonlyView = !canSubmit && canView;
+
   return (
     <div className="minsp">
       <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
         <div>
           <div className="mt-title">常规检查</div>
-          <div className="mt-sub">选类型 · 定对象 · 打分拍照</div>
+          <div className="mt-sub">{readonlyView ? '查看记录 · 统计' : '选类型 · 定对象 · 打分拍照'}</div>
         </div>
       </div>
+
+      {/* 只读查看：记录 + 统计 tab */}
+      {readonlyView ? (
+        <>
+          <div className="mcard" style={{ padding: 8 }}>
+            <div className="mstat-row">
+              <button className="mbtn ghost" style={{ padding: 10, fontSize: 14, background: tab === 'view' ? 'var(--primary-soft)' : 'transparent', border: 'none' }} onClick={() => setTab('view')}>检查记录</button>
+              <button className="mbtn ghost" style={{ padding: 10, fontSize: 14, background: tab === 'stats' ? 'var(--primary-soft)' : 'transparent', border: 'none' }} onClick={() => setTab('stats')}>检查统计</button>
+            </div>
+          </div>
+
+          {error && <div className="alert error">{error}</div>}
+
+          {tab === 'view' && (
+            <div className="mcard">
+              <div className="mcard-title">检查记录 <span className="mitem-sub">{records.length} 条</span></div>
+              {records.length === 0 && <div className="mempty">暂无检查记录</div>}
+              {records.map((r) => (
+                <button key={r.id} type="button" className="mitem" style={{ width: '100%', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', textAlign: 'left', padding: '10px 0', cursor: 'pointer' }} onClick={() => openDetail(r.id)}>
+                  <div className="mitem-main">
+                    <div className="mitem-title">{r.template_name}{r.cycle_label ? ` · ${r.cycle_label}` : ''}</div>
+                    <div className="mitem-sub">{[r.class_name, r.teacher_name, r.subject].filter(Boolean).join(' · ') || '-'}{r.period_no ? `（第${r.period_no}节）` : ''}</div>
+                    <div className="mitem-sub">{r.lesson_date || '-'} · {r.checker_name || '-'}</div>
+                  </div>
+                  <div className="mitem-side">
+                    {r.score_total != null ? <span className="mitem-title">{r.score_total}<em style={{ fontSize: 11, color: 'var(--muted)' }}>/{r.score_max}</em></span> : <span className="mitem-sub">未打分</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {tab === 'stats' && (
+            <>
+              <div className="mcard" style={{ padding: 8 }}>
+                <div className="mstat-row">
+                  <button className="mbtn ghost" style={{ padding: 10, fontSize: 14, background: statMode === 'teachers' ? 'var(--primary-soft)' : 'transparent', border: 'none' }} onClick={() => setStatMode('teachers')}>按教师</button>
+                  <button className="mbtn ghost" style={{ padding: 10, fontSize: 14, background: statMode === 'groups' ? 'var(--primary-soft)' : 'transparent', border: 'none' }} onClick={() => setStatMode('groups')}>按备课组/教研组</button>
+                </div>
+              </div>
+
+              {statMode === 'teachers' && (
+                <div className="mcard">
+                  <div className="mcard-title">教师得分</div>
+                  {statTeachers.length === 0 && <div className="mempty">暂无数据</div>}
+                  {statTeachers.map((r) => (
+                    <div key={r.teacher_id} className="mitem">
+                      <div className="mitem-main">
+                        <div className="mitem-title">{r.teacher_name}</div>
+                        <div className="mitem-sub">{r.subject || '未设学科'} · {r.count} 次</div>
+                      </div>
+                      <div className="mitem-side">
+                        {r.avg_score != null ? <span className="mitem-title">{r.avg_score}</span> : <span className="mitem-sub">-</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {statMode === 'groups' && (
+                <div className="mcard">
+                  <div className="mcard-title">组达标情况</div>
+                  {statGroups.length === 0 && <div className="mempty">暂无数据</div>}
+                  {statGroups.map((g) => (
+                    <div key={g.key} className="mitem">
+                      <div className="mitem-main">
+                        <div className="mitem-title">{g.name}{g.leader_name ? <span className="mitem-sub">（组长 {g.leader_name}）</span> : null}</div>
+                        <div className="mitem-sub">{g.type} · {g.checked_count}/{g.teacher_count} 已检 · 覆盖率 {g.coverage ?? '-'}%</div>
+                      </div>
+                      <div className="mitem-side">
+                        <div className="mitem-title">{g.avg_score != null ? `${g.avg_score}分` : '-'}</div>
+                        <div className="mitem-sub">达标率 {g.pass_rate != null ? `${g.pass_rate}%` : '-'}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {detail && (
+            <div className="modal-overlay" onClick={() => setDetail(null)}>
+              <div className="modal" onClick={(e) => e.stopPropagation()}>
+                <div className="modal-head">
+                  <h3>{detail.template_name}</h3>
+                  <button className="btn ghost" onClick={() => setDetail(null)}>关闭</button>
+                </div>
+                <div className="detail-meta">
+                  {detail.category && <span className="badge">{detail.category}</span>}
+                  {detail.cycle_label && <span className="badge info">{detail.cycle_label}</span>}
+                  {detail.lesson_date && <span className="badge">{detail.lesson_date}{detail.period_no ? ` 第${detail.period_no}节` : ''}</span>}
+                  <span className="muted">{[detail.class_name, detail.teacher_name, detail.subject].filter(Boolean).join(' · ') || '未关联'} · {detail.checker_name}</span>
+                </div>
+                {detail.score_total != null && (
+                  <div className="detail-score">
+                    <div className="detail-score-total">检查得分 <strong>{detail.score_total}</strong><em> / {detail.score_max}</em></div>
+                    {detail.scores && Object.entries(detail.scores).map(([k, v]) => (
+                      <div key={k} className="dim-item">
+                        <span className="dim-label">{v.label || k}</span>
+                        <div className="dim-bar"><div className="dim-fill" style={{ width: `${Math.min(100, (v.score / 100) * 100)}%` }} /></div>
+                        <span className="dim-score">{v.score}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="sec-label">检查内容</div>
+                {Object.entries(detail.data || {}).map(([k, v]) => (
+                  <div key={k} className="mitem"><div className="mitem-main"><div className="mitem-title" style={{ fontSize: 13 }}>{k}</div><div className="mitem-sub">{String(v)}</div></div></div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+      <>
 
       {error && <div className="alert error">{error}</div>}
 
@@ -486,6 +639,8 @@ export default function MobileInspection() {
 
       <button className="mbtn" style={{ marginTop: 4 }} disabled={submitting} onClick={submit}>{submitting ? '提交中…' : '提交检查'}</button>
       <div style={{ height: 16 }} />
+      </>
+      )}
     </div>
   );
 }

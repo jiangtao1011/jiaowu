@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { db, logAudit } from '../db.js';
-import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { authRequired, roleRequired, CLERK_ROLES, DIRECTOR_ROLES, RESULT_VIEW_ROLES } from '../auth.js';
 import { loadContext, computePay } from '../context.js';
 import { createAdjustNotice } from './notices.js';
 import * as XLSX from 'xlsx';
@@ -151,7 +151,7 @@ router.get('/template', (req, res) => {
 });
 
 // 导出课表模板结构说明 + 导入
-router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req, res) => {
+router.post('/import', roleRequired(...CLERK_ROLES), upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: '请上传课表文件' });
 
   let rows;
@@ -258,7 +258,7 @@ router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req
 
 // 删除补课课表（仅管理员）。按套号 + 可选年级删除整套「节假补课」课表。
 // 同时删除这些课表已展开的上课记录（lesson_instances），避免残留孤儿计酬。
-router.delete('/makeup', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/makeup', roleRequired(...CLERK_ROLES), (req, res) => {
   const { makeup_set, grade } = req.body || {};
   const setNum = Number(makeup_set);
   if (!Number.isInteger(setNum) || setNum < 1) {
@@ -413,7 +413,7 @@ function notifyAdjust({ schedule, change_type, to_teacher_id, effectiveDate, end
 }
 
 // 调课/代课/停课 —— 快照模式：关闭旧记录 + 插入新记录，变化前统计不受影响
-router.post('/adjust', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/adjust', roleRequired(...CLERK_ROLES), (req, res) => {
   const { schedule_id, change_type, from_teacher_id, to_teacher_id, from_date, to_date, reason } = req.body || {};
   if (!schedule_id || !change_type) {
     return res.status(400).json({ ok: false, error: '缺少 schedule_id 或 change_type' });
@@ -427,7 +427,7 @@ router.post('/adjust', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 撤回一条课务调整（撤销误操作）：恢复原课表的 effective_to，删除本次插入的代课/恢复段记录。
-router.post('/changes/:id/revert', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/changes/:id/revert', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const ch = db.prepare('SELECT * FROM schedule_changes WHERE id = ?').get(id);
   if (!ch) return res.status(404).json({ ok: false, error: '调整记录不存在' });
@@ -555,7 +555,7 @@ router.get('/summary', (req, res) => {
 });
 
 // 导出课表明细（Excel）：课表当前状态或按时间段推算，每行含 count/折算课时/课酬
-router.get('/export', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.get('/export', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const { as_of, term, from_date, to_date } = req.query;
   const ctx = loadContext();
   const rows = fetchScheduleRows(as_of, term, from_date, to_date).filter((r) => r.count > 0);
@@ -598,7 +598,7 @@ router.get('/coefficients', (req, res) => {
   return res.json({ ok: true, data: { subjects, bands, periods: periodSettings } });
 });
 
-router.put('/coefficients', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.put('/coefficients', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { subjects = [], bands = [], periods = {} } = req.body || {};
   // 按 id 匹配更新（改名/改档位时不产生重复）；无 id 的新记录才插入。
   // 全量同步：请求里没带的 id 视为「已删除」，从库中移除。
@@ -671,7 +671,7 @@ router.post('/requests', (req, res) => {
 
 // 代课/调课申请列表：管理员看全部；教师看自己发起的
 router.get('/requests', (req, res) => {
-  const isAdmin = ADMIN_ROLES.includes(req.user.role);
+  const isAdmin = RESULT_VIEW_ROLES.includes(req.user.role);
   let sql = `
     SELECT sr.*, c.name AS class_name, s.subject, s.day_of_week, s.period_no,
            ft.name AS from_teacher_name, tt.name AS to_teacher_name,
@@ -689,7 +689,7 @@ router.get('/requests', (req, res) => {
 });
 
 // 审核代课/调课申请（管理员）：通过才执行 adjust
-router.patch('/requests/:id/review', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.patch('/requests/:id/review', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const r = db.prepare('SELECT * FROM substitute_requests WHERE id = ?').get(id);
   if (!r) return res.status(404).json({ ok: false, error: '申请不存在' });
@@ -716,7 +716,7 @@ router.delete('/requests/:id', (req, res) => {
   const r = db.prepare('SELECT * FROM substitute_requests WHERE id = ?').get(id);
   if (!r) return res.status(404).json({ ok: false, error: '申请不存在' });
   if (r.status !== 'pending') return res.status(400).json({ ok: false, error: '仅待审核的申请可撤回' });
-  if (r.requested_by !== req.user.id && !ADMIN_ROLES.includes(req.user.role)) {
+  if (r.requested_by !== req.user.id && !DIRECTOR_ROLES.includes(req.user.role)) {
     return res.status(403).json({ ok: false, error: '无权限操作该申请' });
   }
   db.prepare('DELETE FROM substitute_requests WHERE id = ?').run(id);

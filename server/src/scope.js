@@ -1,14 +1,17 @@
 // 角色作用域：把「角色 + 身份」翻译成「可见教师集合」，供检查/课时等模块按范围过滤。
 // 返回规则：
-//   - admin / 教务员 / 教务处 → null（全量，不过滤）
+//   - admin / 教务主任 / 教务员 / 分管领导 → null（全量，不过滤）
 //   - 教师 → [自己]
 //   - 教研组长 → 本学科全体教师
 //   - 备课组长 → 本学科 + 本年级的教师
 //   - 年级组长 → 本年级全体教师
 // 依赖：users.teacher_id（账号↔教师）、teachers.subject、schedules(任课年级)、teacher_groups(手动/自动组)。
 import { db } from './db.js';
-import { ADMIN_ROLES } from './auth.js';
+import { ADMIN_ROLES, READONLY_ROLES } from './auth.js';
 import { listGroups } from './groups.js';
+
+// 全量查看视角：管理员（admin/教务主任/教务员）+ 分管领导（纯只读，看全校）
+const FULL_VIEW_ROLES = [...ADMIN_ROLES, ...READONLY_ROLES];
 
 // 用户 → 教师 id（无则 null）
 function teacherIdOf(user) {
@@ -52,11 +55,11 @@ function ledGradeOf(user) {
   return gs.length ? gs[0] : null;
 }
 
-// 返回该用户可见的教师 id 数组；null = 全量（管理员）
+// 返回该用户可见的教师 id 数组；null = 全量（管理员/分管领导）
 export function visibleTeacherIds(user) {
   const role = user?.role;
   if (!role) return [];
-  if (ADMIN_ROLES.includes(role)) return null;
+  if (FULL_VIEW_ROLES.includes(role)) return null;
   const tid = teacherIdOf(user);
 
   if (role === '教研组长') {
@@ -95,11 +98,11 @@ export function visibleTeacherIds(user) {
   return tid ? [tid] : [];
 }
 
-// 返回该用户可见的年级集合；null = 全量（管理员）
+// 返回该用户可见的年级集合；null = 全量（管理员/分管领导）
 export function visibleGrades(user) {
   const role = user?.role;
   if (!role) return [];
-  if (ADMIN_ROLES.includes(role)) return null;
+  if (FULL_VIEW_ROLES.includes(role)) return null;
   if (role === '年级组长') {
     const g = managedGradeOf(user);
     return g ? [g] : [];
@@ -112,17 +115,17 @@ export function visibleGrades(user) {
   return null;
 }
 
-// 是否为「管理员级」（可跨全量）角色
+// 是否为「管理员级」（可跨全量）角色（含分管领导全量只读视角）
 export function isAdminRole(user) {
-  return ADMIN_ROLES.includes(user?.role);
+  return FULL_VIEW_ROLES.includes(user?.role);
 }
 
-// 组级作用域：返回该用户可见的「组 key 数组」；null = 全量（管理员）
+// 组级作用域：返回该用户可见的「组 key 数组」；null = 全量（管理员/分管领导）
 // 依赖 ../groups.js 的 listGroups（自动 + 手动组）。
 export function visibleGroups(user) {
   const role = user?.role;
   if (!role) return [];
-  if (ADMIN_ROLES.includes(role)) return null;
+  if (FULL_VIEW_ROLES.includes(role)) return null;
   const tid = teacherIdOf(user);
 
   // 教研组长 → 本学科全部组（教研组 + 本学科各年级备课组）

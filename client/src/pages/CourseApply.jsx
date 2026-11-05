@@ -46,7 +46,7 @@ export default function CourseApply() {
         period_count: periodCount,
         date,
       });
-      toast.success('申报已提交，待教务处审核');
+      toast.success('申报已提交，待教务主任审核');
       setValues({});
     } catch (e) { toast.error(errMsg(e)); }
   };

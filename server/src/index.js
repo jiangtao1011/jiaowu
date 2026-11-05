@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import './db.js';
 
 import authRoutes from './routes/auth.js';
+import { readonlyGuard } from './auth.js';
 import userRoutes from './routes/users.js';
 import classRoutes from './routes/classes.js';
 import teacherRoutes from './routes/teachers.js';
@@ -35,6 +36,9 @@ app.use((req, res, next) => {
 });
 
 app.get('/api/health', (req, res) => res.json({ ok: true, data: 'ok' }));
+
+// 全局只读兜底：分管领导对所有业务写接口一律 403（防御层，防漏改）
+app.use('/api', readonlyGuard);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);

@@ -376,7 +376,7 @@ function computeScoreFields(tid, scores) {
   };
 }
 
-// 提交检查记录（教务员/教务处/admin + 教研组长/备课组长；非管理员按作用域限定教师）
+// 提交检查记录（教务员/教务主任/admin + 教研组长/备课组长；非管理员按作用域限定教师）
 router.post('/', roleRequired(...INSPECTION_SUBMIT_ROLES), (req, res) => {
   const { template_id, type_id, class_id, teacher_id, subject, day_of_week, period_no, lesson_date, cycle_label, data, scores } = req.body || {};
   const tid = Number(type_id ?? template_id);

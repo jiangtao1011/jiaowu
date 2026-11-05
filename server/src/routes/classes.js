@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { db, logAudit } from '../db.js';
-import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { authRequired, roleRequired, CLERK_ROLES } from '../auth.js';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
 
 const router = Router();
@@ -62,7 +62,7 @@ router.get('/template', (req, res) => {
 });
 
 // 批量导入
-router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req, res) => {
+router.post('/import', roleRequired(...CLERK_ROLES), upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: '请上传班级文件' });
   let rows;
   try {
@@ -148,7 +148,7 @@ router.post('/import', roleRequired(...ADMIN_ROLES), upload.single('file'), (req
   return res.json({ ok: true, data: { inserted, skipped, errors } });
 });
 
-router.post('/', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/', roleRequired(...CLERK_ROLES), (req, res) => {
   const { name, type, student_count, grade, parent_id, subject, member_ids } = req.body || {};
   if (!name) return res.status(400).json({ ok: false, error: '班级名称必填' });
   const exists = db.prepare('SELECT id FROM classes WHERE name = ?').get(name);
@@ -164,7 +164,7 @@ router.post('/', roleRequired(...ADMIN_ROLES), (req, res) => {
   return res.json({ ok: true, data: { id: newId } });
 });
 
-router.patch('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.patch('/:id', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const target = db.prepare('SELECT * FROM classes WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ ok: false, error: '班级不存在' });
@@ -184,7 +184,7 @@ router.patch('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
 
 // 删除班级（仅管理员）。有业务引用时拒绝（避免历史课表/计酬/申报突变），
 // 无引用时清理其作为走班的合班成员记录后删除。
-router.delete('/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/:id', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const target = db.prepare('SELECT * FROM classes WHERE id = ?').get(id);
   if (!target) return res.status(404).json({ ok: false, error: '班级不存在' });

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import { INSPECTION_CONFIG_ROLES, INSPECTION_SUBMIT_ROLES } from '../roles.js';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const CYCLE_BADGE = { daily: 'ok', periodic: 'info' };
@@ -103,8 +104,8 @@ export default function Inspections() {
   const [groupExpand, setGroupExpand] = useState(null); // 展开的组 key
 
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
-  const canConfig = ['admin', '教务处'].includes(user.role);
-  const canSubmit = ['admin', '教务员', '教务处', '教研组长', '备课组长'].includes(user.role);
+  const canConfig = INSPECTION_CONFIG_ROLES.includes(user.role);
+  const canSubmit = INSPECTION_SUBMIT_ROLES.includes(user.role);
 
   const load = async () => {
     try {

@@ -3,7 +3,7 @@ import multer from 'multer';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { db, logAudit, UPLOAD_DIR } from '../db.js';
-import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { authRequired, roleRequired, CLERK_ROLES, DIRECTOR_ROLES, RESULT_VIEW_ROLES } from '../auth.js';
 import { visibleGroups } from '../scope.js';
 import { listGroups, resolveGroup } from '../groups.js';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
@@ -65,7 +65,7 @@ router.get('/exam-types', (req, res) => {
 });
 
 // 批量保存考试类型（按 id 更新，无 id 新增；name 为空跳过）
-router.put('/exam-types', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.put('/exam-types', roleRequired(...CLERK_ROLES), (req, res) => {
   const { items = [] } = req.body || {};
   if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items 需为数组' });
   const up = db.prepare('UPDATE exam_types SET name = ?, weight = ?, position = ?, active = ? WHERE id = ?');
@@ -89,7 +89,7 @@ router.put('/exam-types', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 删除考试类型（已被考试引用则拒绝）
-router.delete('/exam-types/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/exam-types/:id', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const row = db.prepare('SELECT * FROM exam_types WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ ok: false, error: '考试类型不存在' });
@@ -117,7 +117,7 @@ router.get('/semesters', (req, res) => {
   return res.json({ ok: true, data: rows.map((r) => r.semester) });
 });
 
-router.post('/exams', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/exams', roleRequired(...CLERK_ROLES), (req, res) => {
   const { name, semester, exam_type, grade, exam_date, note } = req.body || {};
   const n = String(name || '').trim();
   const sem = String(semester || '').trim();
@@ -132,7 +132,7 @@ router.post('/exams', roleRequired(...ADMIN_ROLES), (req, res) => {
   return res.json({ ok: true, data: { id: Number(info.lastInsertRowid) } });
 });
 
-router.patch('/exams/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.patch('/exams/:id', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const e = db.prepare('SELECT * FROM exams WHERE id = ?').get(id);
   if (!e) return res.status(404).json({ ok: false, error: '考试不存在' });
@@ -149,7 +149,7 @@ router.patch('/exams/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
   return res.json({ ok: true, data: { id } });
 });
 
-router.delete('/exams/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/exams/:id', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const e = db.prepare('SELECT * FROM exams WHERE id = ?').get(id);
   if (!e) return res.status(404).json({ ok: false, error: '考试不存在' });
@@ -200,7 +200,7 @@ router.get('/exams/:id/scores', (req, res) => {
 
 // 批量保存各率（全量替换语义：body 传该考试全部要保存的组率）
 // body: [{ group_key, rate_a..rate_e, total_count?, avg_score? }]
-router.put('/exams/:id/scores', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.put('/exams/:id/scores', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const exam = db.prepare('SELECT * FROM exams WHERE id = ?').get(id);
   if (!exam) return res.status(404).json({ ok: false, error: '考试不存在' });
@@ -269,7 +269,7 @@ router.get('/exams/:id/scores-template', (req, res) => {
 });
 
 // 批量导入各率（按备课组名匹配 upsert，不影响文件中未出现的组）
-router.post('/exams/:id/scores/import', roleRequired(...ADMIN_ROLES), uploadMem.single('file'), (req, res) => {
+router.post('/exams/:id/scores/import', roleRequired(...CLERK_ROLES), uploadMem.single('file'), (req, res) => {
   const id = Number(req.params.id);
   const exam = db.prepare('SELECT * FROM exams WHERE id = ?').get(id);
   if (!exam) return res.status(404).json({ ok: false, error: '考试不存在' });
@@ -346,7 +346,7 @@ router.post('/exams/:id/files', upload.single('file'), (req, res) => {
 
   // 权限：仅管理员级或组长（教研组长=本学科、备课组长=本组）；普通教师不可上传
   const role = req.user.role;
-  if (!ADMIN_ROLES.includes(role) && role !== '教研组长' && role !== '备课组长') {
+  if (!CLERK_ROLES.includes(role) && role !== '教研组长' && role !== '备课组长') {
     return res.status(403).json({ ok: false, error: '无权限上传成绩文件' });
   }
   const scope = groupScopeSet(req);
@@ -365,7 +365,7 @@ router.get('/files/:fileId/download', (req, res) => {
   const f = db.prepare('SELECT * FROM exam_files WHERE id = ?').get(Number(req.params.fileId));
   if (!f) return res.status(404).json({ ok: false, error: '文件不存在' });
   const role = req.user.role;
-  if (!ADMIN_ROLES.includes(role) && role !== '教研组长' && role !== '备课组长') {
+  if (!RESULT_VIEW_ROLES.includes(role) && role !== '教研组长' && role !== '备课组长') {
     return res.status(403).json({ ok: false, error: '无权限下载成绩文件' });
   }
   const scope = groupScopeSet(req);
@@ -395,7 +395,7 @@ function assessmentConfig() {
 
 router.get('/config', (req, res) => res.json({ ok: true, data: assessmentConfig() }));
 
-router.put('/config', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.put('/config', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { rate_weights, full_score } = req.body || {};
   const cfg = assessmentConfig();
   const w = rate_weights || {};
@@ -552,8 +552,8 @@ function groupSemesterSnapshot(groupKey, semester, cfg) {
   };
 }
 
-// 列出某学期已固化的教师档案（管理员/教务处）
-router.get('/records', roleRequired(...ADMIN_ROLES), (req, res) => {
+// 列出某学期已固化的教师档案（管理员/教务主任/教务员/分管领导）
+router.get('/records', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const { semester } = req.query;
   if (!semester) return res.status(400).json({ ok: false, error: '请提供 semester' });
   const rows = db.prepare(`
@@ -598,7 +598,7 @@ function doArchive(semester, userId) {
   return { records: count, groups: groupKeys.length };
 }
 
-router.post('/semesters/:semester/archive', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/semesters/:semester/archive', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const semester = String(req.params.semester || '').trim();
   if (!semester) return res.status(400).json({ ok: false, error: '请提供学期' });
   const r = doArchive(semester, req.user.id);
@@ -608,7 +608,7 @@ router.post('/semesters/:semester/archive', roleRequired(...ADMIN_ROLES), (req, 
 });
 
 // 重新固化 = 删旧重建（与 archive 同逻辑，供录错后重来）
-router.post('/semesters/:semester/rearchive', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/semesters/:semester/rearchive', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const semester = String(req.params.semester || '').trim();
   if (!semester) return res.status(400).json({ ok: false, error: '请提供学期' });
   const r = doArchive(semester, req.user.id);

@@ -34,7 +34,7 @@ export default function MobileAssessment() {
       {loading && <div className="mempty">加载中…</div>}
 
       {!loading && records.length === 0 && (
-        <div className="mempty">暂无已固化的业绩档案，请联系教务处固化后查看。</div>
+        <div className="mempty">暂无已固化的业绩档案，请联系教务主任固化后查看。</div>
       )}
 
       {records.map((r) => {

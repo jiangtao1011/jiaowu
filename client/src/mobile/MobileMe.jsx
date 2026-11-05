@@ -1,16 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
+import { isAdmin, RESULT_VIEW_ROLES, INSPECTION_SUBMIT_ROLES } from '../roles.js';
 
 const ROLE_LABELS = {
-  admin: '管理员', 教务员: '教务员', 教务处: '教务处', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
+  admin: '管理员', 分管领导: '分管领导', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
 };
 
 export default function MobileMe({ onLogout }) {
   const navigate = useNavigate();
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const [mine, setMine] = useState(null);
-  const isAdmin = ['admin', '教务员', '教务处'].includes(user.role);
+  const admin = isAdmin(user);
+  const canSeeInspection = INSPECTION_SUBMIT_ROLES.includes(user.role) || RESULT_VIEW_ROLES.includes(user.role);
 
   useEffect(() => {
     (async () => {
@@ -69,8 +71,8 @@ export default function MobileMe({ onLogout }) {
         <Link to="/m/stats" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课时</div><div className="mitem-sub">查看课时与课酬</div></div><span className="mitem-side">›</span></div></Link>
         <Link to="/m/assessment" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的业绩</div><div className="mitem-sub">查看学期考核分档案</div></div><span className="mitem-side">›</span></div></Link>
         <Link to="/m/substitute" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">代课调课</div><div className="mitem-sub">发起代课/调课申请</div></div><span className="mitem-side">›</span></div></Link>
-        {isAdmin && (
-          <Link to="/m/inspection" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">常规检查</div><div className="mitem-sub">选课打分、拍照上传</div></div><span className="mitem-side">›</span></div></Link>
+        {canSeeInspection && (
+          <Link to="/m/inspection" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">常规检查</div><div className="mitem-sub">{admin ? '选课打分、拍照上传' : '查看检查记录与统计'}</div></div><span className="mitem-side">›</span></div></Link>
         )}
       </div>
 

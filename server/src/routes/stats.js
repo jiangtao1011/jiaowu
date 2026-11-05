@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import * as XLSX from 'xlsx';
 import { db, logAudit } from '../db.js';
-import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { authRequired, roleRequired, CLERK_ROLES, DIRECTOR_ROLES, RESULT_VIEW_ROLES } from '../auth.js';
 import { loadContext, computePay, parsePayStandard } from '../context.js';
 import { visibleTeacherIds } from '../scope.js';
 
@@ -53,7 +53,7 @@ router.get('/calendar', (req, res) => {
 
 // 批量设置/更新校历（按 date+grade upsert）。grade 为空 = 全校，非空 = 仅该年级。
 // 每项支持单日（date）或区间（from/to，含两端）批量展开。
-router.put('/calendar', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.put('/calendar', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { items = [] } = req.body || {};
   if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items 需为数组' });
   const upsert = db.prepare(`
@@ -94,7 +94,7 @@ router.put('/calendar', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 删除某天校历（按 date+grade，grade 缺省=全校）
-router.delete('/calendar/:date', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/calendar/:date', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const date = String(req.params.date);
   const grade = req.query.grade ? String(req.query.grade) : null;
   if (grade) {
@@ -152,7 +152,7 @@ function activeOn(s, dateStr) {
   return (!s.effective_from || s.effective_from <= dateStr) && (!s.effective_to || s.effective_to > dateStr);
 }
 
-router.post('/generate', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/generate', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { from_date, to_date, replace } = req.body || {};
   if (!from_date || !to_date) return res.status(400).json({ ok: false, error: '请提供 from_date 与 to_date' });
   if (from_date > to_date) return res.status(400).json({ ok: false, error: '开始日期不能晚于结束日期' });
@@ -301,7 +301,7 @@ router.get('/instances', (req, res) => {
 });
 
 // 手工加课（source=extra）
-router.post('/instances', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/instances', roleRequired(...CLERK_ROLES), (req, res) => {
   const { class_id, teacher_id, subject, date, period_no, period_type, term } = req.body || {};
   if (!class_id || !teacher_id || !date) return res.status(400).json({ ok: false, error: '班级、教师、日期必填' });
   const info = db.prepare(`
@@ -314,7 +314,7 @@ router.post('/instances', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 删除某条上课记录（撤销加课/停课记录）
-router.delete('/instance/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/instance/:id', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const r = db.prepare('SELECT * FROM lesson_instances WHERE id = ?').get(id);
   if (!r) return res.status(404).json({ ok: false, error: '上课记录不存在' });
@@ -324,7 +324,7 @@ router.delete('/instance/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 单日代课/停课
-router.post('/instance/:id/adjust', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/instance/:id/adjust', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const r = db.prepare('SELECT * FROM lesson_instances WHERE id = ?').get(id);
   if (!r) return res.status(404).json({ ok: false, error: '上课记录不存在' });
@@ -357,7 +357,7 @@ router.post('/instance/:id/adjust', roleRequired(...ADMIN_ROLES), (req, res) => 
 });
 
 // 撤销停课/代课（恢复原记录）
-router.post('/instance/:id/restore', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/instance/:id/restore', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const r = db.prepare('SELECT * FROM lesson_instances WHERE id = ?').get(id);
   if (!r) return res.status(404).json({ ok: false, error: '上课记录不存在' });
@@ -502,7 +502,7 @@ router.get('/type-pays', (req, res) => {
 });
 
 // 批量保存类型字典（按 id 更新，无 id 新增；name 为空则跳过）
-router.put('/type-pays', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.put('/type-pays', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { items = [] } = req.body || {};
   if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items 需为数组' });
   const up = db.prepare('UPDATE period_type_pays SET name = ?, pay = ? WHERE id = ?');
@@ -525,7 +525,7 @@ router.put('/type-pays', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 删除某类型（仅删除字典项；若已被上课记录/课表引用则拒绝，避免历史计酬突变）
-router.delete('/type-pays/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/type-pays/:id', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const row = db.prepare('SELECT * FROM period_type_pays WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ ok: false, error: '类型不存在' });
@@ -558,7 +558,7 @@ router.get('/type-pays/grade-pays', (req, res) => {
 });
 
 // 批量保存分年级覆盖价（按 id 更新，无 id 新增；period_type/grade 为空则跳过）
-router.put('/type-pays/grade-pays', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.put('/type-pays/grade-pays', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { items = [] } = req.body || {};
   if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items 需为数组' });
   const up = db.prepare('UPDATE period_type_grade_pays SET period_type = ?, grade = ?, pay = ? WHERE id = ?');
@@ -582,7 +582,7 @@ router.put('/type-pays/grade-pays', roleRequired(...ADMIN_ROLES), (req, res) => 
 });
 
 // 删除某条分年级覆盖价
-router.delete('/type-pays/grade-pays/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/type-pays/grade-pays/:id', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const row = db.prepare('SELECT * FROM period_type_grade_pays WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ ok: false, error: '分年级价记录不存在' });
@@ -600,7 +600,7 @@ router.get('/type-coefficients', (req, res) => {
 });
 
 // 批量保存折算类型字典（按 id 更新，无 id 新增；name 为空则跳过）
-router.put('/type-coefficients', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.put('/type-coefficients', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { items = [] } = req.body || {};
   if (!Array.isArray(items)) return res.status(400).json({ ok: false, error: 'items 需为数组' });
   const up = db.prepare('UPDATE period_type_coefficients SET name = ?, coefficient = ? WHERE id = ?');
@@ -623,7 +623,7 @@ router.put('/type-coefficients', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 删除某折算类型（仅删除字典项；若已被上课记录/课表/申报引用则拒绝，避免历史计酬突变）
-router.delete('/type-coefficients/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/type-coefficients/:id', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const row = db.prepare('SELECT * FROM period_type_coefficients WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ ok: false, error: '折算类型不存在' });
@@ -644,7 +644,7 @@ router.delete('/type-coefficients/:id', roleRequired(...ADMIN_ROLES), (req, res)
 });
 // 财务口径：保留已停课/代课双方全貌（includeCancelled），停课课酬计 0 并标「已停课」，
 // 代课记录标来源与原教师，便于财务把每笔钱对应到原始课务动作。
-router.get('/export', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.get('/export', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const { from_date, to_date, term, teacher_id } = req.query;
   if (!from_date || !to_date) return res.status(400).json({ ok: false, error: '请提供 from_date 与 to_date' });
   const ctx = loadContext();
@@ -685,7 +685,7 @@ router.get('/export', roleRequired(...ADMIN_ROLES), (req, res) => {
 // 导出财务审核汇总表（Excel）：按教师一行，金额按「钱的来源」分列——
 // 按次计酬各类型(元) + 非规时段各档(元) + 课酬合计；正课/早自习折算课时单列并标注「不计钱」。
 // 附「口径说明」sheet（单价/系数快照/生成人），供财务审核归档。
-router.get('/financial-report', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.get('/financial-report', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const { from_date, to_date, term, teacher_id } = req.query;
   if (!from_date || !to_date) return res.status(400).json({ ok: false, error: '请提供 from_date 与 to_date' });
   const ctx = loadContext();
@@ -728,7 +728,7 @@ router.get('/financial-report', roleRequired(...ADMIN_ROLES), (req, res) => {
   aoa.push([]);
   aoa.push([`统计区间：${from_date} ~ ${to_date}${term ? '（时段：' + term + '）' : ''}`]);
   aoa.push([]);
-  aoa.push(['制表人（教务员）：', '', '审核人（教务处）：', '', '财务复核：', '', '校长审批：', '']);
+  aoa.push(['制表人（教务员）：', '', '审核人（教务主任）：', '', '财务复核：', '', '校长审批：', '']);
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!cols'] = header.map((h) => ({ wch: Math.max(8, String(h).length * 2 + 2) }));
@@ -781,7 +781,7 @@ router.get('/financial-report', roleRequired(...ADMIN_ROLES), (req, res) => {
 // 返回 { ok, data: { period, balanced, detail_pay, summary_pay, issues, by_type, by_grade, by_subject, totals } }
 //   balanced: 明细逐条课酬之和 是否等于 汇总课酬合计（金额勾稽）
 //   issues: 异常清单（无价类型 / 非规时段缺标准 / 代课计数异常 / 单人偏高）
-router.get('/financial-check', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.get('/financial-check', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const { from_date, to_date, term, teacher_id } = req.query;
   if (!from_date || !to_date) return res.status(400).json({ ok: false, error: '请提供 from_date 与 to_date' });
   const ctx = loadContext();
@@ -891,7 +891,7 @@ router.get('/financial-check', roleRequired(...ADMIN_ROLES), (req, res) => {
 // 财务审核通过后，把区间数据固化成快照。之后重新生成上课记录/改课表/改单价都不影响已归档月份。
 
 // 列出归档快照
-router.get('/snapshots', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.get('/snapshots', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const rows = db.prepare(`
     SELECT s.id, s.from_date, s.to_date, s.term, s.label, s.created_at, u.name AS created_by_name
     FROM payroll_snapshots s
@@ -901,7 +901,7 @@ router.get('/snapshots', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 读取某归档快照详情（还原当时的 teachers/totals，供复核）
-router.get('/snapshots/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.get('/snapshots/:id', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const row = db.prepare('SELECT * FROM payroll_snapshots WHERE id = ?').get(id);
   if (!row) return res.status(404).json({ ok: false, error: '归档快照不存在' });
@@ -911,7 +911,7 @@ router.get('/snapshots/:id', roleRequired(...ADMIN_ROLES), (req, res) => {
 });
 
 // 固化快照。body 可选 label；term 与区间来自查询参数（与导出/对账同口径）。
-router.post('/snapshots', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.post('/snapshots', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { from_date, to_date, term } = req.query;
   const { label } = req.body || {};
   if (!from_date || !to_date) return res.status(400).json({ ok: false, error: '请提供 from_date 与 to_date' });
@@ -952,7 +952,7 @@ router.post('/snapshots', roleRequired(...ADMIN_ROLES), (req, res) => {
 
 // 导出「财务审核包」：单文件多 sheet（汇总 + 明细 + 勾稽校验 + 口径说明）。
 // 供 MCP/WorkBuddy 一键出包，也供前端「导出财务审核包」按钮直接下载。
-router.get('/financial-pack', roleRequired(...ADMIN_ROLES), (req, res) => {
+router.get('/financial-pack', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const { from_date, to_date, term, teacher_id } = req.query;
   if (!from_date || !to_date) return res.status(400).json({ ok: false, error: '请提供 from_date 与 to_date' });
   const ctx = loadContext();

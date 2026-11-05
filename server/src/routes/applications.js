@@ -2,7 +2,7 @@ import { Router } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
 import { db, logAudit } from '../db.js';
-import { authRequired, roleRequired, ADMIN_ROLES } from '../auth.js';
+import { authRequired, roleRequired, ADMIN_ROLES, DIRECTOR_ROLES, CLERK_ROLES } from '../auth.js';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
 import { publicBase } from '../share.js';
 
@@ -10,10 +10,10 @@ const router = Router();
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
-// 可批量申报的角色：教务员/教务处/admin + 年级组长
-const BATCH_ROLES = [...ADMIN_ROLES, '年级组长'];
-// 可审核申报的角色：admin/教务员/教务处 + 年级组长（年级组长限本年级）
-const REVIEW_ROLES = [...ADMIN_ROLES, '年级组长'];
+// 可批量申报的角色：录入维护（admin/教务主任/教务员）+ 年级组长
+const BATCH_ROLES = [...CLERK_ROLES, '年级组长'];
+// 可审核申报的角色：admin + 教务主任（主任专审）+ 年级组长（年级组长限本年级，一审）
+const REVIEW_ROLES = ['admin', '教务主任', '年级组长'];
 
 // 校验 period_type 是否合法：早自习为折算型固定类型（不在按次计酬字典里），其余看字典，否则回退「答疑」
 function validPeriodType(t) {
@@ -38,7 +38,7 @@ function virtualClassIdForGrade(grade) {
 // 已驳回 / 已撤回不视为占用，允许重新申报。excludeId 用于编辑时排除自身。
 function findDuplicate({ teacher_id, period_type, date, day_of_week, period_no, grade, class_id, excludeId }) {
   if (!teacher_id || !period_type) return null;
-  const conds = ["teacher_id = ?", "period_type = ?", "status IN ('pending','approved')"];
+  const conds = ["teacher_id = ?", "period_type = ?", "status IN ('pending','grade_approved','approved')"];
   const params = [teacher_id, period_type];
   if (date) {
     conds.push('date = ?'); params.push(date);
@@ -156,12 +156,14 @@ router.get('/', authRequired, (req, res) => {
   const { status, period_type, grade, date } = req.query;
   let sql = `
     SELECT q.*, t.name AS teacher_name, c.name AS class_name,
-           fu.name AS filled_by_name, ru.name AS reviewed_by_name
+           fu.name AS filled_by_name, ru.name AS reviewed_by_name,
+           gru.name AS grade_reviewed_by_name
     FROM qna_lessons q
     LEFT JOIN teachers t ON t.id = q.teacher_id
     LEFT JOIN classes c ON c.id = q.class_id
     LEFT JOIN users fu ON fu.id = q.filled_by
     LEFT JOIN users ru ON ru.id = q.reviewed_by
+    LEFT JOIN users gru ON gru.id = q.grade_reviewed_by
     WHERE 1=1`;
   const params = [];
   if (status) { sql += ' AND q.status = ?'; params.push(status); }
@@ -226,7 +228,7 @@ router.get('/template', authRequired, (req, res) => {
     ['三、要点：'],
     ['- 临时填报（填发生日期）审核通过后，按次计酬类型按「类型单价 × 节数」计酬；早自习按「课时数 × 早自习系数」折算、不计钱。'],
     ['- 固定排班（填星期+节次，不填日期）审核通过后进入课表，按班展开计酬。'],
-    ['- 导入后统一为「待审核」状态，由教务处逐条审核。'],
+    ['- 导入后统一为「待审核」状态，由年级组长一审、教务主任终审。'],
     ['- 示例行仅供参考，导入前请删除示例行、只保留真实数据。'],
   ];
   downloadTemplate(res, headers, samples, '课时申报导入模板.xlsx', [{ name: '填写说明', rows: notes }]);
@@ -294,7 +296,7 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
 });
 
 // 批量申报上下文：返回批量申报表格所需的下拉数据，按角色分级。
-// 教务员/教务处/admin 可选全部年级；年级组长锁定其负责年级（managed_grade），
+// 教务员/教务主任/admin 可选全部年级；年级组长锁定其负责年级（managed_grade），
 // 班级列表也限定为该年级（含年级虚班）。
 router.get('/batch-context', authRequired, (req, res) => {
   const typePays = db.prepare('SELECT id, name, pay FROM period_type_pays ORDER BY id').all();
@@ -323,7 +325,7 @@ router.get('/batch-context', authRequired, (req, res) => {
   return res.json({ ok: true, data: { role: req.user.role, managed_grade, grades, teachers, classes, typePays } });
 });
 
-// 批量申报（教务员/教务处/admin/年级组长）：一次提交多条课时申报，统一待审核。
+// 批量申报（教务员/教务主任/admin/年级组长）：一次提交多条课时申报，统一待审核。
 // body: { items: [{ grade, subject, teacher_id, class_id, date, period_count, period_type, content }] }
 router.post('/batch', authRequired, roleRequired(...BATCH_ROLES), (req, res) => {
   const { items } = req.body || {};
@@ -360,53 +362,87 @@ router.post('/batch', authRequired, roleRequired(...BATCH_ROLES), (req, res) => 
   return res.json({ ok: true, data: { inserted, errors } });
 });
 
-// 审核答疑课（教务处/管理员 + 年级组长，年级组长限本年级）
+// 审核通过后计酬：有日期 → 生成按日上课记录（source=qna）；无日期 → 视为固定排班，走课表展开。
+// 返回生成的计酬记录条数（固定排班返回 0，因为要等课表展开）。
+function applyQnaPayroll(q) {
+  if (!q.teacher_id || !q.class_id) return 0;
+  if (q.date) {
+    // 临时/不定期：按填报的日期与节数生成上课记录，类型用记录里的 period_type
+    const count = Math.max(1, Number(q.period_count) || 1);
+    const insert = db.prepare(`
+      INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
+      VALUES (?,?,?,?,?,?, '常规', 'qna', ?, ?)`);
+    for (let i = 0; i < count; i++) {
+      insert.run(q.class_id, q.teacher_id, q.subject, q.date, (q.period_no || 1) + i, q.period_type, q.id, q.content ?? null);
+    }
+    return count;
+  }
+  // 固定排班：仍进入课表，之后由课表展开到 lesson_instances
+  db.prepare(`
+    INSERT INTO schedules (class_id, teacher_id, subject, day_of_week, period_no, period_type)
+    VALUES (?,?,?,?,?,?)`)
+    .run(q.class_id, q.teacher_id, q.subject, q.day_of_week ?? 0, q.period_no ?? 1, q.period_type);
+  return 0;
+}
+
+// 审核课时申报（两级审批）：
+//  - 年级组长：一审，pending → grade_approved（待课程中心终审）/ rejected，只审本年级。
+//  - 课程中心（admin/教务主任）：终审，pending 或 grade_approved → approved（计酬）/ rejected。
 router.patch('/:id/review', authRequired, roleRequired(...REVIEW_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const q = db.prepare('SELECT * FROM qna_lessons WHERE id = ?').get(id);
-  if (!q) return res.status(404).json({ ok: false, error: '答疑课记录不存在' });
-  // 年级组长：只能审本年级的申报
-  if (req.user.role === '年级组长') {
+  if (!q) return res.status(404).json({ ok: false, error: '课时申报记录不存在' });
+  const { approved } = req.body || {};
+  const isGradeLeader = req.user.role === '年级组长';
+
+  if (isGradeLeader) {
+    // 年级组长一审：只能审本年级的待一审申报
     const managed = db.prepare('SELECT managed_grade FROM users WHERE id = ?').get(req.user.id)?.managed_grade || null;
     if (managed && q.grade && q.grade !== managed) {
       return res.status(403).json({ ok: false, error: '只能审核本年级的申报' });
     }
+    if (q.status !== 'pending') return res.status(400).json({ ok: false, error: '该申报已审核，请刷新后查看' });
+
+    if (approved) {
+      db.prepare("UPDATE qna_lessons SET status = 'grade_approved', grade_reviewed_by = ?, grade_reviewed_at = datetime('now','localtime') WHERE id = ?")
+        .run(req.user.id, id);
+    } else {
+      db.prepare("UPDATE qna_lessons SET status = 'rejected', reviewed_by = ?, reviewed_at = datetime('now','localtime') WHERE id = ?")
+        .run(req.user.id, id);
+    }
+    const status = approved ? 'grade_approved' : 'rejected';
+    logAudit(req.user.id, 'grade_review_qna', `qna_lessons:${id}`, `年级组长一审 ${status}`);
+    return res.json({ ok: true, data: { id, status } });
   }
-  const { approved } = req.body || {};
+
+  // 课程中心终审：待一审（兜底，管理员全权）或已过年级组长一审
+  if (q.status !== 'pending' && q.status !== 'grade_approved') {
+    return res.status(400).json({ ok: false, error: '该申报已终审，请刷新后查看' });
+  }
   const status = approved ? 'approved' : 'rejected';
-  db.prepare('UPDATE qna_lessons SET status = ?, reviewed_by = ?, reviewed_at = datetime(\'now\',\'localtime\') WHERE id = ?')
+  db.prepare("UPDATE qna_lessons SET status = ?, reviewed_by = ?, reviewed_at = datetime('now','localtime') WHERE id = ?")
     .run(status, req.user.id, id);
 
-  // 审核通过后计酬：有日期 → 生成按日上课记录（source=qna）；无日期 → 视为固定排班，走课表展开
+  let created = 0;
   if (approved) {
-    if (q.teacher_id && q.class_id) {
-      if (q.date) {
-        // 临时/不定期：按填报的日期与节数生成上课记录，类型用记录里的 period_type
-        const count = Math.max(1, Number(q.period_count) || 1);
-        const insert = db.prepare(`
-          INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
-          VALUES (?,?,?,?,?,?, '常规', 'qna', ?, ?)`);
-        for (let i = 0; i < count; i++) {
-          insert.run(q.class_id, q.teacher_id, q.subject, q.date, (q.period_no || 1) + i, q.period_type, q.id, q.content ?? null);
-        }
-      } else {
-        // 固定排班：仍进入课表，之后由课表展开到 lesson_instances
-        db.prepare(`
-          INSERT INTO schedules (class_id, teacher_id, subject, day_of_week, period_no, period_type)
-          VALUES (?,?,?,?,?,?)`)
-          .run(q.class_id, q.teacher_id, q.subject, q.day_of_week ?? 0, q.period_no ?? 1, q.period_type);
-      }
-    }
+    created = applyQnaPayroll(q);
   }
-  logAudit(req.user.id, 'review_qna_lesson', `qna_lessons:${id}`, `审核答疑课 ${status}`);
-  return res.json({ ok: true, data: { id, status } });
+  logAudit(req.user.id, 'review_qna_lesson', `qna_lessons:${id}`, `课程中心终审 ${status}${created ? `，生成上课记录 ${created} 条` : ''}`);
+  return res.json({ ok: true, data: { id, status, created_instances: created } });
 });
 
-// 权限判断：能否编辑/删除某条答疑记录。
-// 规则：管理员（教务处/教务员/admin）全权；填报人只能操作自己「待审核」的记录。
-function canModifyQna(req, q) {
+// 权限判断：能否编辑某条答疑记录。
+// 规则：管理员（教务主任/教务员/admin）全权；填报人只能编辑自己「待一审」的记录。
+function canEditQna(req, q) {
   if (ADMIN_ROLES.includes(req.user.role)) return true;
   return q.filled_by === req.user.id && q.status === 'pending';
+}
+
+// 权限判断：能否删除/撤回某条答疑记录。
+// 规则：管理员全权；填报人可删除/撤回自己「未终审」的记录（待一审 或 已过年级组长一审待课程中心终审）。
+function canDeleteQna(req, q) {
+  if (ADMIN_ROLES.includes(req.user.role)) return true;
+  return q.filled_by === req.user.id && (q.status === 'pending' || q.status === 'grade_approved');
 }
 
 // 编辑答疑课（待审核可改；管理员可改任意状态）
@@ -414,7 +450,7 @@ router.patch('/:id', authRequired, (req, res) => {
   const id = Number(req.params.id);
   const q = db.prepare('SELECT * FROM qna_lessons WHERE id = ?').get(id);
   if (!q) return res.status(404).json({ ok: false, error: '答疑课记录不存在' });
-  if (!canModifyQna(req, q)) return res.status(403).json({ ok: false, error: '无权限修改该记录' });
+  if (!canEditQna(req, q)) return res.status(403).json({ ok: false, error: '无权限修改该记录' });
 
   const { grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type } = req.body || {};
 
@@ -469,7 +505,7 @@ router.delete('/:id', authRequired, (req, res) => {
   const id = Number(req.params.id);
   const q = db.prepare('SELECT * FROM qna_lessons WHERE id = ?').get(id);
   if (!q) return res.status(404).json({ ok: false, error: '答疑课记录不存在' });
-  if (!canModifyQna(req, q)) return res.status(403).json({ ok: false, error: '无权限删除该记录' });
+  if (!canDeleteQna(req, q)) return res.status(403).json({ ok: false, error: '无权限删除该记录' });
 
   // 删除该答疑生成的上课记录（若有）
   const removed = db.prepare('DELETE FROM lesson_instances WHERE source = ? AND source_id = ?').run('qna', id);
@@ -479,7 +515,7 @@ router.delete('/:id', authRequired, (req, res) => {
 });
 
 // 撤回已通过的答疑：状态置为 withdrawn，并删除已生成的上课记录
-router.patch('/:id/withdraw', authRequired, roleRequired(...ADMIN_ROLES), (req, res) => {
+router.patch('/:id/withdraw', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const q = db.prepare('SELECT * FROM qna_lessons WHERE id = ?').get(id);
   if (!q) return res.status(404).json({ ok: false, error: '答疑课记录不存在' });
@@ -538,8 +574,8 @@ router.get('/tasks', authRequired, (req, res) => {
   })) });
 });
 
-// 创建课程（教务员：自定义字段 + 计酬配置 + 分享）
-router.post('/tasks', authRequired, roleRequired(...ADMIN_ROLES), (req, res) => {
+// 创建课程（教务主任：自定义字段 + 计酬配置 + 分享）
+router.post('/tasks', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade } = req.body || {};
   if (!title) return res.status(400).json({ ok: false, error: '课程标题必填' });
 
@@ -649,7 +685,7 @@ router.patch('/applications/:id/review', authRequired, roleRequired(...REVIEW_RO
 });
 
 // 撤回已通过的课程申报：状态置 withdrawn，联动删除已生成上课记录
-router.patch('/applications/:id/withdraw', authRequired, roleRequired(...ADMIN_ROLES), (req, res) => {
+router.patch('/applications/:id/withdraw', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const a = db.prepare('SELECT * FROM applications WHERE id = ?').get(id);
   if (!a) return res.status(404).json({ ok: false, error: '申报记录不存在' });
@@ -663,7 +699,7 @@ router.patch('/applications/:id/withdraw', authRequired, roleRequired(...ADMIN_R
 });
 
 // 删除课程申报：联动删除已生成的上课记录
-router.delete('/applications/:id', authRequired, roleRequired(...ADMIN_ROLES), (req, res) => {
+router.delete('/applications/:id', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const a = db.prepare('SELECT * FROM applications WHERE id = ?').get(id);
   if (!a) return res.status(404).json({ ok: false, error: '申报记录不存在' });

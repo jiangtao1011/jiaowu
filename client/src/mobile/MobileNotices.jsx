@@ -49,7 +49,7 @@ export default function MobileNotices() {
     setError('');
     try {
       await api.post(`/notices/share/${open.share_token}/replies`, { content: reply });
-      toast.success('回复已提交，待教务处审核');
+      toast.success('回复已提交，待教务主任审核');
       setReply('');
       load();
     } catch (e) { toast.error(errMsg(e)); }

@@ -1,8 +1,9 @@
 import React from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { ADMIN_ROLES, RESULT_VIEW_ROLES } from '../roles.js';
 
 const ROLE_LABELS = {
-  admin: '管理员', 教务员: '教务员', 教务处: '教务处', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
+  admin: '管理员', 分管领导: '分管领导', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
 };
 
 // 线性 SVG 图标（克制、统一描边风格）
@@ -16,7 +17,8 @@ const ICONS = {
 
 export default function MobileShell({ user, unread, onUnreadChange, onLogout }) {
   const navigate = useNavigate();
-  const isAdmin = ['admin', '教务员', '教务处'].includes(user?.role);
+  const isAdmin = ADMIN_ROLES.includes(user?.role);
+  const canViewDc = RESULT_VIEW_ROLES.includes(user?.role);
   const isGradeLeader = user?.role === '年级组长';
 
   // 底部导航（按角色显示）
@@ -33,7 +35,7 @@ export default function MobileShell({ user, unread, onUnreadChange, onLogout }) 
   return (
     <div className="mobile-shell">
       <div className="mobile-body">
-        <Outlet context={{ isAdmin, isGradeLeader, unread, onUnreadChange }} />
+        <Outlet context={{ isAdmin, canViewDc, isGradeLeader, unread, onUnreadChange }} />
       </div>
       <nav className="mobile-tabbar">
         {tabs.map((t) => (
