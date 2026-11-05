@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
 import { isAdmin, RESULT_VIEW_ROLES, INSPECTION_SUBMIT_ROLES } from '../roles.js';
-
 const ROLE_LABELS = {
   admin: '管理员', 分管领导: '分管领导', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
 };
@@ -26,6 +25,7 @@ export default function MobileMe({ onLogout }) {
   const logout = () => { onLogout(); navigate('/login'); };
   const teacher = mine?.bound ? mine.teacher : null;
   const isBound = !!teacher;
+  const isManager = RESULT_VIEW_ROLES.includes(user.role) || user.role === '年级组长';
 
   return (
     <div>
@@ -68,9 +68,13 @@ export default function MobileMe({ onLogout }) {
       {/* 快捷入口：个人功能（需绑定）+ 管理功能（按权限） */}
       <div className="mcard">
         <div className="mcard-title">快捷入口</div>
+        {isManager ? (
+          <Link to="/m/timetable" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">课表查询</div><div className="mitem-sub">按班级/教师/时间查全校课表{isBound ? '，或切「我的课表」' : ''}</div></div><span className="mitem-side">›</span></div></Link>
+        ) : isBound && (
+          <Link to="/m/timetable" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课表</div><div className="mitem-sub">查看本周课表</div></div><span className="mitem-side">›</span></div></Link>
+        )}
         {isBound && (
           <>
-            <Link to="/m/timetable" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课表</div><div className="mitem-sub">查看本周课表</div></div><span className="mitem-side">›</span></div></Link>
             <Link to="/m/stats" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课时</div><div className="mitem-sub">查看课时与课酬</div></div><span className="mitem-side">›</span></div></Link>
             <Link to="/m/assessment" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的业绩</div><div className="mitem-sub">查看学期考核分档案</div></div><span className="mitem-side">›</span></div></Link>
             <Link to="/m/substitute" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">代课调课</div><div className="mitem-sub">发起代课/调课申请</div></div><span className="mitem-side">›</span></div></Link>
