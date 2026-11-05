@@ -16,7 +16,8 @@ function isMoneyType(t, typePays) {
 }
 
 export default function MobileStats() {
-  const { isAdmin, isGradeLeader } = useOutletContext();
+  const { canViewDc, isGradeLeader } = useOutletContext();
+  const canViewAll = canViewDc || isGradeLeader; // 全体课时：admin/分管领导/教务主任/教务员 + 年级组长
   const [data, setData] = useState([]);
   const [types, setTypes] = useState([]);
   const [typePays, setTypePays] = useState([]);
@@ -50,10 +51,10 @@ export default function MobileStats() {
     return `${from} ~ ${to}`;
   };
 
-  // 无绑定教师且非管理级 → 默认「标准/系数」
+  // 无绑定教师且非管理级/只读级 → 默认「标准/系数」
   useEffect(() => {
-    if (!myTeacherId && !isAdmin && !isGradeLeader) setView('standard');
-  }, [myTeacherId, isAdmin, isGradeLeader]);
+    if (!myTeacherId && !canViewAll) setView('standard');
+  }, [myTeacherId, canViewAll]);
 
   const loadSummary = async (teacherId) => {
     setError('');
@@ -168,7 +169,7 @@ export default function MobileStats() {
           {myTeacherId && (
             <button className="mbtn ghost" style={{ padding: 10, fontSize: 14, background: view === 'mine' ? 'var(--primary-soft)' : 'transparent', border: 'none' }} onClick={() => setView('mine')}>我的课时</button>
           )}
-          {(isAdmin || isGradeLeader) && (
+          {(canViewAll) && (
             <button className="mbtn ghost" style={{ padding: 10, fontSize: 14, background: view === 'all' ? 'var(--primary-soft)' : 'transparent', border: 'none' }} onClick={() => setView('all')}>全体课时</button>
           )}
           <button className="mbtn ghost" style={{ padding: 10, fontSize: 14, background: view === 'standard' ? 'var(--primary-soft)' : 'transparent', border: 'none' }} onClick={() => setView('standard')}>标准/系数</button>

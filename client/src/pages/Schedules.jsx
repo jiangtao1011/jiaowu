@@ -14,6 +14,14 @@ const ABBR = {
 };
 const abbr = (s) => (s && ABBR[s]) || s;
 
+// 科目 → 颜色（缩略图色块用，柔和区分）
+const SUBJECT_COLORS = {
+  语文: '#c0392b', 数学: '#3b5bdb', 英语: '#7a4fb0', 物理: '#167d6f', 化学: '#2e8b57',
+  生物: '#e8590c', 政治: '#b0731f', 历史: '#8a5a00', 地理: '#0f5f54', 体育: '#6b7280',
+  音乐: '#5b55c0', 美术: '#e67700', 信息技术: '#2c46b0', 信息: '#2c46b0', 通用技术: '#5f3dc4', 通用: '#5f3dc4', 技术: '#5f3dc4', 心理: '#c0392b',
+};
+const subjectColor = (s) => SUBJECT_COLORS[s] || '#8894a3';
+
 // 从班级名中提取层标识（如 '高一(1)班数学A层' -> 'A层'）
 const layerToken = (name) => {
   const m = /([A-Za-z0-9一二三四五六七八九十]+层)/.exec(name || '');
@@ -41,7 +49,7 @@ function PrintSheet({ c, rangeLabel }) {
         </tbody>
       </table>
       <div className="ps-foot">
-        <div>签发人：{c.operator_name || '教务处'}</div>
+        <div>签发人：{c.operator_name || '教务主任'}</div>
         <div>（本通知单一式一份，交相关教师留存）</div>
       </div>
     </div>
@@ -71,6 +79,8 @@ export default function Schedules() {
   const [showImport, setShowImport] = useState(false); // 导入课表弹窗
   const [changes, setChanges] = useState([]); // 课务调整记录
   const [printChange, setPrintChange] = useState(null); // 打印通知单对象
+  const [focusClass, setFocusClass] = useState(''); // 下钻的单班 id（空=总览缩略图）
+  const [makeupTab, setMakeupTab] = useState(null); // 补课课表当前套号（null=未选，选第一个）
 
   const load = async () => {
     try {
@@ -100,6 +110,11 @@ export default function Schedules() {
     try {
       const r = await api.get('/schedules', { params: { term: '节假补课', include_inactive: '1' } });
       setMakeupRows(r.data.data);
+      // 默认选中第一套（含 null）
+      const sets = [...new Set(r.data.data.map((x) => x.makeup_set)).values()].filter((s) => s != null).sort((a, b) => a - b);
+      const hasUnmarked = r.data.data.some((x) => x.makeup_set == null);
+      const first = hasUnmarked ? null : (sets[0] ?? null);
+      setMakeupTab(first);
     } catch (e) { setError(errMsg(e)); }
   };
   useEffect(() => { if (view === 'makeup') loadMakeup(); }, [view]);
@@ -295,25 +310,32 @@ export default function Schedules() {
     );
   };
 
+  // 计算某班课表中「有课的天」（1-7），整天没课的天不显示这一列
+  const activeDays = (gridRows) => {
+    const days = new Set(gridRows.filter((r) => r.day_of_week >= 1 && r.day_of_week <= 7).map((r) => r.day_of_week));
+    return [1, 2, 3, 4, 5, 6, 7].filter((d) => days.has(d));
+  };
+
   // 渲染一张完整网格
   const renderGrid = (gridRows, title, readonly = false) => {
     const maxPeriod = Math.max(1, ...gridRows.map((r) => r.period_no));
     const periods = Array.from({ length: maxPeriod }, (_, i) => i + 1);
+    const days = activeDays(gridRows);
     return (
       <div>
         <div className="grid-title">{title}</div>
-        <div className="schedule-grid">
+        <div className="schedule-grid" style={{ gridTemplateColumns: `52px repeat(${days.length}, 1fr)` }}>
           <div className="cell head">节次</div>
-          {DAYS.map((d) => <div key={d} className="cell head">{d}</div>)}
+          {days.map((d) => <div key={d} className="cell head">{DAYS[d - 1]}</div>)}
           {periods.map((p) => (
             <React.Fragment key={p}>
               <div className="cell head">第{p}节</div>
-              {DAYS.map((_, di) => {
-                const cellRows = gridRows.filter((r) => r.period_no === p && r.day_of_week === di + 1);
-                if (!cellRows.length) return <div key={di} className="cell"><span className="muted">空</span></div>;
+              {days.map((d) => {
+                const cellRows = gridRows.filter((r) => r.period_no === p && r.day_of_week === d);
+                if (!cellRows.length) return <div key={d} className="cell"><span className="muted">空</span></div>;
                 return (
-                  <div key={di} className={`cell ${readonly ? '' : 'clickable'}`}
-                    onClick={() => !readonly && setDetail({ title, day: di, period: p, rows: cellRows })}>
+                  <div key={d} className={`cell ${readonly ? '' : 'clickable'}`}
+                    onClick={() => !readonly && setDetail({ title, day: d - 1, period: p, rows: cellRows })}>
                     {renderCell(cellRows)}
                   </div>
                 );
@@ -325,25 +347,96 @@ export default function Schedules() {
     );
   };
 
-  const renderGrids = () => {
-    // 班级课表：单张网格（后端已合并该班自身 + 分层子班 + 合班走班）
-    if (classId) {
-      const c = classById.get(Number(classId));
-      return renderGrid(rows, c ? c.name : '班级课表');
-    }
-    // 总课表 / 年级课表：每个行政班一张网格，分层/走班折叠进所属行政班
+  // 缩略图：某班迷你周课表（只显示科目色块，不显示教师）
+  const renderThumbnail = (ac) => {
+    const gridRows = rows.filter((r) => adminIdsOf(r).includes(ac.id));
+    const maxPeriod = Math.max(1, ...gridRows.map((r) => r.period_no));
+    const periods = Array.from({ length: maxPeriod }, (_, i) => i + 1);
+    const days = activeDays(gridRows);
+    return (
+      <div className="thumb-grid">
+        <div className="thumb-row">
+          <div className="thumb-period" />
+          {days.map((d) => <div key={d} className="thumb-day">{DAYS[d - 1]}</div>)}
+        </div>
+        {periods.map((p) => (
+          <div key={p} className="thumb-row">
+            <div className="thumb-period">{p}</div>
+            {days.map((d) => {
+              const cell = gridRows.filter((r) => r.period_no === p && r.day_of_week === d);
+              if (!cell.length) return <div key={d} className="thumb-cell empty" />;
+              return (
+                <div key={d} className="thumb-cell">
+                  {cell.slice(0, 2).map((s) => (
+                    <span key={s.id} className="thumb-chip" style={{ background: subjectColor(s.subject) }} title={`${s.subject} · ${s.teacher_name}`}>
+                      {abbr(baseSubject(s.subject))}
+                    </span>
+                  ))}
+                  {cell.length > 2 && <span className="thumb-more">+{cell.length - 2}</span>}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // 按年级分组渲染缩略图总览
+  const renderOverview = () => {
     const adminClasses = classes
       .filter((c) => c.type === '行政班' && (!grade || c.grade === grade))
-      .sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh'));
-    const grids = adminClasses.map((ac) => {
-      const gridRows = rows.filter((r) => adminIdsOf(r).includes(ac.id));
-      return (
-        <div className="grid-card" key={ac.id}>
+      .sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh', { numeric: true }));
+    const byGrade = {};
+    for (const ac of adminClasses) (byGrade[ac.grade || '未分年级'] ||= []).push(ac);
+    const gradeOrder = [...new Set(classes.map((c) => c.grade).filter(Boolean))].sort();
+    const keys = [...gradeOrder, '未分年级'].filter((g) => byGrade[g]?.length);
+
+    return (
+      <div>
+        {keys.map((g) => (
+          <div key={g} className="thumb-grade">
+            <div className="thumb-grade-title">{g}</div>
+            <div className="thumb-cards">
+              {byGrade[g].map((ac) => (
+                <button key={ac.id} className="thumb-card" onClick={() => { setFocusClass(String(ac.id)); setClassId(String(ac.id)); }}>
+                  <div className="thumb-name">{ac.name}</div>
+                  {renderThumbnail(ac)}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+        {adminClasses.length === 0 && <p className="muted">暂无行政班，请先在「班级信息」建班。</p>}
+      </div>
+    );
+  };
+
+  // 单班下钻：左侧年级导航 + 右侧完整课表
+  const renderFocus = () => {
+    const ac = classById.get(Number(focusClass));
+    if (!ac) { setFocusClass(''); return null; }
+    const gridRows = rows.filter((r) => adminIdsOf(r).includes(ac.id));
+    // 同年级行政班导航
+    const siblings = classes
+      .filter((c) => c.type === '行政班' && c.grade === ac.grade)
+      .sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh', { numeric: true }));
+    return (
+      <div className="focus-wrap">
+        <div className="focus-nav">
+          <button className="btn sm" onClick={() => { setFocusClass(''); setClassId(''); }}>‹ 返回总览</button>
+          <div className="focus-nav-title">{ac.grade || '未分年级'}</div>
+          {siblings.map((s) => (
+            <button key={s.id} className={`focus-nav-item ${String(s.id) === focusClass ? 'on' : ''}`} onClick={() => { setFocusClass(String(s.id)); setClassId(String(s.id)); }}>
+              {s.name}
+            </button>
+          ))}
+        </div>
+        <div className="focus-main">
           {renderGrid(gridRows, `${ac.name}${ac.grade ? ' · ' + ac.grade : ''}`)}
         </div>
-      );
-    });
-    return <div className="grids">{grids}</div>;
+      </div>
+    );
   };
 
   // 补课课表：按套号分组，每套内每个行政班一张卡片；卡片内按节次纵向列出课程（分层/走班折叠进所属行政班）。
@@ -399,12 +492,26 @@ export default function Schedules() {
 
     return (
       <div>
+        {setKeys.length > 0 && (
+          <div className="makeup-tabs">
+            {setKeys.map((set) => {
+              const setRows = makeupRows.filter((r) => (set == null ? r.makeup_set == null : r.makeup_set === set));
+              const setGrade = [...new Set(setRows.map((r) => r.grade).filter(Boolean))].sort();
+              const label = set == null ? '未标套号' : `第 ${set} 套${setGrade.length ? ' · ' + setGrade.join('/') : ''}`;
+              return (
+                <button key={String(set)} className={`btn sm ${makeupTab === set ? 'primary' : ''}`} onClick={() => setMakeupTab(set)}>{label}</button>
+              );
+            })}
+          </div>
+        )}
+
         {setKeys.map((set) => {
+          if (makeupTab !== null && makeupTab !== set) return null;
           const setRows = makeupRows.filter((r) => (set == null ? r.makeup_set == null : r.makeup_set === set));
           const setGrade = [...new Set(setRows.map((r) => r.grade).filter(Boolean))].sort();
           const adminClasses = classes
             .filter((c) => c.type === '行政班' && setRows.some((r) => adminIdsOf(r).includes(c.id)))
-            .sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh'));
+            .sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh', { numeric: true }));
           const setTitle = set == null ? '补课课表 · 未标记套号' : `第 ${set} 套补课课表${setGrade.length ? ' · ' + setGrade.join('/') : ''}`;
           return (
             <div key={String(set)} className="makeup-set">
@@ -430,16 +537,13 @@ export default function Schedules() {
     <div>
       <div className="page-head">
         <h2 className="page-title">课表与调课</h2>
-        <p className="page-sub">每个班级一张课表：行政班、分层、走班合并显示；点击任意格子查看详情并可代课/停课，拖拽课块可调换教师</p>
+        <p className="page-sub">行政班、分层、走班合并显示 · 点击格子看详情 · 拖拽课块调换教师</p>
       </div>
 
       {error && <div className="alert error">{error}</div>}
 
       <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div>
-          <h3 style={{ margin: 0 }}>课表</h3>
-          <p className="muted" style={{ margin: '4px 0 0' }}>表头：班级、星期、节次、类型、时段、课程名称、教师。按「课程名称」导入；班级填「班级信息」里的名称（行政班/分层/走班），系统自动识别上课形式并合并到对应班级课表。</p>
-        </div>
+        <h3 style={{ margin: 0 }}>课表</h3>
         <button className="btn primary" onClick={() => setShowImport(true)}>导入课表</button>
       </div>
 
@@ -478,8 +582,12 @@ export default function Schedules() {
               <button className="btn primary" onClick={importFile} disabled={!file}>导入</button>
               <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
             </div>
-            <p className="muted" style={{ margin: '12px 0 0' }}>「追加」保留旧课表不变，可选填生效/结束日期（如补课课表只在一段日期内生效）；「替换」从生效日期起关闭选定范围内旧课表、启用新表（旧数据仍保留，历史统计不受影响）。</p>
-            <p className="muted" style={{ margin: '4px 0 0' }}>补课课表轮换：时段选「节假补课」，每个文件导入为一套，在「套号」填 1/2/3（高一/高二两套、高三三套）；之后在校历把补课周日标「补课 + 用第几套」即可按套轮换、按节假日标准计酬。</p>
+            <p className="muted" style={{ margin: '12px 0 0', fontSize: 12.5 }}>
+              追加保留旧表；替换从生效日期起启用新表（历史数据保留，统计不受影响）。
+            </p>
+            <p className="muted" style={{ margin: '4px 0 0', fontSize: 12.5 }}>
+              补课课表：时段选「节假补课」，套号填 1/2/3 区分多套轮换，之后在校历标「补课 + 第几套」。
+            </p>
           </div>
         </div>
       )}
@@ -496,11 +604,7 @@ export default function Schedules() {
         {view === 'grid' && (
           <>
             <div className="toolbar">
-              <select value={classId} onChange={(e) => setClassId(e.target.value)} style={{ width: 170 }}>
-                <option value="">全部班级（总课表）</option>
-                {classes.map((c) => <option key={c.id} value={c.id}>{c.name}（{c.type}）</option>)}
-              </select>
-              <select value={grade} onChange={(e) => setGrade(e.target.value)} style={{ width: 130 }}>
+              <select value={grade} onChange={(e) => { setGrade(e.target.value); setFocusClass(''); setClassId(''); }} style={{ width: 130 }}>
                 <option value="">全部年级</option>
                 {grades.map((g) => <option key={g} value={g}>{g}</option>)}
               </select>
@@ -508,15 +612,16 @@ export default function Schedules() {
                 <option value="">全部时段</option>
                 {TERMS.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
-              <span className="hint">选班级看单班课表；全部/年级视图按「每个行政班一张课表」展示；点击格子看详情。</span>
+              {focusClass && <span className="hint">{classById.get(Number(focusClass))?.name} · 点击格子看详情 · 拖拽调课</span>}
+              {!focusClass && <span className="hint">点击班级缩略图查看完整课表</span>}
             </div>
-            {rows.length === 0 ? <p className="muted">暂无课表数据，请先导入。</p> : renderGrids()}
+            {rows.length === 0 ? <p className="muted">暂无课表数据，请先导入。</p> : (focusClass ? renderFocus() : renderOverview())}
           </>
         )}
 
         {view === 'makeup' && (
           <>
-            <p className="muted" style={{ marginTop: 0 }}>节假补课课表，按套号分组、以课表网格呈现；分层/走班折叠进所属行政班。导入时在「套号」填 1/2/3 区分多套轮换。</p>
+            <p className="muted" style={{ marginTop: 0 }}>按套号分组展示，导入时在「套号」填 1/2/3 区分多套轮换。</p>
             {renderMakeupGrids()}
           </>
         )}
@@ -582,7 +687,6 @@ export default function Schedules() {
               <h3>{detail.title} · {DAYS[detail.day]} 第{detail.period}节</h3>
               <button className="btn ghost" onClick={() => setDetail(null)}>关闭</button>
             </div>
-            <p className="muted" style={{ marginTop: 0 }}>该格子的全部课程，可逐门代课或停课。</p>
             <table>
               <thead><tr><th>课程</th><th>形式</th><th>班级</th><th>教师</th><th>类型</th><th style={{ width: 250 }}>操作</th></tr></thead>
               <tbody>
@@ -615,7 +719,6 @@ export default function Schedules() {
                         }}>代课</button>
                         <button className="btn sm danger" onClick={() => stopClass(r.id)}>停课</button>
                       </div>
-                      <p className="muted" style={{ margin: '4px 0 0', fontSize: 12 }}>代课留空日期=长期；只填结束日期=单日；填开始+结束=区间（结束后自动换回原教师）。</p>
                     </td>
                   </tr>
                 ))}
