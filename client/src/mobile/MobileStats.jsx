@@ -18,21 +18,22 @@ function isMoneyType(t, typePays) {
 export default function MobileStats() {
   const { canViewDc, isGradeLeader } = useOutletContext();
   const canViewAll = canViewDc || isGradeLeader; // 全体课时：admin/分管领导/教务主任/教务员 + 年级组长
+  const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
+  const myTeacherId = user.teacher_id;
   const [data, setData] = useState([]);
   const [types, setTypes] = useState([]);
   const [typePays, setTypePays] = useState([]);
   const [coefs, setCoefs] = useState(null);
   const [teachers, setTeachers] = useState([]);
-  const [view, setView] = useState('mine');
+
+  // 初始视图：有绑定教师→mine；无绑定但可看全体→all；否则 standard
+  const [view, setView] = useState(() => (myTeacherId ? 'mine' : (canViewAll ? 'all' : 'standard')));
   const [selTeacher, setSelTeacher] = useState('');
   const [ym, setYm] = useState(nowYm());
   const [error, setError] = useState('');
   const [detail, setDetail] = useState(null); // { teacherId, type }
   const [detailRows, setDetailRows] = useState([]);
   const [expandedTeacher, setExpandedTeacher] = useState(null); // 全体视图展开的教师 id
-
-  const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
-  const myTeacherId = user.teacher_id;
 
   // 某月份的统计区间：当月到「今天」，历史月份到「月末」
   const rangeOf = () => {

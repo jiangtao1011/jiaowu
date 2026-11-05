@@ -216,44 +216,42 @@ export default function MobileApply() {
 
       {error && <div className="alert error">{error}</div>}
 
-      {notBound && (
-        <div className="mapply-notice">
-          你的账号尚未绑定教师档案，无法自主申报。请联系教务员在「账号管理」里为你的账号绑定教师档案。
-        </div>
-      )}
-
-      {/* 首页：两个大入口 + 我的记录 */}
+      {/* 首页：入口 + 我的记录 */}
       {!mode && (
         <>
           <div className="mapply-hero">
-            <h1>老师好，今天要申报什么课务？</h1>
-            <p>提交后先由年级组长审核，再由课程中心终审，通过即计酬（答疑/晚自习按次计酬，早自习按课时折算）。</p>
+            <h1>{notBound ? '管理功能' : '老师好，今天要申报什么课务？'}</h1>
+            <p>{notBound ? '你的账号未绑定教师档案，仅可使用以下管理功能。' : '提交后先由年级组长审核，再由课程中心终审，通过即计酬（答疑/晚自习按次计酬，早自习按课时折算）。'}</p>
           </div>
           <div className="mapply-cards">
-            <button className="mapply-card" disabled={notBound} onClick={() => openMode('答疑')}>
-              <div className="mapply-card-icon qa">问</div>
-              <div className="mapply-card-body">
-                <div className="mapply-card-title">申报答疑</div>
-                <div className="mapply-card-desc">针对年级 · 临时某天某次</div>
-              </div>
-              <div className="mapply-card-arrow">›</div>
-            </button>
-            <button className="mapply-card" disabled={notBound} onClick={() => openMode('晚自习')}>
-              <div className="mapply-card-icon night">晚</div>
-              <div className="mapply-card-body">
-                <div className="mapply-card-title">申报晚自习</div>
-                <div className="mapply-card-desc">针对班级 · 临时某天某次</div>
-              </div>
-              <div className="mapply-card-arrow">›</div>
-            </button>
-            <button className="mapply-card" disabled={notBound} onClick={() => openMode('早自习')}>
-              <div className="mapply-card-icon early">早</div>
-              <div className="mapply-card-body">
-                <div className="mapply-card-title">申报早自习</div>
-                <div className="mapply-card-desc">针对年级 · 按课时数折算</div>
-              </div>
-              <div className="mapply-card-arrow">›</div>
-            </button>
+            {!notBound && (
+              <>
+                <button className="mapply-card" onClick={() => openMode('答疑')}>
+                  <div className="mapply-card-icon qa">问</div>
+                  <div className="mapply-card-body">
+                    <div className="mapply-card-title">申报答疑</div>
+                    <div className="mapply-card-desc">针对年级 · 临时某天某次</div>
+                  </div>
+                  <div className="mapply-card-arrow">›</div>
+                </button>
+                <button className="mapply-card" onClick={() => openMode('晚自习')}>
+                  <div className="mapply-card-icon night">晚</div>
+                  <div className="mapply-card-body">
+                    <div className="mapply-card-title">申报晚自习</div>
+                    <div className="mapply-card-desc">针对班级 · 临时某天某次</div>
+                  </div>
+                  <div className="mapply-card-arrow">›</div>
+                </button>
+                <button className="mapply-card" onClick={() => openMode('早自习')}>
+                  <div className="mapply-card-icon early">早</div>
+                  <div className="mapply-card-body">
+                    <div className="mapply-card-title">申报早自习</div>
+                    <div className="mapply-card-desc">针对年级 · 按课时数折算</div>
+                  </div>
+                  <div className="mapply-card-arrow">›</div>
+                </button>
+              </>
+            )}
             {canBatch && (
               <button className="mapply-card" onClick={() => openMode('批量')}>
                 <div className="mapply-card-icon batch">批</div>
@@ -276,13 +274,14 @@ export default function MobileApply() {
             )}
           </div>
 
-          <div className="mapply-records">
-            <div className="mapply-records-head">
-              <h3>我的申报</h3>
-              <span className="mapply-count">{self?.my_records?.length || 0} 条</span>
-            </div>
-            {self?.my_records?.length === 0 && <p className="mapply-empty">还没有申报记录</p>}
-            {self?.my_records?.map((q) => (
+          {!notBound && (
+            <div className="mapply-records">
+              <div className="mapply-records-head">
+                <h3>我的申报</h3>
+                <span className="mapply-count">{self?.my_records?.length || 0} 条</span>
+              </div>
+              {self?.my_records?.length === 0 && <p className="mapply-empty">还没有申报记录</p>}
+              {self?.my_records?.map((q) => (
               <div key={q.id} className={`mapply-record st-${q.status}`}>
                 <div className="mapply-record-icon">{TYPE_ICON[q.period_type] || '课'}</div>
                 <div className="mapply-record-body">
@@ -305,7 +304,8 @@ export default function MobileApply() {
                 </div>
               </div>
             ))}
-          </div>
+            </div>
+          )}
         </>
       )}
 

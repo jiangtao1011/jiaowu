@@ -25,6 +25,7 @@ export default function MobileMe({ onLogout }) {
 
   const logout = () => { onLogout(); navigate('/login'); };
   const teacher = mine?.bound ? mine.teacher : null;
+  const isBound = !!teacher;
 
   return (
     <div>
@@ -64,13 +65,17 @@ export default function MobileMe({ onLogout }) {
         </div>
       )}
 
-      {/* 快捷入口 */}
+      {/* 快捷入口：个人功能（需绑定）+ 管理功能（按权限） */}
       <div className="mcard">
         <div className="mcard-title">快捷入口</div>
-        <Link to="/m/timetable" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课表</div><div className="mitem-sub">查看本周课表</div></div><span className="mitem-side">›</span></div></Link>
-        <Link to="/m/stats" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课时</div><div className="mitem-sub">查看课时与课酬</div></div><span className="mitem-side">›</span></div></Link>
-        <Link to="/m/assessment" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的业绩</div><div className="mitem-sub">查看学期考核分档案</div></div><span className="mitem-side">›</span></div></Link>
-        <Link to="/m/substitute" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">代课调课</div><div className="mitem-sub">发起代课/调课申请</div></div><span className="mitem-side">›</span></div></Link>
+        {isBound && (
+          <>
+            <Link to="/m/timetable" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课表</div><div className="mitem-sub">查看本周课表</div></div><span className="mitem-side">›</span></div></Link>
+            <Link to="/m/stats" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的课时</div><div className="mitem-sub">查看课时与课酬</div></div><span className="mitem-side">›</span></div></Link>
+            <Link to="/m/assessment" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">我的业绩</div><div className="mitem-sub">查看学期考核分档案</div></div><span className="mitem-side">›</span></div></Link>
+            <Link to="/m/substitute" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">代课调课</div><div className="mitem-sub">发起代课/调课申请</div></div><span className="mitem-side">›</span></div></Link>
+          </>
+        )}
         {canSeeInspection && (
           <Link to="/m/inspection" className="mlist-link"><div className="mitem"><div className="mitem-main"><div className="mitem-title">常规检查</div><div className="mitem-sub">{admin ? '选课打分、拍照上传' : '查看检查记录与统计'}</div></div><span className="mitem-side">›</span></div></Link>
         )}
