@@ -37,7 +37,7 @@ app.use((req, res, next) => {
 
 app.get('/api/health', (req, res) => res.json({ ok: true, data: 'ok' }));
 
-// 全局只读兜底：分管领导对所有业务写接口一律 403（防御层，防漏改）
+// 全局只读兜底：校长对所有业务写接口一律 403（防御层，防漏改）
 app.use('/api', readonlyGuard);
 
 app.use('/api/auth', authRoutes);

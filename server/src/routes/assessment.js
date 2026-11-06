@@ -552,7 +552,7 @@ function groupSemesterSnapshot(groupKey, semester, cfg) {
   };
 }
 
-// 列出某学期已固化的教师档案（管理员/教务主任/教务员/分管领导）
+// 列出某学期已固化的教师档案（管理员/教务主任/教务员/校长）
 router.get('/records', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const { semester } = req.query;
   if (!semester) return res.status(400).json({ ok: false, error: '请提供 semester' });

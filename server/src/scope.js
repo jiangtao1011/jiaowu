@@ -1,6 +1,6 @@
 // 角色作用域：把「角色 + 身份」翻译成「可见教师集合」，供检查/课时等模块按范围过滤。
 // 返回规则：
-//   - admin / 教务主任 / 教务员 / 分管领导 → null（全量，不过滤）
+//   - admin / 教务主任 / 教务员 / 校长 → null（全量，不过滤）
 //   - 教师 → [自己]
 //   - 教研组长 → 本学科全体教师
 //   - 备课组长 → 本学科 + 本年级的教师
@@ -10,7 +10,7 @@ import { db } from './db.js';
 import { ADMIN_ROLES, READONLY_ROLES } from './auth.js';
 import { listGroups } from './groups.js';
 
-// 全量查看视角：管理员（admin/教务主任/教务员）+ 分管领导（纯只读，看全校）
+// 全量查看视角：管理员（admin/教务主任/教务员）+ 校长（纯只读，看全校）
 const FULL_VIEW_ROLES = [...ADMIN_ROLES, ...READONLY_ROLES];
 
 // 用户 → 教师 id（无则 null）
@@ -55,7 +55,7 @@ function ledGradeOf(user) {
   return gs.length ? gs[0] : null;
 }
 
-// 返回该用户可见的教师 id 数组；null = 全量（管理员/分管领导）
+// 返回该用户可见的教师 id 数组；null = 全量（管理员/校长）
 export function visibleTeacherIds(user) {
   const role = user?.role;
   if (!role) return [];
@@ -98,7 +98,7 @@ export function visibleTeacherIds(user) {
   return tid ? [tid] : [];
 }
 
-// 返回该用户可见的年级集合；null = 全量（管理员/分管领导）
+// 返回该用户可见的年级集合；null = 全量（管理员/校长）
 export function visibleGrades(user) {
   const role = user?.role;
   if (!role) return [];
@@ -115,12 +115,12 @@ export function visibleGrades(user) {
   return null;
 }
 
-// 是否为「管理员级」（可跨全量）角色（含分管领导全量只读视角）
+// 是否为「管理员级」（可跨全量）角色（含校长全量只读视角）
 export function isAdminRole(user) {
   return FULL_VIEW_ROLES.includes(user?.role);
 }
 
-// 组级作用域：返回该用户可见的「组 key 数组」；null = 全量（管理员/分管领导）
+// 组级作用域：返回该用户可见的「组 key 数组」；null = 全量（管理员/校长）
 // 依赖 ../groups.js 的 listGroups（自动 + 手动组）。
 export function visibleGroups(user) {
   const role = user?.role;

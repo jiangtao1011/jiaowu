@@ -23,7 +23,7 @@ export default function MobileInspection() {
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const isAdmin = ADMIN_ROLES.includes(user.role);
   const canSubmit = INSPECTION_SUBMIT_ROLES.includes(user.role);
-  // 可查看（只读）：分管领导 + 年级组长（查看本年级检查记录/统计）
+  // 可查看（只读）：校长 + 年级组长（查看本年级检查记录/统计）
   const canView = RESULT_VIEW_ROLES.includes(user.role) || user.role === '年级组长';
 
   const [tab, setTab] = useState(canSubmit ? 'submit' : 'view'); // submit | view(记录) | stats(统计)
@@ -208,7 +208,7 @@ export default function MobileInspection() {
         <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
           <div className="mt-title">常规检查</div>
         </div>
-        <div className="alert error">无权限：常规检查仅教务员、教务主任、教研组长、备课组长可提交；分管领导、年级组长可查看。</div>
+        <div className="alert error">无权限：常规检查仅教务员、教务主任、教研组长、备课组长可提交；校长、年级组长可查看。</div>
       </div>
     );
   }
@@ -260,7 +260,7 @@ export default function MobileInspection() {
 
   const filteredTeachers = teachers.filter((t) => !teacherQuery || t.name.includes(teacherQuery));
 
-  // 只读查看视图（分管领导 / 无提交权但有查看权）
+  // 只读查看视图（校长 / 无提交权但有查看权）
   const readonlyView = !canSubmit && canView;
 
   return (

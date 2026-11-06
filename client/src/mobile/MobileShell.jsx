@@ -3,7 +3,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { ADMIN_ROLES, RESULT_VIEW_ROLES, CLERK_ROLES, DIRECTOR_ROLES } from '../roles.js';
 
 const ROLE_LABELS = {
-  admin: '管理员', 分管领导: '分管领导', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
+  admin: '管理员', 校长: '校长', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
 };
 
 // 线性 SVG 图标（克制、统一描边风格）

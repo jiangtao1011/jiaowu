@@ -504,6 +504,9 @@ db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_school_calendar_date_grade ON sch
 // 幂等：已迁移过的库无「教务处」角色，不会重复执行。
 db.prepare("UPDATE users SET role = '教务主任' WHERE role = '教务处'").run();
 
+// 迁移（2026-11-06）：角色「分管领导」改名为「校长」，现有账号自动继承。
+db.prepare("UPDATE users SET role = '校长' WHERE role = '分管领导'").run();
+
 // 初始化系数表：课时系数、班额系数（仅常规时段使用）
 function seedIfEmpty(table, insert) {
   if (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n === 0) insert();

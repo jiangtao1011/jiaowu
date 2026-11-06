@@ -4,7 +4,7 @@ import api from '../api.js';
 import { StackedBar, HBarChart, CHART_COLORS } from '../components/charts.jsx';
 
 const ROLE_LABELS = {
-  admin: '管理员', 分管领导: '分管领导', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
+  admin: '管理员', 校长: '校长', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
 };
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
@@ -79,7 +79,7 @@ export default function MobileHome() {
   const weekByDay = {};
   (mine?.week_schedule || []).forEach((r) => { (weekByDay[r.day_of_week] ||= []).push(r); });
 
-  // ==================== 结果查看角色（含分管领导）：数据看板 ====================
+  // ==================== 结果查看角色（含校长）：数据看板 ====================
   if (canViewDc && dc) {
     const { overview, todo, inspection } = dc;
     const metrics = [

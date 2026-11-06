@@ -3,7 +3,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
 import { isAdmin, RESULT_VIEW_ROLES, INSPECTION_SUBMIT_ROLES } from '../roles.js';
 const ROLE_LABELS = {
-  admin: '管理员', 分管领导: '分管领导', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
+  admin: '管理员', 校长: '校长', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
 };
 
 export default function MobileMe({ onLogout }) {

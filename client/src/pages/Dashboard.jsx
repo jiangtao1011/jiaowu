@@ -6,7 +6,7 @@ import { KpiCard, DonutChart, HBarChart, StackedBar, ChartSkeleton, CHART_COLORS
 import { RESULT_VIEW_ROLES } from '../roles.js';
 
 const ROLE_LABELS = {
-  admin: '管理员', 分管领导: '分管领导', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
+  admin: '管理员', 校长: '校长', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
 };
 const CAT_COLORS = {
   工作: '#167d6f', 会议: '#3b5bdb', 考试: '#c0392b', 检查: '#b0731f', 活动: '#7a4fb0', 其它: '#6b7280',

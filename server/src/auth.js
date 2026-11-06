@@ -49,29 +49,29 @@ export function roleRequired(...roles) {
   };
 }
 
-// 全局只读兜底：分管领导（纯只读角色）不允许任何写操作（非 GET/HEAD）。
+// 全局只读兜底：校长（纯只读角色）不允许任何写操作（非 GET/HEAD）。
 // 放在各业务路由之前挂载，作为「漏改路由」的防御层——即便某处忘记收紧写权限，
-// 分管领导也无法意外写入。数据范围仍由各路由的角色组显式控制。
+// 校长也无法意外写入。数据范围仍由各路由的角色组显式控制。
 export function readonlyGuard(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return next(); // 未登录，交给后续 authRequired 处理
   let user;
   try { user = jwt.verify(token, JWT_SECRET); } catch { return next(); }
-  if (user.role === '分管领导' && req.method !== 'GET' && req.method !== 'HEAD') {
-    return res.status(403).json({ ok: false, error: '分管领导为只读权限，无法执行该操作' });
+  if (user.role === '校长' && req.method !== 'GET' && req.method !== 'HEAD') {
+    return res.status(403).json({ ok: false, error: '校长为只读权限，无法执行该操作' });
   }
   next();
 }
 
 // ===== 角色组（岗位制重构，2026-11-05 定稿）=====
-// 五层：系统层 admin / 决策层 分管领导 / 管理层 教务主任 / 执行层 教务员 / 教学层 教研组长·备课组长·年级组长·教师
+// 五层：系统层 admin / 决策层 校长 / 管理层 教务主任 / 执行层 教务员 / 教学层 教研组长·备课组长·年级组长·教师
 
 // 系统层：数据库管理、角色管理独占
 export const SYSTEM_ROLES = ['admin'];
 
 // 决策层：纯只读（结果汇总 + 下钻 + 导出），不审批、不操作、不改配置
-export const READONLY_ROLES = ['分管领导'];
+export const READONLY_ROLES = ['校长'];
 
 // 管理层：业务配置（课酬系数/检查维度/考核规则/校历）+ 终审 + 建号
 export const DIRECTOR_ROLES = ['admin', '教务主任'];
@@ -79,8 +79,8 @@ export const DIRECTOR_ROLES = ['admin', '教务主任'];
 // 执行层：录入维护（档案/课表/通知/成绩/检查提交）
 export const CLERK_ROLES = ['admin', '教务主任', '教务员'];
 
-// 结果查看（含分管领导只读）：课酬统计/导出/考核排名/审批状态/数据看板
-export const RESULT_VIEW_ROLES = ['admin', '分管领导', '教务主任', '教务员'];
+// 结果查看（含校长只读）：课酬统计/导出/考核排名/审批状态/数据看板
+export const RESULT_VIEW_ROLES = ['admin', '校长', '教务主任', '教务员'];
 
 // 全量业务管理（等价旧「admin+教务员+教务处」，教务处→教务主任）
 export const ADMIN_ROLES = ['admin', '教务主任', '教务员'];
@@ -94,4 +94,4 @@ export const INSPECTION_CONFIG_ROLES = ['admin', '教务主任'];
 export const INSPECTION_SUBMIT_ROLES = ['admin', '教务主任', '教务员', '教研组长', '备课组长'];
 
 // 系统全部有效角色（岗位制重构后 8 角色）
-export const VALID_ROLES = ['admin', '分管领导', '教务主任', '教务员', '教研组长', '备课组长', '年级组长', '教师'];
+export const VALID_ROLES = ['admin', '校长', '教务主任', '教务员', '教研组长', '备课组长', '年级组长', '教师'];

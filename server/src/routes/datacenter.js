@@ -33,7 +33,7 @@ function passLineConfig() {
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 90;
 }
 
-// 手机端「数据看板」聚合接口（管理员/教务主任/教务员 + 分管领导只读）。
+// 手机端「数据看板」聚合接口（管理员/教务主任/教务员 + 校长只读）。
 // 一次返回：核心指标总览 + 待办聚合 + 检查考核（组级排行 + 组内教师下钻）。
 router.get('/', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const today = localDate();

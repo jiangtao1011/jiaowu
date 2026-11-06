@@ -17,7 +17,7 @@ function isMoneyType(t, typePays) {
 
 export default function MobileStats() {
   const { canViewDc, isGradeLeader } = useOutletContext();
-  const canViewAll = canViewDc || isGradeLeader; // 全体课时：admin/分管领导/教务主任/教务员 + 年级组长
+  const canViewAll = canViewDc || isGradeLeader; // 全体课时：admin/校长/教务主任/教务员 + 年级组长
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const myTeacherId = user.teacher_id;
   const [data, setData] = useState([]);
