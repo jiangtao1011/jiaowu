@@ -11,7 +11,7 @@ export default function MobileMe({ onLogout }) {
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const [mine, setMine] = useState(null);
   const admin = isAdmin(user);
-  const canSeeInspection = INSPECTION_SUBMIT_ROLES.includes(user.role) || RESULT_VIEW_ROLES.includes(user.role);
+  const canSeeInspection = INSPECTION_SUBMIT_ROLES.includes(user.role) || RESULT_VIEW_ROLES.includes(user.role) || user.role === '年级组长';
 
   useEffect(() => {
     (async () => {
