@@ -28,6 +28,7 @@ import MobileTimetable from './mobile/MobileTimetable.jsx';
 import MobileSubstitute from './mobile/MobileSubstitute.jsx';
 import MobileInspection from './mobile/MobileInspection.jsx';
 import MobileAssessment from './mobile/MobileAssessment.jsx';
+import { RESULT_VIEW_ROLES } from './roles.js';
 
 function AuthGuard({ children }) {
   const token = localStorage.getItem('edu_token');
@@ -47,6 +48,16 @@ function isMobileDevice() {
 // 覆盖深链进入（/stats、/schedules 等）与登录后落地，/m 下不拦截。
 function MobileGuard({ children }) {
   if (isMobileDevice()) return <Navigate to="/m" replace />;
+  return children;
+}
+
+// 桌面端角色守卫：桌面端仅服务管理层（admin/校长/教务主任/教务员）。
+// 教学层角色（教师/教研组长/备课组长/年级组长）一律重定向到移动端 /m，
+// 与移动端能力保持一致（申报、课表、课时、通知、业绩）。
+function DesktopGuard({ children }) {
+  let user = null;
+  try { user = JSON.parse(localStorage.getItem('edu_user')); } catch { /* 忽略 */ }
+  if (user && !RESULT_VIEW_ROLES.includes(user.role)) return <Navigate to="/m" replace />;
   return children;
 }
 
@@ -99,7 +110,9 @@ function AppRoutes() {
         element={
           <AuthGuard>
             <MobileGuard>
-              <Layout user={user} onLogout={logout} />
+              <DesktopGuard>
+                <Layout user={user} onLogout={logout} />
+              </DesktopGuard>
             </MobileGuard>
           </AuthGuard>
         }

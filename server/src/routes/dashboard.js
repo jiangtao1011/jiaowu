@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db } from '../db.js';
-import { authRequired } from '../auth.js';
+import { authRequired, RESULT_VIEW_ROLES } from '../auth.js';
 
 const router = Router();
 router.use(authRequired);
@@ -23,6 +23,17 @@ function addDays(dateStr, n) {
 
 function count(sql, ...params) {
   return Number(db.prepare(sql).get(...params).n);
+}
+
+// 通知定向可见性 SQL 片段：返回 { sql, params } 追加到 WHERE 后。
+// 管理层看全部；非管理层仅看「广播 + 定向到自己」的通知。
+function noticeScopeClause(user) {
+  if (RESULT_VIEW_ROLES.includes(user.role)) return { sql: '', params: [] };
+  const tid = user.teacher_id ?? null;
+  return {
+    sql: ` AND (n.target_teacher_ids IS NULL OR n.target_teacher_ids = '' OR (? IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(n.target_teacher_ids) WHERE CAST(json_each.value AS TEXT) = ?)))`,
+    params: [tid, String(tid)],
+  };
 }
 
 // 工作台聚合：概览计数 + 今日课务 + 待办审核 + 近期通知 + 工作提醒 + 课务类型构成
@@ -64,13 +75,14 @@ router.get('/', (req, res) => {
     GROUP BY COALESCE(NULLIF(period_type, ''), '正课')
     ORDER BY count DESC`).all(lFrom, lTo);
 
-  // 近期通知（已发布，按发布时间倒序）
+  // 近期通知（已发布，按发布时间倒序）——定向通知仅目标教师/管理层可见
+  const scope = noticeScopeClause(req.user);
   const recentNotices = db.prepare(`
     SELECT n.id, n.title, n.type, n.published_at
     FROM notices n
-    WHERE n.publish_status = 'published'
+    WHERE n.publish_status = 'published'${scope.sql}
     ORDER BY n.published_at DESC, n.id DESC
-    LIMIT 6`).all();
+    LIMIT 6`).all(...scope.params);
 
   // 工作提醒：未完成、开启提醒的事项——逾期（今天前）+ 未来 7 天
   const reminders = db.prepare(`
@@ -149,12 +161,13 @@ router.get('/teacher', (req, res) => {
     WHERE q.teacher_id = ? AND q.status IN ('pending', 'grade_approved', 'approved')
     ORDER BY q.id DESC LIMIT 10`).all(tid);
 
-  // 未读通知数
+  // 未读通知数（定向通知仅目标教师计数）
   const unreadNotices = Number(db.prepare(`
     SELECT COUNT(*) n FROM notices n
     WHERE n.publish_status = 'published'
       AND NOT EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = n.id AND r.user_id = ?)
-  `).get(req.user.id).n);
+      ${noticeScopeClause(req.user).sql}
+  `).get(req.user.id, ...noticeScopeClause(req.user).params).n);
 
   return res.json({
     ok: true,
@@ -193,12 +206,13 @@ router.get('/grade-leader', (req, res) => {
     GROUP BY li.teacher_id
     ORDER BY total DESC`).all(managedGrade, fromDate, today);
 
-  // 未读通知数
+  // 未读通知数（定向通知仅目标教师计数）
   const unreadNotices = count(`
     SELECT COUNT(*) n FROM notices n
     WHERE n.publish_status = 'published'
       AND NOT EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = n.id AND r.user_id = ?)
-  `, req.user.id);
+      ${noticeScopeClause(req.user).sql}
+  `, req.user.id, ...noticeScopeClause(req.user).params);
 
   return res.json({
     ok: true,

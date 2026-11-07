@@ -168,20 +168,25 @@ export default function WorkCalendar() {
 
 function DayPanel({ date, items, cals, categories, onClose, onChanged }) {
   const toast = useToast();
+  // 表单状态：新增/编辑共用，编辑时 editing 存当前事项
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('工作');
   const [note, setNote] = useState('');
   const [remind, setRemind] = useState(true);
   const [editing, setEditing] = useState(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+
+  const [y, m, d] = date.split('-').map(Number);
+  const dow = ['日', '一', '二', '三', '四', '五', '六'][new Date(y, m - 1, d).getDay()];
 
   const reset = () => { setTitle(''); setCategory('工作'); setNote(''); setRemind(true); setEditing(null); };
+  const openAdd = () => { reset(); };
+  const openEdit = (it) => { setEditing(it); setTitle(it.title); setCategory(it.category); setNote(it.note || ''); setRemind(!!it.remind); };
 
   const submit = async (e) => {
     e.preventDefault();
     if (!title.trim()) return;
-    setBusy(true); setError('');
+    setBusy(true);
     try {
       if (editing) {
         await api.patch(`/workplan/${editing.id}`, { title, category, note, remind });
@@ -202,90 +207,78 @@ function DayPanel({ date, items, cals, categories, onClose, onChanged }) {
   const toggle = async (id) => {
     try { await api.patch(`/workplan/${id}/toggle`); onChanged(); } catch (err) { toast.error(errMsg(err)); }
   };
-  const edit = (it) => { setEditing(it); setTitle(it.title); setCategory(it.category); setNote(it.note || ''); setRemind(!!it.remind); };
   const del = async (id) => {
     if (!(await toast.confirm('删除该事项？', { danger: true }))) return;
     try { await api.delete(`/workplan/${id}`); if (editing?.id === id) reset(); toast.success('已删除'); onChanged(); } catch (err) { toast.error(errMsg(err)); }
   };
 
-  const [y, m, d] = date.split('-').map(Number);
-  const dow = ['日', '一', '二', '三', '四', '五', '六'][new Date(y, m - 1, d).getDay()];
-
   return (
-    <div className="cal-panel">
-      <div className="cal-panel-head">
-        <div>
-          <span className="cal-panel-title">{m}月{d}日</span>
-          <span className="muted"> 星期{dow}</span>
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>{m}月{d}日 <span className="muted" style={{ fontSize: 13, fontWeight: 400 }}>星期{dow}</span></h3>
+          <div className="toolbar" style={{ marginBottom: 0, gap: 8 }}>
+            <button className="btn primary sm" onClick={openAdd}>+ 新增事项</button>
+            <button className="btn ghost sm" onClick={onClose}>关闭 ✕</button>
+          </div>
         </div>
-        <button className="btn ghost sm" onClick={onClose}>关闭 ✕</button>
-      </div>
 
-      {cals.length > 0 ? (
-        <div className="cal-panel-cals">
-          {cals.map((c, i) => (
-            <span key={i} className={`badge ${c.type === '放假' || c.type === '停课' ? 'danger' : c.type === '调课' ? 'info' : 'warn'}`}>
-              {c.grade ? `${c.grade}·` : ''}{c.note || (CAL_TYPE_LABEL[c.type] || c.type)}
-            </span>
-          ))}
-        </div>
-      ) : null}
+        {cals.length > 0 ? (
+          <div className="cal-panel-cals">
+            {cals.map((c, i) => (
+              <span key={i} className={`badge ${c.type === '放假' || c.type === '停课' ? 'danger' : c.type === '调课' ? 'info' : 'warn'}`}>
+                {c.grade ? `${c.grade}·` : ''}{c.note || (CAL_TYPE_LABEL[c.type] || c.type)}
+              </span>
+            ))}
+          </div>
+        ) : null}
 
-      <div className="cal-panel-list">
-        {items.length === 0 ? (
-          <p className="muted">当天暂无工作事项。</p>
-        ) : (
-          items.map((it) => (
-            <div key={it.id} className={`cal-item${it.done ? ' done' : ''}`}>
-              <label className="cal-item-check">
-                <input type="checkbox" checked={!!it.done} onChange={() => toggle(it.id)} />
-                <span className="cal-item-dot" style={{ background: CAT_COLORS[it.category] || CAT_COLORS.其它 }} />
-                <span className="cal-item-title">{it.title}</span>
-                {it.remind ? <span className="cal-item-remind" title="已设提醒">🔔</span> : null}
-              </label>
-              <span className="cal-item-tag" style={{ color: CAT_COLORS[it.category] || CAT_COLORS.其它 }}>{it.category}</span>
-              {it.note ? <div className="cal-item-note">{it.note}</div> : null}
-              <div className="cal-item-actions">
-                <button className="btn sm" onClick={() => edit(it)}>编辑</button>
-                <button className="btn sm danger" onClick={() => del(it.id)}>删除</button>
+        <div className="cal-panel-list">
+          {items.length === 0 ? (
+            <p className="muted">当天暂无工作事项。</p>
+          ) : (
+            items.map((it) => (
+              <div key={it.id} className={`cal-item${it.done ? ' done' : ''}`}>
+                <label className="cal-item-check">
+                  <input type="checkbox" checked={!!it.done} onChange={() => toggle(it.id)} />
+                  <span className="cal-item-dot" style={{ background: CAT_COLORS[it.category] || CAT_COLORS.其它 }} />
+                  <span className="cal-item-title">{it.title}</span>
+                  {it.remind ? <span className="cal-item-remind" title="已设提醒">🔔</span> : null}
+                </label>
+                <span className="cal-item-tag" style={{ color: CAT_COLORS[it.category] || CAT_COLORS.其它 }}>{it.category}</span>
+                {it.note ? <div className="cal-item-note">{it.note}</div> : null}
+                <div className="cal-item-actions">
+                  <button className="btn sm" onClick={() => openEdit(it)}>编辑</button>
+                  <button className="btn sm danger" onClick={() => del(it.id)}>删除</button>
+                </div>
               </div>
-            </div>
-          ))
-        )}
-      </div>
+            ))
+          )}
+        </div>
 
-      <form className="cal-form" onSubmit={submit}>
-        <div className="cal-form-title">{editing ? '编辑事项' : '新增事项'}</div>
-        <input
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder={editing ? '事项标题' : '如：提交期中考务方案'}
-        />
-        <div className="cal-form-row">
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <label className="cal-remind-check">
-            <input type="checkbox" checked={remind} onChange={(e) => setRemind(e.target.checked)} />
-            提醒
-          </label>
-        </div>
-        <textarea
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="备注（可选）"
-          rows={2}
-        />
-        <div className="cal-form-actions">
-          {editing ? (
-            <button type="button" className="btn sm" onClick={reset}>取消编辑</button>
-          ) : null}
-          <button type="submit" className="btn primary" disabled={busy || !title.trim()}>
-            {editing ? '保存' : '添加'}
-          </button>
-        </div>
-        {error ? <p className="muted mt-xs">{error}</p> : null}
-      </form>
+        <form onSubmit={submit} className="cal-form">
+          <div className="cal-form-title">{editing ? '编辑事项' : '新增事项'}</div>
+          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder={editing ? '事项标题' : '如：提交期中考务方案'} />
+          <div className="cal-form-row">
+            <select value={category} onChange={(e) => setCategory(e.target.value)}>
+              {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <label className="cal-remind-check">
+              <input type="checkbox" checked={remind} onChange={(e) => setRemind(e.target.checked)} />
+              提醒
+            </label>
+          </div>
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="备注（可选）" rows={2} />
+          <div className="cal-form-actions">
+            {editing ? (
+              <button type="button" className="btn sm" onClick={reset}>取消编辑</button>
+            ) : null}
+            <button type="submit" className="btn primary" disabled={busy || !title.trim()}>
+              {editing ? '保存' : '添加'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

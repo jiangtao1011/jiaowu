@@ -38,6 +38,21 @@ function countsOf(noticeId) {
   return { read_count: reads, like_count: likes, reply_count: replies };
 }
 
+// 定向通知可见性：广播（target 为空）人人可见；定向（target 非空）仅目标教师 + 管理层可见。
+// user 为 null（未登录访客）时，定向通知一律不可见。
+function canViewNotice(user, notice) {
+  const raw = notice?.target_teacher_ids;
+  if (raw == null || raw === '') return true;
+  let targets;
+  try { targets = JSON.parse(raw); } catch { return false; }
+  if (!Array.isArray(targets) || targets.length === 0) return true; // 空数组按广播处理
+  if (!user) return false;
+  if (RESULT_VIEW_ROLES.includes(user.role)) return true;
+  const tid = user.teacher_id ?? null;
+  if (tid == null) return false;
+  return targets.some((x) => String(x) === String(tid));
+}
+
 // 定向通知辅助：写入并直接发布一条通知，targetTeacherIds 非空则仅这些教师可见。
 // 供课务调整（代课/调课/停课）自动通知复用。
 export function createAdjustNotice({ title, content, targetTeacherIds, operatorId }) {
@@ -58,6 +73,8 @@ router.get('/share/:token', authOptional, (req, res) => {
     .prepare(`SELECT n.*, u.name AS creator_name FROM notices n LEFT JOIN users u ON u.id = n.created_by WHERE n.share_token = ?`)
     .get(req.params.token);
   if (!notice) return res.status(404).json({ ok: false, error: '通知不存在' });
+  // 定向通知：仅目标教师 + 管理层可见；未登录访客不可见（避免链接外泄）
+  if (!canViewNotice(req.user, notice)) return res.status(404).json({ ok: false, error: '通知不存在' });
 
   const attachments = db.prepare('SELECT id, filename, size FROM notice_attachments WHERE notice_id = ? ORDER BY id').all(notice.id);
   const replies = db.prepare(`
@@ -79,8 +96,9 @@ router.get('/share/:token', authOptional, (req, res) => {
 
 // 记已读（登录自动；访客填姓名）
 router.post('/share/:token/read', authOptional, (req, res) => {
-  const notice = db.prepare('SELECT id FROM notices WHERE share_token = ?').get(req.params.token);
+  const notice = db.prepare('SELECT * FROM notices WHERE share_token = ?').get(req.params.token);
   if (!notice) return res.status(404).json({ ok: false, error: '通知不存在' });
+  if (!canViewNotice(req.user, notice)) return res.status(404).json({ ok: false, error: '通知不存在' });
   const idn = resolveIdentity(req, req.body?.name);
   if (!idn.user_id && !idn.visitor_name) return res.status(400).json({ ok: false, error: '请填写姓名' });
   db.prepare('INSERT OR IGNORE INTO notice_reads (notice_id, user_id, visitor_name) VALUES (?,?,?)')
@@ -90,8 +108,9 @@ router.post('/share/:token/read', authOptional, (req, res) => {
 
 // 点赞 toggle（同一身份再点取消）
 router.post('/share/:token/like', authOptional, (req, res) => {
-  const notice = db.prepare('SELECT id FROM notices WHERE share_token = ?').get(req.params.token);
+  const notice = db.prepare('SELECT * FROM notices WHERE share_token = ?').get(req.params.token);
   if (!notice) return res.status(404).json({ ok: false, error: '通知不存在' });
+  if (!canViewNotice(req.user, notice)) return res.status(404).json({ ok: false, error: '通知不存在' });
   const idn = resolveIdentity(req, req.body?.name);
   if (!idn.user_id && !idn.visitor_name) return res.status(400).json({ ok: false, error: '请填写姓名' });
   const existing = idn.user_id
@@ -107,8 +126,9 @@ router.post('/share/:token/like', authOptional, (req, res) => {
 
 // 提交回复（进入待审核）
 router.post('/share/:token/replies', authOptional, (req, res) => {
-  const notice = db.prepare('SELECT id FROM notices WHERE share_token = ?').get(req.params.token);
+  const notice = db.prepare('SELECT * FROM notices WHERE share_token = ?').get(req.params.token);
   if (!notice) return res.status(404).json({ ok: false, error: '通知不存在' });
+  if (!canViewNotice(req.user, notice)) return res.status(404).json({ ok: false, error: '通知不存在' });
   const idn = resolveIdentity(req, req.body?.name);
   const content = String(req.body?.content || '').trim();
   if (!content) return res.status(400).json({ ok: false, error: '回复内容不能为空' });
@@ -118,10 +138,13 @@ router.post('/share/:token/replies', authOptional, (req, res) => {
   return res.json({ ok: true, data: { pending: true } });
 });
 
-// 附件下载（免登录）
-router.get('/attachments/:id/download', (req, res) => {
+// 附件下载（免登录；定向通知附件反查可见性，防止链接外泄枚举下载）
+router.get('/attachments/:id/download', authOptional, (req, res) => {
   const f = db.prepare('SELECT * FROM notice_attachments WHERE id = ?').get(Number(req.params.id));
   if (!f) return res.status(404).json({ ok: false, error: '附件不存在' });
+  const notice = db.prepare('SELECT * FROM notices WHERE id = ?').get(f.notice_id);
+  if (!notice) return res.status(404).json({ ok: false, error: '附件不存在' });
+  if (!canViewNotice(req.user, notice)) return res.status(404).json({ ok: false, error: '附件不存在' });
   res.download(path.join(UPLOAD_DIR, f.stored_path), f.filename);
 });
 
@@ -156,12 +179,21 @@ router.get('/', (req, res) => {
 });
 
 // 当前登录用户的未读「已发布」通知数（应用内角标用）
+// 定向通知：仅目标教师计数；无关用户（非目标、且非管理层）不计入未读。
 router.get('/unread-count', (req, res) => {
-  const n = db.prepare(`
+  const uid = req.user.id;
+  let sql = `
     SELECT COUNT(*) AS n FROM notices n
     WHERE n.publish_status = 'published'
       AND NOT EXISTS (SELECT 1 FROM notice_reads r WHERE r.notice_id = n.id AND r.user_id = ?)
-  `).get(req.user.id).n;
+  `;
+  const params = [uid];
+  if (!RESULT_VIEW_ROLES.includes(req.user.role)) {
+    const tid = req.user.teacher_id ?? null;
+    sql += ` AND (n.target_teacher_ids IS NULL OR n.target_teacher_ids = '' OR (? IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(n.target_teacher_ids) WHERE CAST(json_each.value AS TEXT) = ?)))`;
+    params.push(tid, String(tid));
+  }
+  const n = db.prepare(sql).get(...params).n;
   return res.json({ ok: true, data: { unread: n } });
 });
 

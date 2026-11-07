@@ -57,6 +57,55 @@ function PrintSheet({ c, rangeLabel }) {
   );
 }
 
+// 课表打印版式（仅打印时可见）：完整科目 + 教师，按节次×星期表格
+function PrintScheduleSheet({ title, gridRows }) {
+  const maxPeriod = Math.max(1, ...gridRows.map((r) => r.period_no));
+  const periods = Array.from({ length: maxPeriod }, (_, i) => i + 1);
+  const daysSet = new Set(gridRows.filter((r) => r.day_of_week >= 1 && r.day_of_week <= 7).map((r) => r.day_of_week));
+  const days = [1, 2, 3, 4, 5, 6, 7].filter((d) => daysSet.has(d));
+  const printDate = (() => {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  })();
+  return (
+    <div className="print-sheet">
+      <h1 className="ps-title">{title} 课表</h1>
+      <div className="ps-meta">打印日期：{printDate}</div>
+      <table className="ps-table">
+        <thead>
+          <tr>
+            <th>节次</th>
+            {days.map((d) => <th key={d}>{DAYS[d - 1]}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {periods.map((p) => (
+            <tr key={p}>
+              <th>第{p}节</th>
+              {days.map((d) => {
+                const cellRows = gridRows.filter((r) => r.period_no === p && r.day_of_week === d);
+                return (
+                  <td key={d} style={{ verticalAlign: 'top' }}>
+                    {cellRows.length === 0 ? null : cellRows.map((r) => {
+                      const layer = (r.form === '分层' || r.form === '走班分层') ? layerToken(r.class_name).replace('层', '') : '';
+                      return (
+                        <div key={r.id} style={{ padding: '2px 0' }}>
+                          {baseSubject(r.subject)}{layer} · {r.teacher_name}
+                        </div>
+                      );
+                    })}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function Schedules() {
   const toast = useToast();
   const [rows, setRows] = useState([]);
@@ -81,6 +130,7 @@ export default function Schedules() {
   const [importPreview, setImportPreview] = useState(null); // { token, rows, summary }
   const [changes, setChanges] = useState([]); // 课务调整记录
   const [printChange, setPrintChange] = useState(null); // 打印通知单对象
+  const [printSchedule, setPrintSchedule] = useState(null); // 打印课表 { title, gridRows }
   const [focusClass, setFocusClass] = useState(''); // 下钻的单班 id（空=总览缩略图）
   const [makeupTab, setMakeupTab] = useState(null); // 补课课表当前套号（null=未选，选第一个）
 
@@ -436,6 +486,11 @@ export default function Schedules() {
           ))}
         </div>
         <div className="focus-main">
+          <div className="toolbar" style={{ marginBottom: 8 }}>
+            <span className="hint">{ac.name} · 点击格子看详情 · 拖拽调课</span>
+            <span className="spacer" />
+            <button className="btn sm" onClick={() => setPrintSchedule({ title: `${ac.name}${ac.grade ? ' · ' + ac.grade : ''}`, gridRows })}>打印课表</button>
+          </div>
           {renderGrid(gridRows, `${ac.name}${ac.grade ? ' · ' + ac.grade : ''}`)}
         </div>
       </div>
@@ -690,6 +745,21 @@ export default function Schedules() {
               </div>
             </div>
             <PrintSheet c={printChange} rangeLabel={rangeLabel} />
+          </div>
+        </div>
+      )}
+
+      {printSchedule && (
+        <div className="modal-overlay" onClick={() => setPrintSchedule(null)}>
+          <div className="modal" style={{ maxWidth: 820 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head no-print">
+              <h3>打印课表</h3>
+              <div className="toolbar" style={{ marginBottom: 0, gap: 8 }}>
+                <button className="btn primary sm" onClick={() => window.print()}>打印</button>
+                <button className="btn ghost sm" onClick={() => setPrintSchedule(null)}>关闭</button>
+              </div>
+            </div>
+            <PrintScheduleSheet title={printSchedule.title} gridRows={printSchedule.gridRows} />
           </div>
         </div>
       )}
