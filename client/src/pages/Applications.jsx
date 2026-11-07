@@ -25,6 +25,8 @@ export default function Applications() {
   const [typePays, setTypePays] = useState([]); // 按次计酬类型字典
   const [qnaForm, setQnaForm] = useState({ grade: '', subject: '', teacher_id: '', class_id: '', day_of_week: '', period_no: '', content: '', date: '', period_count: '1', period_type: '答疑' });
   const [editingQna, setEditingQna] = useState(null); // 正在编辑的记录 id；null 表示新增
+  const [qnaModal, setQnaModal] = useState(false); // 新增/编辑弹窗
+  const [listMode, setListMode] = useState('pending'); // pending(待处理) | history(历史记录)
   const [importFile, setImportFile] = useState(null); // 批量导入文件
   // 申报列表筛选
   const [qnaFilter, setQnaFilter] = useState({ status: '', period_type: '', grade: '', date: '' });
@@ -76,28 +78,50 @@ export default function Applications() {
       }
       setQnaForm({ grade: '', subject: '', teacher_id: '', class_id: '', day_of_week: '', period_no: '', content: '', date: '', period_count: '1', period_type: '答疑' });
       setEditingQna(null);
+      setQnaModal(false);
       loadQna();
     } catch (e) { toast.error(errMsg(e)); }
   };
 
-  const startEditQna = (q) => {
-    setEditingQna(q.id);
-    setQnaForm({
-      grade: q.grade || '', subject: q.subject || '', teacher_id: q.teacher_id ? String(q.teacher_id) : '',
-      class_id: q.class_id ? String(q.class_id) : '', day_of_week: q.day_of_week != null ? String(q.day_of_week) : '',
-      period_no: q.period_no != null ? String(q.period_no) : '', content: q.content || '',
-      date: q.date || '', period_count: q.period_count != null ? String(q.period_count) : '1',
-      period_type: q.period_type || '答疑',
-    });
+  const openQnaModal = (q) => {
+    if (q) {
+      setEditingQna(q.id);
+      setQnaForm({
+        grade: q.grade || '', subject: q.subject || '', teacher_id: q.teacher_id ? String(q.teacher_id) : '',
+        class_id: q.class_id ? String(q.class_id) : '', day_of_week: q.day_of_week != null ? String(q.day_of_week) : '',
+        period_no: q.period_no != null ? String(q.period_no) : '', content: q.content || '',
+        date: q.date || '', period_count: q.period_count != null ? String(q.period_count) : '1',
+        period_type: q.period_type || '答疑',
+      });
+    } else {
+      setEditingQna(null);
+      setQnaForm({ grade: '', subject: '', teacher_id: '', class_id: '', day_of_week: '', period_no: '', content: '', date: '', period_count: '1', period_type: '答疑' });
+    }
+    setQnaModal(true);
   };
 
   const cancelEdit = () => {
+    setQnaModal(false);
     setEditingQna(null);
     setQnaForm({ grade: '', subject: '', teacher_id: '', class_id: '', day_of_week: '', period_no: '', content: '', date: '', period_count: '1', period_type: '答疑' });
   };
 
   const reviewQna = async (id, approved) => {
     try { await api.patch(`/applications/${id}/review`, { approved }); toast.success('已审核'); loadQna(); } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  // 一键审核：批量通过当前列表中所有待本角色处理的记录
+  const reviewAllQna = async () => {
+    // 年级组长一审 pending；管理员终审 pending + grade_approved
+    const targets = qnaList.filter((q) => (isGradeLeader && !isAdmin) ? q.status === 'pending' : (q.status === 'pending' || q.status === 'grade_approved'));
+    if (!targets.length) return toast.warn('没有待审核的记录');
+    if (!(await toast.confirm(`确定一键通过全部 ${targets.length} 条待审核申报？`, { danger: true }))) return;
+    let ok = 0;
+    for (const q of targets) {
+      try { await api.patch(`/applications/${q.id}/review`, { approved: true }); ok++; } catch { /* 单条失败继续 */ }
+    }
+    toast.success(`一键审核完成：通过 ${ok}/${targets.length} 条`);
+    loadQna();
   };
 
   const deleteQna = async (id) => {
@@ -261,55 +285,27 @@ export default function Applications() {
       {tab === 'qna' && (
         <>
           {isAdmin && <div className="card">
-            <h3>批量导入申报</h3>
-            <div className="toolbar">
+            <div className="toolbar" style={{ marginBottom: 0 }}>
+              <h3 style={{ margin: 0 }}>批量导入申报</h3>
+              <span className="spacer" />
+              <button className="btn primary" onClick={() => openQnaModal(null)}>+ 新增申报</button>
+            </div>
+            <div className="toolbar" style={{ marginTop: 12 }}>
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setImportFile(e.target.files[0])} style={{ width: 'auto' }} />
               <button className="btn primary" onClick={importQna} disabled={!importFile}>导入</button>
               <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
             </div>
-            <p className="muted" style={{ margin: 0 }}>表头：年级、学科、类型、教师、班级、发生日期、节数、星期、节次、内容。临时填报填「发生日期」，固定排班填「星期+节次」；早自习填「类型=早自习」且班级可留空（按年级折算）；导入后统一待审核。</p>
-          </div>}
-
-          {isAdmin && <div className="card">
-            <h3>{editingQna ? '编辑申报' : '填报申报'}</h3>
-            <form onSubmit={submitQna}>
-              <div className="form-grid">
-                <div><label>年级</label><input value={qnaForm.grade} onChange={(e) => setQnaForm({ ...qnaForm, grade: e.target.value })} placeholder="如 高一" required /></div>
-                <div><label>学科</label><input value={qnaForm.subject} onChange={(e) => setQnaForm({ ...qnaForm, subject: e.target.value })} required /></div>
-                <div><label>教师</label>
-                  <select value={qnaForm.teacher_id} onChange={(e) => setQnaForm({ ...qnaForm, teacher_id: e.target.value })}>
-                    <option value="">请选择</option>
-                    {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
-                </div>
-                <div><label>班级</label>
-                  <select value={qnaForm.class_id} onChange={(e) => setQnaForm({ ...qnaForm, class_id: e.target.value })}>
-                    <option value="">请选择</option>
-                    {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
-                <div><label>星期(1-7，固定排班填)</label><input type="number" min="1" max="7" value={qnaForm.day_of_week} onChange={(e) => setQnaForm({ ...qnaForm, day_of_week: e.target.value })} /></div>
-                <div><label>节次</label><input type="number" value={qnaForm.period_no} onChange={(e) => setQnaForm({ ...qnaForm, period_no: e.target.value })} /></div>
-                <div><label>发生日期（临时填报填）</label><input type="date" value={qnaForm.date} onChange={(e) => setQnaForm({ ...qnaForm, date: e.target.value })} /></div>
-                <div><label>节数</label><input type="number" min="1" value={qnaForm.period_count} onChange={(e) => setQnaForm({ ...qnaForm, period_count: e.target.value })} /></div>
-                <div><label>类型</label>
-                  <select value={qnaForm.period_type} onChange={(e) => setQnaForm({ ...qnaForm, period_type: e.target.value })}>
-                    <option value="早自习">早自习（折算型·不计钱）</option>
-                    {typePays.map((t) => <option key={t.id} value={t.name}>{t.name}（{t.pay}元/节）</option>)}
-                  </select>
-                </div>
-              </div>
-              <div className="form-row" style={{ marginTop: 14 }}><label>内容说明</label><input value={qnaForm.content} onChange={(e) => setQnaForm({ ...qnaForm, content: e.target.value })} placeholder="如 函数专题答疑 / 晚练安排" /></div>
-              <p className="muted" style={{ marginBottom: 0 }}>说明：临时/不定期填报填「发生日期 + 节数」，审核通过后按所选类型的固定单价计酬（早自习除外，按「课时数 × 早自习系数」折算、不计钱）；固定排班填报填「星期 + 节次」，审核通过后进入课表按班展开计酬。按次计酬类型（晚自习/答疑/晚练/自定义）在统计中心维护，早自习为固定折算型。</p>
-              <div className="mt">
-                <button className="btn primary">{editingQna ? '保存修改' : '提交填报'}</button>
-                {editingQna && <button type="button" className="btn" style={{ marginLeft: 8 }} onClick={cancelEdit}>取消</button>}
-              </div>
-            </form>
+            <p className="muted" style={{ margin: 0 }}>表头：年级、学科、类型、教师、班级、发生日期、节数、星期、节次、内容。导入后统一待审核。</p>
           </div>}
 
           <div className="card">
-            <h3>申报列表</h3>
+            <div className="card-head">
+              <div className="toolbar" style={{ marginBottom: 0 }}>
+                <button className={`btn sm ${listMode === 'pending' ? 'primary' : ''}`} onClick={() => { setListMode('pending'); loadQna({ status: '', period_type: '', grade: '', date: '' }); }}>待处理</button>
+                <button className={`btn sm ${listMode === 'history' ? 'primary' : ''}`} onClick={() => { setListMode('history'); loadQna({ status: '', period_type: '', grade: '', date: '' }); }}>历史记录</button>
+                {listMode === 'pending' && <button className="btn sm primary" onClick={reviewAllQna}>一键审核</button>}
+              </div>
+            </div>
             <div className="toolbar">
               <select value={qnaFilter.status} onChange={(e) => setQnaFilter({ ...qnaFilter, status: e.target.value })} style={{ width: 120 }}>
                 <option value="">全部状态</option>
@@ -333,7 +329,10 @@ export default function Applications() {
             <table>
               <thead><tr><th>年级</th><th>学科</th><th>类型</th><th>教师</th><th>班级</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>
-                {qnaList.map((q) => (
+                {qnaList.filter((q) => {
+                  if (listMode === 'pending') return q.status === 'pending' || q.status === 'grade_approved';
+                  return q.status === 'approved' || q.status === 'rejected' || q.status === 'withdrawn';
+                }).map((q) => (
                   <tr key={q.id}>
                     <td>{q.grade}</td><td>{q.subject}</td><td><span className={`period-tag period-${q.period_type}`}>{q.period_type}</span></td><td>{q.teacher_name || '-'}</td><td>{q.class_name || '-'}</td>
                     <td>{q.date ? `${q.date} ${q.period_count ? `×${q.period_count}节` : ''}` : (q.day_of_week ? `周${q.day_of_week} 第${q.period_no}节` : '-')}</td>
@@ -342,18 +341,18 @@ export default function Applications() {
                     </td>
                     <td>
                       <div className="toolbar" style={{ marginBottom: 0 }}>
-                        {/* 编辑：仅管理员（年级组长只审不改） */}
-                        {isAdmin && q.status !== 'withdrawn' && (
-                          <button className="btn sm" onClick={() => startEditQna(q)}>编辑</button>
+                        {/* 编辑：仅管理员（年级组长只审不改），历史记录模式不显示 */}
+                        {isAdmin && listMode === 'pending' && q.status !== 'withdrawn' && (
+                          <button className="btn sm" onClick={() => openQnaModal(q)}>编辑</button>
                         )}
                         {/* 审核：年级组长对 pending 一审；管理员对 pending（兜底）与 grade_approved 终审 */}
-                        {isGradeLeader && !isAdmin && q.status === 'pending' && (
+                        {listMode === 'pending' && isGradeLeader && !isAdmin && q.status === 'pending' && (
                           <>
                             <button className="btn sm primary" onClick={() => reviewQna(q.id, true)}>一审通过</button>
                             <button className="btn sm danger" onClick={() => reviewQna(q.id, false)}>驳回</button>
                           </>
                         )}
-                        {isAdmin && (q.status === 'pending' || q.status === 'grade_approved') && (
+                        {listMode === 'pending' && isAdmin && (q.status === 'pending' || q.status === 'grade_approved') && (
                           <>
                             <button className="btn sm primary" onClick={() => reviewQna(q.id, true)}>终审通过</button>
                             <button className="btn sm danger" onClick={() => reviewQna(q.id, false)}>驳回</button>
@@ -371,7 +370,10 @@ export default function Applications() {
                     </td>
                   </tr>
                 ))}
-                {qnaList.length === 0 && <tr><td colSpan={8} className="muted">暂无填报</td></tr>}
+                {qnaList.filter((q) => {
+                  if (listMode === 'pending') return q.status === 'pending' || q.status === 'grade_approved';
+                  return q.status === 'approved' || q.status === 'rejected' || q.status === 'withdrawn';
+                }).length === 0 && <tr><td colSpan={8} className="muted">{listMode === 'pending' ? '暂无待处理申报' : '暂无历史记录'}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -549,6 +551,51 @@ export default function Applications() {
               <span className="spacer" />
               <button className="btn" onClick={() => setLinkModal(null)}>关闭</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 新增/编辑申报弹窗 */}
+      {qnaModal && (
+        <div className="modal-overlay" onClick={() => setQnaModal(false)}>
+          <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{editingQna ? '编辑申报' : '新增申报'}</h3>
+              <button className="btn ghost" onClick={() => setQnaModal(false)}>关闭</button>
+            </div>
+            <form onSubmit={submitQna}>
+              <div className="form-grid">
+                <div><label>年级</label><input value={qnaForm.grade} onChange={(e) => setQnaForm({ ...qnaForm, grade: e.target.value })} placeholder="如 高一" required /></div>
+                <div><label>学科</label><input value={qnaForm.subject} onChange={(e) => setQnaForm({ ...qnaForm, subject: e.target.value })} required /></div>
+                <div><label>教师</label>
+                  <select value={qnaForm.teacher_id} onChange={(e) => setQnaForm({ ...qnaForm, teacher_id: e.target.value })}>
+                    <option value="">请选择</option>
+                    {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+                <div><label>班级</label>
+                  <select value={qnaForm.class_id} onChange={(e) => setQnaForm({ ...qnaForm, class_id: e.target.value })}>
+                    <option value="">请选择</option>
+                    {classes.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div><label>星期(1-7，固定排班填)</label><input type="number" min="1" max="7" value={qnaForm.day_of_week} onChange={(e) => setQnaForm({ ...qnaForm, day_of_week: e.target.value })} /></div>
+                <div><label>节次</label><input type="number" value={qnaForm.period_no} onChange={(e) => setQnaForm({ ...qnaForm, period_no: e.target.value })} /></div>
+                <div><label>发生日期（临时填报填）</label><input type="date" value={qnaForm.date} onChange={(e) => setQnaForm({ ...qnaForm, date: e.target.value })} /></div>
+                <div><label>节数</label><input type="number" min="1" value={qnaForm.period_count} onChange={(e) => setQnaForm({ ...qnaForm, period_count: e.target.value })} /></div>
+                <div><label>类型</label>
+                  <select value={qnaForm.period_type} onChange={(e) => setQnaForm({ ...qnaForm, period_type: e.target.value })}>
+                    <option value="早自习">早自习（折算型·不计钱）</option>
+                    {typePays.map((t) => <option key={t.id} value={t.name}>{t.name}（{t.pay}元/节）</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="form-row" style={{ marginTop: 14 }}><label>内容说明</label><input value={qnaForm.content} onChange={(e) => setQnaForm({ ...qnaForm, content: e.target.value })} placeholder="如 函数专题答疑 / 晚练安排" /></div>
+              <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, marginBottom: 0 }}>
+                <button type="button" className="btn" onClick={cancelEdit}>取消</button>
+                <button className="btn primary">{editingQna ? '保存修改' : '提交填报'}</button>
+              </div>
+            </form>
           </div>
         </div>
       )}

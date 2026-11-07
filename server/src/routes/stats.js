@@ -250,14 +250,35 @@ router.post('/generate', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   // 校历「补课」日若未指定套号（无套号型补课课表），则用正式课表补被补那天的课并标节假补课；
   // 若已指定套号，该日应由套号补课课表接管，正式课表不再补课（套号课表缺失时按数据缺失处理，跳过）。
   // 「调课」日用正式课表补被补那天的课，但按常规课时计酬（不标节假补课）。
+  //
+  // 关键修正：同一节课（业务键）可能因「换表」留下多个 effective 区间重叠的版本，
+  // 展开时必须每天只取「该日生效的 latest effective_from」版本，否则同一天重复计酬。
+  // 先按业务键分组，每天为每个业务键选出唯一生效版本。
+  const bizKey = (s) => `${s.class_id}|${s.teacher_id}|${s.subject}|${s.day_of_week}|${s.period_no}|${s.period_type}|${s.term}`;
+  const byBiz = new Map();
   for (const s of formalSchedules) {
-    const grade = classGrade.get(s.class_id);
+    if (!byBiz.has(bizKey(s))) byBiz.set(bizKey(s), []);
+    byBiz.get(bizKey(s)).push(s);
+  }
+  // 某日期某业务键的「唯一生效版本」：effective_from <= date 且 effective_to > date 中 effective_from 最大者
+  const resolveVersion = (list, date) => {
+    let best = null;
+    for (const s of list) {
+      if (!activeOn(s, date)) continue;
+      if (!best || (s.effective_from ?? '') > (best.effective_from ?? '')) best = s;
+    }
+    return best;
+  };
+
+  for (const list of byBiz.values()) {
     for (const date of allDates) {
+      const s = resolveVersion(list, date);
+      if (!s) continue;
+      const grade = classGrade.get(s.class_id);
       if (makeupActive.has(`${date}|${grade ?? ''}`)) continue;
       const r = resolveDay(cal, date, grade);
       if (r.action === 'skip') continue;
       if (r.dow !== s.day_of_week) continue;
-      if (!activeOn(s, date)) continue;
       if (r.action === 'makeup' && r.makeUpSet == null) {
         expandOne(s, date, '节假补课');
       } else if (r.action === 'normal' || r.action === 'reschedule') {

@@ -33,8 +33,9 @@ function virtualClassIdForGrade(grade) {
 // 查找「活跃」（待审核/已通过）的重复申报，返回命中记录或 null。
 // 重复口径：同一教师 + 同一类型 + 同一时间维度 + 同一目标。
 //  - 临时（有 date）：teacher + type + date + 目标
-//  - 固定排班（有 day_of_week + period_no）：teacher + type + 星期 + 节次 + 班级
-// 目标：答疑看年级（年级级）；晚自习看班级（班级级）；其它类型看年级+班级。
+//  - 固定排班（有 day_of_week）：teacher + type + 星期 + 目标
+// 目标（与临时分支对称）：答疑/早自习看年级（年级级）；晚自习看班级（班级级）；其它看年级+班级。
+// 注：固定排班的答疑/晚自习 period_no 为 0（无意义），故不参与判重。
 // 已驳回 / 已撤回不视为占用，允许重新申报。excludeId 用于编辑时排除自身。
 function findDuplicate({ teacher_id, period_type, date, day_of_week, period_no, grade, class_id, excludeId }) {
   if (!teacher_id || !period_type) return null;
@@ -45,10 +46,11 @@ function findDuplicate({ teacher_id, period_type, date, day_of_week, period_no, 
     if (period_type === '答疑' || period_type === '早自习') { conds.push('grade = ?'); params.push(grade); }
     else if (period_type === '晚自习') { conds.push('class_id = ?'); params.push(class_id); }
     else { conds.push('grade = ?'); params.push(grade); conds.push('class_id = ?'); params.push(class_id); }
-  } else if (day_of_week != null && period_no != null) {
+  } else if (day_of_week != null) {
     conds.push('day_of_week = ?'); params.push(day_of_week);
-    conds.push('period_no = ?'); params.push(period_no);
-    conds.push('class_id = ?'); params.push(class_id);
+    if (period_type === '答疑' || period_type === '早自习') { conds.push('grade = ?'); params.push(grade); }
+    else if (period_type === '晚自习') { conds.push('class_id = ?'); params.push(class_id); }
+    else { conds.push('grade = ?'); params.push(grade); conds.push('class_id = ?'); params.push(class_id); }
   } else {
     return null; // 缺少时间维度，无法判定重复
   }
@@ -285,6 +287,18 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
     const dow = Number.isFinite(dayOfWeek) && dayOfWeek >= 1 && dayOfWeek <= 7 ? dayOfWeek : null;
     if (!date && !dow) { errors.push(`第 ${i + 2} 行「发生日期」或「星期」至少填一项`); continue; }
 
+    // 防重复：与单条填报同一口径（同教师+同类型+同时间维度+同目标）
+    const dup = findDuplicate({
+      teacher_id: teacherId, period_type: periodType, date,
+      day_of_week: dow, period_no: Number.isFinite(periodNo) ? periodNo : null,
+      grade, class_id: classId,
+    });
+    if (dup) {
+      const where = date ? `日期 ${date}` : `周${dow} 第${periodNo}节`;
+      errors.push(`第 ${i + 2} 行与现有申报重复（${dup.status === 'approved' ? '已通过' : '待审核'}）：${periodType} ${grade} ${where}`);
+      continue;
+    }
+
     insert.run(grade, subject, teacherId, classId,
       dow, Number.isFinite(periodNo) ? periodNo : null, content || null, date,
       Number.isFinite(periodCount) && periodCount > 0 ? periodCount : 1, periodType, req.user.id);
@@ -365,7 +379,13 @@ router.post('/batch', authRequired, roleRequired(...BATCH_ROLES), (req, res) => 
 // 审核通过后计酬：有日期 → 生成按日上课记录（source=qna）；无日期 → 视为固定排班，走课表展开。
 // 返回生成的计酬记录条数（固定排班返回 0，因为要等课表展开）。
 function applyQnaPayroll(q) {
-  if (!q.teacher_id || !q.class_id) return 0;
+  if (!q.teacher_id) return 0;
+  // 年级级类型（答疑/早自习/晚练/晚晚练等未挂班级的按次计酬）回填年级虚班，保证生成计酬
+  let classId = q.class_id;
+  if (!classId && q.grade) {
+    classId = virtualClassIdForGrade(q.grade);
+    if (!classId) return 0; // 年级无虚班，无法计酬
+  }
   if (q.date) {
     // 临时/不定期：按填报的日期与节数生成上课记录，类型用记录里的 period_type
     const count = Math.max(1, Number(q.period_count) || 1);
@@ -373,15 +393,21 @@ function applyQnaPayroll(q) {
       INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
       VALUES (?,?,?,?,?,?, '常规', 'qna', ?, ?)`);
     for (let i = 0; i < count; i++) {
-      insert.run(q.class_id, q.teacher_id, q.subject, q.date, (q.period_no || 1) + i, q.period_type, q.id, q.content ?? null);
+      insert.run(classId, q.teacher_id, q.subject, q.date, (q.period_no || 1) + i, q.period_type, q.id, q.content ?? null);
     }
     return count;
   }
   // 固定排班：仍进入课表，之后由课表展开到 lesson_instances
+  // 防重复：若同班同师同科目同星期同类型已有课表，则不重复插入（历史重复数据的审核兜底）
+  const dupSch = db.prepare(`
+    SELECT id FROM schedules
+    WHERE class_id = ? AND teacher_id = ? AND subject = ? AND day_of_week = ? AND period_type = ?
+    LIMIT 1`).get(classId, q.teacher_id, q.subject, q.day_of_week ?? 0, q.period_type);
+  if (dupSch) return 0;
   db.prepare(`
     INSERT INTO schedules (class_id, teacher_id, subject, day_of_week, period_no, period_type)
     VALUES (?,?,?,?,?,?)`)
-    .run(q.class_id, q.teacher_id, q.subject, q.day_of_week ?? 0, q.period_no ?? 1, q.period_type);
+    .run(classId, q.teacher_id, q.subject, q.day_of_week ?? 0, q.period_no ?? 1, q.period_type);
   return 0;
 }
 
