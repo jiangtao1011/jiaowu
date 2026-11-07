@@ -6,6 +6,7 @@ import { loadContext, computePay } from '../context.js';
 import { createAdjustNotice } from './notices.js';
 import * as XLSX from 'xlsx';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
+import { createDraft, getDraft, deleteDraft } from '../import-stage.js';
 
 const router = Router();
 router.use(authRequired);
@@ -150,7 +151,186 @@ router.get('/template', (req, res) => {
   downloadTemplate(res, headers, samples, '课表导入模板.xlsx', [{ name: '填写说明', rows: notes }]);
 });
 
-// 导出课表模板结构说明 + 导入
+// 解析导入选项（scope/effective_from/to/makeup_set/grade/scope_term），供 preview/confirm 共用
+function parseImportOptions(body) {
+  const effectiveFrom = body.effective_from ? String(body.effective_from).trim() : null;
+  const effectiveTo = body.effective_to ? String(body.effective_to).trim() : null;
+  const scope = ['append', 'all', 'grade', 'term'].includes(body.scope) ? body.scope : 'append';
+  const scopeGrade = body.grade ? String(body.grade).trim() : null;
+  const scopeTerm = body.scope_term ? String(body.scope_term).trim() : null;
+  const makeupSet = (body.makeup_set !== undefined && body.makeup_set !== null && String(body.makeup_set).trim() !== '')
+    ? Number(body.makeup_set)
+    : null;
+  return { effectiveFrom, effectiveTo, scope, scopeGrade, scopeTerm, makeupSet };
+}
+
+// 计算「替换模式将关闭旧课表 N 条」（只读，不执行 UPDATE）
+function countCloseSchedules(opts) {
+  if (opts.scope === 'append' || !opts.effectiveFrom) return 0;
+  let sql = 'SELECT COUNT(*) AS n FROM schedules WHERE effective_to IS NULL';
+  const params = [opts.effectiveFrom];
+  if (opts.scope === 'grade' && opts.scopeGrade) {
+    sql += ' AND class_id IN (SELECT id FROM classes WHERE grade = ?)';
+    params.push(opts.scopeGrade);
+  } else if (opts.scope === 'term' && opts.scopeTerm) {
+    sql += ' AND term = ?';
+    params.push(opts.scopeTerm);
+  }
+  return Number(db.prepare(sql).get(...params).n);
+}
+
+// 解析 + 校验单行课表（不写库），返回 { ok, record } 或 { ok:false, reason, duplicate }
+function buildScheduleRecord(row, ctx) {
+  const { classByName, teacherByName, typePayNames, existsMakeup, makeupSet, scope } = ctx;
+  const className = String(keyOf(row, '班级', 'class', '班级名称') ?? '').trim();
+  const teacherName = String(keyOf(row, '教师', '老师', 'teacher', '任课教师') ?? '').trim();
+  const subject = String(keyOf(row, '课程名称', '科目', '学科', 'subject') ?? '').trim();
+  const dayOfWeek = Number(keyOf(row, '星期', '周几', 'day_of_week', '星期几') ?? '');
+  const periodNo = Number(keyOf(row, '节次', 'period_no', '课节') ?? '');
+  const periodType = String(keyOf(row, '类型', 'period_type', '课型') ?? '正课').trim() || '正课';
+  const term = String(keyOf(row, '时段', 'term', '课时段') ?? '常规').trim() || '常规';
+
+  if (!className || !teacherName) return { ok: false, reason: '缺少班级或教师' };
+  const classId = classByName[className];
+  const teacherId = teacherByName[teacherName];
+  if (!classId) return { ok: false, reason: `班级「${className}」不存在，请先在基本信息中创建` };
+  if (!teacherId) return { ok: false, reason: `教师「${teacherName}」不存在，请先创建教师` };
+
+  const finalType = PERIOD_TYPES.includes(periodType) ? periodType : (typePayNames.has(periodType) ? periodType : '正课');
+  const finalTerm = TERMS.includes(term) ? term : '常规';
+
+  // 补课课表幂等去重（替换模式会先关旧表，故不判定）
+  if (finalTerm === '节假补课' && existsMakeup && existsMakeup.get(makeupSet, classId, periodNo) && scope === 'append') {
+    return { ok: false, reason: '补课课表已存在', duplicate: true };
+  }
+
+  return {
+    ok: true,
+    record: {
+      class_id: classId, teacher_id: teacherId, subject: subject || null,
+      day_of_week: Number.isFinite(dayOfWeek) ? dayOfWeek : 0,
+      period_no: Number.isFinite(periodNo) ? periodNo : 1,
+      period_type: finalType, term: finalTerm,
+    },
+  };
+}
+
+function persistSchedule(record, opts) {
+  db.prepare(`
+    INSERT INTO schedules (class_id, teacher_id, subject, day_of_week, period_no, period_type, term, effective_from, effective_to, makeup_set)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(record.class_id, record.teacher_id, record.subject, record.day_of_week, record.period_no, record.period_type, record.term, opts.effectiveFrom, opts.effectiveTo, opts.makeupSet);
+}
+
+// 关闭旧表（替换模式，confirm 阶段执行）
+function closeOldSchedules(opts) {
+  if (opts.scope === 'append' || !opts.effectiveFrom) return 0;
+  let sql = 'UPDATE schedules SET effective_to = ? WHERE effective_to IS NULL';
+  const params = [opts.effectiveFrom];
+  if (opts.scope === 'grade' && opts.scopeGrade) {
+    sql += ' AND class_id IN (SELECT id FROM classes WHERE grade = ?)';
+    params.push(opts.scopeGrade);
+  } else if (opts.scope === 'term' && opts.scopeTerm) {
+    sql += ' AND term = ?';
+    params.push(opts.scopeTerm);
+  }
+  return db.prepare(sql).run(...params).changes;
+}
+
+// 预览
+router.post('/import/preview', roleRequired(...CLERK_ROLES), upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ ok: false, error: '请上传课表文件' });
+
+  let rows;
+  try {
+    rows = parseSheet(req.file.buffer, req.file.originalname);
+  } catch {
+    return res.status(400).json({ ok: false, error: '无法解析文件，请使用模板的 .xlsx / .csv 格式' });
+  }
+  if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
+
+  const opts = parseImportOptions(req.body || {});
+  if (opts.makeupSet != null && (!Number.isInteger(opts.makeupSet) || opts.makeupSet < 1)) {
+    return res.status(400).json({ ok: false, error: '补课课表套号应为正整数（1/2/3…）' });
+  }
+  if (opts.effectiveFrom && !/^\d{4}-\d{2}-\d{2}$/.test(opts.effectiveFrom)) {
+    return res.status(400).json({ ok: false, error: '生效日期格式应为 YYYY-MM-DD' });
+  }
+  if (opts.effectiveTo && !/^\d{4}-\d{2}-\d{2}$/.test(opts.effectiveTo)) {
+    return res.status(400).json({ ok: false, error: '结束日期格式应为 YYYY-MM-DD' });
+  }
+  if (opts.effectiveFrom && opts.effectiveTo && opts.effectiveFrom > opts.effectiveTo) {
+    return res.status(400).json({ ok: false, error: '生效日期不能晚于结束日期' });
+  }
+
+  const classes = db.prepare('SELECT id, name, type FROM classes').all();
+  const teachers = db.prepare('SELECT id, name FROM teachers').all();
+  const typePayNames = new Set(db.prepare('SELECT name FROM period_type_pays').all().map((r) => r.name));
+  const existsMakeup = opts.makeupSet != null
+    ? db.prepare(`SELECT id FROM schedules WHERE term = '节假补课' AND makeup_set = ? AND class_id = ? AND period_no = ? AND effective_to IS NULL`)
+    : null;
+  const ctx = {
+    classByName: Object.fromEntries(classes.map((c) => [c.name, c.id])),
+    teacherByName: Object.fromEntries(teachers.map((t) => [t.name, t.id])),
+    typePayNames, existsMakeup, makeupSet: opts.makeupSet, scope: opts.scope,
+  };
+
+  const columns = ['班级', '星期', '节次', '类型', '时段', '课程名称', '教师'];
+  const draftRows = [];
+  const summary = { total: rows.length, ok: 0, duplicate: 0, error: 0, close_count: countCloseSchedules(opts) };
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = buildScheduleRecord(rows[i], ctx);
+    const cells = columns.map((c) => String(keyOf(rows[i], c) ?? ''));
+    if (r.ok) {
+      summary.ok++;
+      draftRows.push({ row_id: i, line: i + 2, cells, status: 'ok', reason: null, record: r.record });
+    } else if (r.duplicate) {
+      summary.duplicate++;
+      draftRows.push({ row_id: i, line: i + 2, cells, status: 'duplicate', reason: r.reason, record: null });
+    } else {
+      summary.error++;
+      draftRows.push({ row_id: i, line: i + 2, cells, status: 'error', reason: r.reason, record: null });
+    }
+  }
+
+  const token = createDraft('schedules', req.user.id, { rows: draftRows, options: opts });
+  return res.json({ ok: true, data: { token, rows: draftRows.map(({ record, ...r }) => r), summary } });
+});
+
+// 确认入库
+router.post('/import/confirm', roleRequired(...CLERK_ROLES), (req, res) => {
+  const { token, row_ids } = req.body || {};
+  const draft = getDraft(token, req.user.id, 'schedules');
+  if (!draft) return res.status(400).json({ ok: false, error: '预览已失效，请重新上传' });
+
+  const opts = draft.payload.options || {};
+  const selected = new Set(Array.isArray(row_ids) ? row_ids.map(Number) : []);
+  const targets = draft.payload.rows.filter((r) => r.status === 'ok' && selected.has(r.row_id));
+
+  // 先执行「关旧表」（替换模式）
+  const closed = closeOldSchedules(opts);
+
+  let inserted = 0;
+  const errors = [];
+  const existsMakeup = opts.makeupSet != null
+    ? db.prepare(`SELECT id FROM schedules WHERE term = '节假补课' AND makeup_set = ? AND class_id = ? AND period_no = ? AND effective_to IS NULL`)
+    : null;
+  for (const r of targets) {
+    if (r.record.term === '节假补课' && existsMakeup && existsMakeup.get(opts.makeupSet, r.record.class_id, r.record.period_no)) {
+      errors.push(`第 ${r.line} 行补课课表已存在`); continue;
+    }
+    persistSchedule(r.record, opts);
+    inserted++;
+  }
+
+  deleteDraft(token);
+  const modeDesc = opts.scope === 'append' ? '（追加）' : `（${opts.effectiveFrom} 起生效，范围 ${opts.scope}，关闭旧表 ${closed} 条）`;
+  logAudit(req.user.id, 'import_schedules', 'schedules', `导入课表 ${inserted} 条${modeDesc}`);
+  return res.json({ ok: true, data: { inserted, errors, closed } });
+});
+
+// 旧接口（已弃用）
 router.post('/import', roleRequired(...CLERK_ROLES), upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: '请上传课表文件' });
 
@@ -162,98 +342,44 @@ router.post('/import', roleRequired(...CLERK_ROLES), upload.single('file'), (req
   }
   if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
 
-  // 替换语义：scope=append（追加，默认）只新增、不关闭旧表；all/grade/term 会先关闭选定范围旧表再写新表。
-  // effective_from / effective_to 为新记录的生效区间（可留空）。追加模式下也可带区间（如补课课表）。
-  const body = req.body || {};
-  const effectiveFrom = body.effective_from ? String(body.effective_from).trim() : null;
-  const effectiveTo = body.effective_to ? String(body.effective_to).trim() : null;
-  const scope = ['append', 'all', 'grade', 'term'].includes(body.scope) ? body.scope : 'append';
-  const scopeGrade = body.grade ? String(body.grade).trim() : null;
-  const scopeTerm = body.scope_term ? String(body.scope_term).trim() : null;
-  // 补课课表套号：导入「节假补课」时标记这是第几套（多套补课课表轮换用）。1/2/3…，留空=普通课表/旧用法。
-  const makeupSet = (body.makeup_set !== undefined && body.makeup_set !== null && String(body.makeup_set).trim() !== '')
-    ? Number(body.makeup_set)
-    : null;
-  if (makeupSet != null && (!Number.isInteger(makeupSet) || makeupSet < 1)) {
+  const opts = parseImportOptions(req.body || {});
+  if (opts.makeupSet != null && (!Number.isInteger(opts.makeupSet) || opts.makeupSet < 1)) {
     return res.status(400).json({ ok: false, error: '补课课表套号应为正整数（1/2/3…）' });
   }
-
-  if (effectiveFrom && !/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom)) {
+  if (opts.effectiveFrom && !/^\d{4}-\d{2}-\d{2}$/.test(opts.effectiveFrom)) {
     return res.status(400).json({ ok: false, error: '生效日期格式应为 YYYY-MM-DD' });
   }
-  if (effectiveTo && !/^\d{4}-\d{2}-\d{2}$/.test(effectiveTo)) {
+  if (opts.effectiveTo && !/^\d{4}-\d{2}-\d{2}$/.test(opts.effectiveTo)) {
     return res.status(400).json({ ok: false, error: '结束日期格式应为 YYYY-MM-DD' });
   }
-  if (effectiveFrom && effectiveTo && effectiveFrom > effectiveTo) {
+  if (opts.effectiveFrom && opts.effectiveTo && opts.effectiveFrom > opts.effectiveTo) {
     return res.status(400).json({ ok: false, error: '生效日期不能晚于结束日期' });
   }
 
   const classes = db.prepare('SELECT id, name, type FROM classes').all();
   const teachers = db.prepare('SELECT id, name FROM teachers').all();
-  const classByName = Object.fromEntries(classes.map((c) => [c.name, c.id]));
-  const teacherByName = Object.fromEntries(teachers.map((t) => [t.name, t.id]));
-  // 按次计酬字典类型（晚自习/答疑/晚练/晚读/自定义）也作为合法类型，供课表导入使用
   const typePayNames = new Set(db.prepare('SELECT name FROM period_type_pays').all().map((r) => r.name));
-
-  // 关闭选定范围内的旧课表（仅替换模式；追加模式不动旧表）
-  if (scope !== 'append' && effectiveFrom) {
-    let closeSql = 'UPDATE schedules SET effective_to = ? WHERE effective_to IS NULL';
-    const closeParams = [effectiveFrom];
-    if (scope === 'grade' && scopeGrade) {
-      closeSql += ' AND class_id IN (SELECT id FROM classes WHERE grade = ?)';
-      closeParams.push(scopeGrade);
-    } else if (scope === 'term' && scopeTerm) {
-      closeSql += ' AND term = ?';
-      closeParams.push(scopeTerm);
-    }
-    db.prepare(closeSql).run(...closeParams);
-  }
-
-  let inserted = 0;
-  let skippedDup = 0;
-  const errors = [];
-  // 补课课表幂等去重：同一套号、同一班、同一节次即「这门课」，重复导入时跳过，避免叠加重复计酬。
-  // 只匹配「当前生效」的记录（effective_to IS NULL）；替换模式会先关闭旧记录，故不会误跳过新导入。
-  const existsMakeup = makeupSet != null
+  const existsMakeup = opts.makeupSet != null
     ? db.prepare(`SELECT id FROM schedules WHERE term = '节假补课' AND makeup_set = ? AND class_id = ? AND period_no = ? AND effective_to IS NULL`)
     : null;
+  const ctx = {
+    classByName: Object.fromEntries(classes.map((c) => [c.name, c.id])),
+    teacherByName: Object.fromEntries(teachers.map((t) => [t.name, t.id])),
+    typePayNames, existsMakeup, makeupSet: opts.makeupSet, scope: opts.scope,
+  };
+
+  const closed = closeOldSchedules(opts);
+  let inserted = 0;
+  const errors = [];
   for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const className = String(keyOf(row, '班级', 'class', '班级名称') ?? '').trim();
-    const teacherName = String(keyOf(row, '教师', '老师', 'teacher', '任课教师') ?? '').trim();
-    const subject = String(keyOf(row, '课程名称', '科目', '学科', 'subject') ?? '').trim();
-    const dayOfWeek = Number(keyOf(row, '星期', '周几', 'day_of_week', '星期几') ?? '');
-    const periodNo = Number(keyOf(row, '节次', 'period_no', '课节') ?? '');
-    const periodType = String(keyOf(row, '类型', 'period_type', '课型') ?? '正课').trim() || '正课';
-    const term = String(keyOf(row, '时段', 'term', '课时段') ?? '常规').trim() || '常规';
-
-    if (!className || !teacherName) {
-      errors.push(`第 ${i + 2} 行缺少班级或教师`);
-      continue;
-    }
-    const classId = classByName[className];
-    const teacherId = teacherByName[teacherName];
-    if (!classId) { errors.push(`第 ${i + 2} 行班级「${className}」不存在，请先在基本信息中创建`); continue; }
-    if (!teacherId) { errors.push(`第 ${i + 2} 行教师「${teacherName}」不存在，请先创建教师`); continue; }
-
-    const finalType = PERIOD_TYPES.includes(periodType) ? periodType : (typePayNames.has(periodType) ? periodType : '正课');
-    const finalTerm = TERMS.includes(term) ? term : '常规';
-
-    // 补课课表（节假补课 + 套号）幂等：同套号同班同节次已存在则跳过，防止重复导入叠加。
-    if (finalTerm === '节假补课' && existsMakeup && existsMakeup.get(makeupSet, classId, periodNo)) {
-      skippedDup++;
-      continue;
-    }
-
-    db.prepare(`
-      INSERT INTO schedules (class_id, teacher_id, subject, day_of_week, period_no, period_type, term, effective_from, effective_to, makeup_set)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(classId, teacherId, subject || null, Number.isFinite(dayOfWeek) ? dayOfWeek : 0, Number.isFinite(periodNo) ? periodNo : 1, finalType, finalTerm, effectiveFrom, effectiveTo, makeupSet);
+    const r = buildScheduleRecord(rows[i], ctx);
+    if (!r.ok) { if (!r.duplicate) errors.push(`第 ${i + 2} 行 ${r.reason}`); continue; }
+    persistSchedule(r.record, opts);
     inserted++;
   }
 
-  logAudit(req.user.id, 'import_schedules', `schedules`, `导入课表 ${inserted} 条${skippedDup ? `，跳过重复 ${skippedDup} 条` : ''}${scope === 'append' ? '（追加）' : `（${effectiveFrom} 起生效，范围 ${scope}${scope === 'grade' ? ':' + scopeGrade : scope === 'term' ? ':' + scopeTerm : ''}${effectiveTo ? '~' + effectiveTo : ''}）`}`);
-  return res.json({ ok: true, data: { inserted, skippedDup, errors, effective_from: effectiveFrom, effective_to: effectiveTo, scope } });
+  logAudit(req.user.id, 'import_schedules', 'schedules', `导入课表 ${inserted} 条${opts.scope === 'append' ? '（追加）' : `（${opts.effectiveFrom} 起生效，范围 ${opts.scope}）`}`);
+  return res.json({ ok: true, data: { inserted, errors, effective_from: opts.effectiveFrom, effective_to: opts.effectiveTo, scope: opts.scope } });
 });
 
 // 删除补课课表（仅管理员）。按套号 + 可选年级删除整套「节假补课」课表。

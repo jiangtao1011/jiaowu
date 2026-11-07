@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
 import { DIRECTOR_ROLES } from '../roles.js';
+import ImportPreview from '../components/ImportPreview.jsx';
 
 const STATUS = { pending: '待年级组长审核', grade_approved: '待课程中心终审', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', grade_approved: 'info', approved: 'ok', rejected: '', withdrawn: 'info' };
@@ -28,6 +29,7 @@ export default function Applications() {
   const [qnaModal, setQnaModal] = useState(false); // 新增/编辑弹窗
   const [listMode, setListMode] = useState('pending'); // pending(待处理) | history(历史记录)
   const [importFile, setImportFile] = useState(null); // 批量导入文件
+  const [qnaPreview, setQnaPreview] = useState(null); // 导入预览 { token, rows, summary }
   // 申报列表筛选
   const [qnaFilter, setQnaFilter] = useState({ status: '', period_type: '', grade: '', date: '' });
 
@@ -152,17 +154,15 @@ export default function Applications() {
     const fd = new FormData();
     fd.append('file', importFile);
     try {
-      const res = await api.post('/applications/import', fd);
-      const { inserted, errors } = res.data.data;
-      if (inserted === 0 && errors.length) {
-        toast.error(`未导入任何记录，${errors.length} 条失败：\n${errors.join('\n')}`);
-      } else {
-        toast.success(`导入成功 ${inserted} 条${errors.length ? `，${errors.length} 条未导入` : ''}`);
-        if (errors.length) toast.error(errors.join('\n'));
-      }
-      setImportFile(null);
-      loadQna();
+      const { token, rows, summary } = (await api.post('/applications/import/preview', fd)).data.data;
+      setQnaPreview({ token, rows, summary });
     } catch (e) { toast.error(errMsg(e)); }
+  };
+  const confirmQnaImport = async (row_ids) => {
+    await api.post('/applications/import/confirm', { token: qnaPreview.token, row_ids });
+    setImportFile(null);
+    setQnaPreview(null);
+    loadQna();
   };
 
   const submitTask = async (e) => {
@@ -292,7 +292,7 @@ export default function Applications() {
             </div>
             <div className="toolbar" style={{ marginTop: 12 }}>
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setImportFile(e.target.files[0])} style={{ width: 'auto' }} />
-              <button className="btn primary" onClick={importQna} disabled={!importFile}>导入</button>
+              <button className="btn primary" onClick={importQna} disabled={!importFile}>预览</button>
               <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
             </div>
             <p className="muted" style={{ margin: 0 }}>表头：年级、学科、类型、教师、班级、发生日期、节数、星期、节次、内容。导入后统一待审核。</p>
@@ -598,6 +598,17 @@ export default function Applications() {
             </form>
           </div>
         </div>
+      )}
+
+      {qnaPreview && (
+        <ImportPreview
+          title="批量导入课务申报"
+          columns={['年级', '学科', '类型', '教师', '班级', '发生日期', '节数', '星期', '节次', '内容']}
+          rows={qnaPreview.rows}
+          summary={qnaPreview.summary}
+          onConfirm={confirmQnaImport}
+          onClose={() => setQnaPreview(null)}
+        />
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import { db, logAudit } from '../db.js';
 import { authRequired, roleRequired, ADMIN_ROLES, DIRECTOR_ROLES, CLERK_ROLES } from '../auth.js';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
 import { publicBase } from '../share.js';
+import { createDraft, getDraft, deleteDraft } from '../import-stage.js';
 
 const router = Router();
 
@@ -236,7 +237,129 @@ router.get('/template', authRequired, (req, res) => {
   downloadTemplate(res, headers, samples, '课时申报导入模板.xlsx', [{ name: '填写说明', rows: notes }]);
 });
 
-// 批量导入答疑申报（任意登录用户；导入后统一待审核）
+// 解析 + 校验单行课务申报（不写库），返回 { ok, record } 或 { ok:false, reason, duplicate }
+function buildQnaRecord(row, ctx) {
+  const { teacherByName, classByName } = ctx;
+  const grade = String(keyOf(row, '年级', 'grade') ?? '').trim();
+  const subject = String(keyOf(row, '学科', '科目', 'subject') ?? '').trim();
+  const periodType = validPeriodType(keyOf(row, '类型', 'period_type', '课型'));
+  const teacherName = String(keyOf(row, '教师', '老师', 'teacher') ?? '').trim();
+  const className = String(keyOf(row, '班级', 'class') ?? '').trim();
+  const dateRaw = String(keyOf(row, '发生日期', '日期', 'date') ?? '').trim();
+  const periodCount = Number(keyOf(row, '节数', 'period_count') ?? '');
+  const dayOfWeek = Number(keyOf(row, '星期', '周几', 'day_of_week') ?? '');
+  const periodNo = Number(keyOf(row, '节次', 'period_no') ?? '');
+  const content = String(keyOf(row, '内容', 'content', '答疑内容') ?? '').trim();
+
+  if (!grade || !subject) return { ok: false, reason: '缺少年级或学科' };
+  const teacherId = teacherName ? teacherByName[teacherName] : null;
+  if (teacherName && !teacherId) return { ok: false, reason: `教师「${teacherName}」不存在` };
+  let classId = className ? classByName[className] : null;
+  if (className && !classId) return { ok: false, reason: `班级「${className}」不存在` };
+  // 早自习为年级级，未指定班级时回填该年级虚班
+  if (periodType === '早自习' && !classId) {
+    classId = virtualClassIdForGrade(grade);
+    if (!classId) return { ok: false, reason: `年级「${grade}」暂无虚拟班` };
+  }
+  // 临时填报必须有发生日期；固定排班必须有星期
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : null;
+  const dow = Number.isFinite(dayOfWeek) && dayOfWeek >= 1 && dayOfWeek <= 7 ? dayOfWeek : null;
+  if (!date && !dow) return { ok: false, reason: '「发生日期」或「星期」至少填一项' };
+
+  // 防重复
+  const dup = findDuplicate({
+    teacher_id: teacherId, period_type: periodType, date,
+    day_of_week: dow, period_no: Number.isFinite(periodNo) ? periodNo : null,
+    grade, class_id: classId,
+  });
+  if (dup) {
+    const where = date ? `日期 ${date}` : `周${dow} 第${periodNo}节`;
+    return { ok: false, reason: `与现有申报重复（${dup.status === 'approved' ? '已通过' : '待审核'}）：${periodType} ${grade} ${where}`, duplicate: true };
+  }
+
+  return {
+    ok: true,
+    record: {
+      grade, subject, teacher_id: teacherId, class_id: classId,
+      day_of_week: dow, period_no: Number.isFinite(periodNo) ? periodNo : null,
+      content: content || null, date, period_count: Number.isFinite(periodCount) && periodCount > 0 ? periodCount : 1,
+      period_type: periodType,
+    },
+  };
+}
+
+function persistQna(record, userId) {
+  db.prepare(`
+    INSERT INTO qna_lessons
+      (grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type, status, filled_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?, 'pending', ?)`)
+    .run(record.grade, record.subject, record.teacher_id, record.class_id,
+      record.day_of_week, record.period_no, record.content, record.date,
+      record.period_count, record.period_type, userId);
+}
+
+// 预览：解析 + 校验，逐行返回状态，暂存草稿
+router.post('/import/preview', authRequired, upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ ok: false, error: '请上传申报文件' });
+  let rows;
+  try {
+    rows = parseSheet(req.file.buffer, req.file.originalname);
+  } catch {
+    return res.status(400).json({ ok: false, error: '无法解析文件，请使用模板的 .xlsx / .csv 格式' });
+  }
+  if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
+
+  const teachers = db.prepare('SELECT id, name FROM teachers').all();
+  const classes = db.prepare('SELECT id, name FROM classes').all();
+  const ctx = {
+    teacherByName: Object.fromEntries(teachers.map((t) => [t.name, t.id])),
+    classByName: Object.fromEntries(classes.map((c) => [c.name, c.id])),
+  };
+  const columns = ['年级', '学科', '类型', '教师', '班级', '发生日期', '节数', '星期', '节次', '内容'];
+  const draftRows = [];
+  const summary = { total: rows.length, ok: 0, duplicate: 0, error: 0 };
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = buildQnaRecord(rows[i], ctx);
+    const cells = columns.map((c) => String(keyOf(rows[i], c) ?? ''));
+    if (r.ok) {
+      summary.ok++;
+      draftRows.push({ row_id: i, line: i + 2, cells, status: 'ok', reason: null, record: r.record });
+    } else if (r.duplicate) {
+      summary.duplicate++;
+      draftRows.push({ row_id: i, line: i + 2, cells, status: 'duplicate', reason: r.reason, record: null });
+    } else {
+      summary.error++;
+      draftRows.push({ row_id: i, line: i + 2, cells, status: 'error', reason: r.reason, record: null });
+    }
+  }
+
+  const token = createDraft('qna', req.user.id, { rows: draftRows });
+  return res.json({ ok: true, data: { token, rows: draftRows.map(({ record, ...r }) => r), summary } });
+});
+
+// 确认入库
+router.post('/import/confirm', authRequired, (req, res) => {
+  const { token, row_ids } = req.body || {};
+  const draft = getDraft(token, req.user.id, 'qna');
+  if (!draft) return res.status(400).json({ ok: false, error: '预览已失效，请重新上传' });
+
+  const selected = new Set(Array.isArray(row_ids) ? row_ids.map(Number) : []);
+  let inserted = 0;
+  const errors = [];
+
+  for (const r of draft.payload.rows) {
+    if (r.status !== 'ok' || !selected.has(r.row_id)) continue;
+    persistQna(r.record, req.user.id);
+    inserted++;
+  }
+
+  deleteDraft(token);
+  logAudit(req.user.id, 'import_qna_lessons', 'qna_lessons', `导入课务申报 ${inserted} 条`);
+  return res.json({ ok: true, data: { inserted, errors } });
+});
+
+// 旧接口（已弃用）
 router.post('/import', authRequired, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: '请上传申报文件' });
   let rows;
@@ -249,63 +372,21 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
 
   const teachers = db.prepare('SELECT id, name FROM teachers').all();
   const classes = db.prepare('SELECT id, name FROM classes').all();
-  const teacherByName = Object.fromEntries(teachers.map((t) => [t.name, t.id]));
-  const classByName = Object.fromEntries(classes.map((c) => [c.name, c.id]));
-
-  const insert = db.prepare(`
-    INSERT INTO qna_lessons
-      (grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type, status, filled_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?, 'pending', ?)`);
+  const ctx = {
+    teacherByName: Object.fromEntries(teachers.map((t) => [t.name, t.id])),
+    classByName: Object.fromEntries(classes.map((c) => [c.name, c.id])),
+  };
 
   let inserted = 0;
   const errors = [];
   for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const grade = String(keyOf(row, '年级', 'grade') ?? '').trim();
-    const subject = String(keyOf(row, '学科', '科目', 'subject') ?? '').trim();
-    const periodType = validPeriodType(keyOf(row, '类型', 'period_type', '课型'));
-    const teacherName = String(keyOf(row, '教师', '老师', 'teacher') ?? '').trim();
-    const className = String(keyOf(row, '班级', 'class') ?? '').trim();
-    const dateRaw = String(keyOf(row, '发生日期', '日期', 'date') ?? '').trim();
-    const periodCount = Number(keyOf(row, '节数', 'period_count') ?? '');
-    const dayOfWeek = Number(keyOf(row, '星期', '周几', 'day_of_week') ?? '');
-    const periodNo = Number(keyOf(row, '节次', 'period_no') ?? '');
-    const content = String(keyOf(row, '内容', 'content', '答疑内容') ?? '').trim();
-
-    if (!grade || !subject) { errors.push(`第 ${i + 2} 行缺少年级或学科`); continue; }
-    const teacherId = teacherName ? teacherByName[teacherName] : null;
-    if (teacherName && !teacherId) { errors.push(`第 ${i + 2} 行教师「${teacherName}」不存在`); continue; }
-    let classId = className ? classByName[className] : null;
-    if (className && !classId) { errors.push(`第 ${i + 2} 行班级「${className}」不存在`); continue; }
-    // 早自习为年级级，未指定班级时回填该年级虚班
-    if (periodType === '早自习' && !classId) {
-      classId = virtualClassIdForGrade(grade);
-      if (!classId) { errors.push(`第 ${i + 2} 行年级「${grade}」暂无虚拟班`); continue; }
-    }
-    // 临时填报必须有发生日期；固定排班必须有星期
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(dateRaw) ? dateRaw : null;
-    const dow = Number.isFinite(dayOfWeek) && dayOfWeek >= 1 && dayOfWeek <= 7 ? dayOfWeek : null;
-    if (!date && !dow) { errors.push(`第 ${i + 2} 行「发生日期」或「星期」至少填一项`); continue; }
-
-    // 防重复：与单条填报同一口径（同教师+同类型+同时间维度+同目标）
-    const dup = findDuplicate({
-      teacher_id: teacherId, period_type: periodType, date,
-      day_of_week: dow, period_no: Number.isFinite(periodNo) ? periodNo : null,
-      grade, class_id: classId,
-    });
-    if (dup) {
-      const where = date ? `日期 ${date}` : `周${dow} 第${periodNo}节`;
-      errors.push(`第 ${i + 2} 行与现有申报重复（${dup.status === 'approved' ? '已通过' : '待审核'}）：${periodType} ${grade} ${where}`);
-      continue;
-    }
-
-    insert.run(grade, subject, teacherId, classId,
-      dow, Number.isFinite(periodNo) ? periodNo : null, content || null, date,
-      Number.isFinite(periodCount) && periodCount > 0 ? periodCount : 1, periodType, req.user.id);
+    const r = buildQnaRecord(rows[i], ctx);
+    if (!r.ok) { errors.push(`第 ${i + 2} 行 ${r.reason}`); continue; }
+    persistQna(r.record, req.user.id);
     inserted++;
   }
 
-  logAudit(req.user.id, 'import_qna_lessons', 'qna_lessons', `导入答疑申报 ${inserted} 条`);
+  logAudit(req.user.id, 'import_qna_lessons', 'qna_lessons', `导入课务申报 ${inserted} 条`);
   return res.json({ ok: true, data: { inserted, errors } });
 });
 

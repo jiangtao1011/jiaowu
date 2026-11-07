@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import api, { errMsg } from '../api.js';
 import { isAdmin } from '../roles.js';
 import { useToast } from '../components/feedback.jsx';
+import ImportPreview from '../components/ImportPreview.jsx';
 
 // 率输入框：0~100，步进 0.1
 function RateInput({ value, onChange, label }) {
@@ -151,7 +152,9 @@ export default function Assessment() {
     } catch (err) { setError(errMsg(err)); }
   };
 
-  // 批量导入各率
+  // 批量导入各率（两阶段：预览 → 确认）
+  const [scorePreview, setScorePreview] = useState(null); // { token, rows, summary }
+
   const importScores = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -159,15 +162,18 @@ export default function Assessment() {
       const token = localStorage.getItem('edu_token');
       const fd = new FormData();
       fd.append('file', file);
-      const r = await fetch(`/api/assessment/exams/${curExam.id}/scores/import`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
+      const r = await fetch(`/api/assessment/exams/${curExam.id}/scores/import/preview`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: fd });
       const j = await r.json();
-      if (!r.ok || !j.ok) { toast.error(j.error || '导入失败'); return; }
-      const { imported, errors } = j.data;
-      toast.success(`已导入 ${imported} 个备课组各率${errors?.length ? `，${errors.length} 行异常` : ''}`);
-      if (errors?.length) toast.error(errors.join('；'));
-      openExam(curExam);
+      if (!r.ok || !j.ok) { toast.error(j.error || '预览失败'); return; }
+      setScorePreview({ token: j.data.token, rows: j.data.rows, summary: j.data.summary });
     } catch (err) { toast.error(errMsg(err)); }
     finally { e.target.value = ''; }
+  };
+
+  const confirmScoresImport = async (row_ids) => {
+    await api.post(`/assessment/exams/${curExam.id}/scores/import/confirm`, { token: scorePreview.token, row_ids });
+    setScorePreview(null);
+    openExam(curExam);
   };
 
   // 上传成绩文件（管理员 + 组长）
@@ -596,6 +602,17 @@ export default function Assessment() {
             </div>
           </div>
         </div>
+      )}
+
+      {scorePreview && (
+        <ImportPreview
+          title={`批量导入各率 — ${curExam?.name || ''}`}
+          columns={['备课组', 'A率%', 'B率%', 'C率%', 'D率%', 'E率%', '参考人数', '均分']}
+          rows={scorePreview.rows}
+          summary={scorePreview.summary}
+          onConfirm={confirmScoresImport}
+          onClose={() => setScorePreview(null)}
+        />
       )}
     </div>
   );

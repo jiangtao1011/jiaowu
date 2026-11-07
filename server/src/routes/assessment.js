@@ -7,6 +7,7 @@ import { authRequired, roleRequired, CLERK_ROLES, DIRECTOR_ROLES, RESULT_VIEW_RO
 import { visibleGroups } from '../scope.js';
 import { listGroups, resolveGroup } from '../groups.js';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
+import { createDraft, getDraft, deleteDraft } from '../import-stage.js';
 
 const router = Router();
 router.use(authRequired);
@@ -269,6 +270,104 @@ router.get('/exams/:id/scores-template', (req, res) => {
 });
 
 // 批量导入各率（按备课组名匹配 upsert，不影响文件中未出现的组）
+// 解析 + 校验单行成绩各率（不写库），返回 { ok, record, update } 或 { ok:false, reason }
+function buildScoreRecord(row, ctx) {
+  const { groupByName, existing, seen } = ctx;
+  const gname = String(keyOf(row, '备课组', '备课组名', 'group_name', '组名') ?? '').trim();
+  if (!gname) return { ok: false, reason: '缺少备课组名' };
+  const gk = groupByName.get(gname);
+  if (!gk) return { ok: false, reason: `「${gname}」不是有效备课组` };
+  if (seen.has(gk)) return { ok: false, reason: `「${gname}」重复` };
+
+  const ra = clampRate(keyOf(row, 'A率%', 'A率', 'a率') ?? 0);
+  const rb = clampRate(keyOf(row, 'B率%', 'B率', 'b率') ?? 0);
+  const rc = clampRate(keyOf(row, 'C率%', 'C率', 'c率') ?? 0);
+  const rd = clampRate(keyOf(row, 'D率%', 'D率', 'd率') ?? 0);
+  const re = clampRate(keyOf(row, 'E率%', 'E率', 'e率') ?? 0);
+  const tcRaw = keyOf(row, '参考人数', '人数');
+  const tc = tcRaw !== '' && tcRaw != null ? Number(tcRaw) : null;
+  const asRaw = keyOf(row, '均分', '平均分');
+  const as = asRaw !== '' && asRaw != null ? Number(asRaw) : null;
+
+  return { ok: true, update: existing.has(gk), record: { gk, gname, ra, rb, rc, rd, re, tc, as } };
+}
+
+function persistScore(record, examId) {
+  const existing = db.prepare('SELECT group_key FROM exam_scores WHERE exam_id = ? AND group_key = ?').get(examId, record.gk);
+  if (existing) {
+    db.prepare(`UPDATE exam_scores SET group_name = ?, rate_a = ?, rate_b = ?, rate_c = ?, rate_d = ?, rate_e = ?, total_count = ?, avg_score = ?
+      WHERE exam_id = ? AND group_key = ?`)
+      .run(record.gname, record.ra, record.rb, record.rc, record.rd, record.re, record.tc, record.as, examId, record.gk);
+  } else {
+    db.prepare(`INSERT INTO exam_scores (exam_id, group_key, group_name, rate_a, rate_b, rate_c, rate_d, rate_e, total_count, avg_score)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      .run(examId, record.gk, record.gname, record.ra, record.rb, record.rc, record.rd, record.re, record.tc, record.as);
+  }
+}
+
+// 预览：解析 + 校验，暂存草稿
+router.post('/exams/:id/scores/import/preview', roleRequired(...CLERK_ROLES), uploadMem.single('file'), (req, res) => {
+  const id = Number(req.params.id);
+  const exam = db.prepare('SELECT * FROM exams WHERE id = ?').get(id);
+  if (!exam) return res.status(404).json({ ok: false, error: '考试不存在' });
+  if (!req.file) return res.status(400).json({ ok: false, error: '请上传文件' });
+
+  let rows;
+  try { rows = parseSheet(req.file.buffer, req.file.originalname); } catch {
+    return res.status(400).json({ ok: false, error: '无法解析文件，请使用模板的 .xlsx / .csv 格式' });
+  }
+  if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
+
+  const groupByName = new Map();
+  for (const g of filterByExamGrade(listGroups().filter((x) => x.type === '备课组'), exam.grade)) groupByName.set(g.name, g.key);
+  const existing = new Set(db.prepare('SELECT group_key FROM exam_scores WHERE exam_id = ?').all(id).map((r) => r.group_key));
+  const seen = new Set();
+  const ctx = { groupByName, existing, seen };
+
+  const columns = ['备课组', 'A率%', 'B率%', 'C率%', 'D率%', 'E率%', '参考人数', '均分'];
+  const draftRows = [];
+  const summary = { total: rows.length, ok: 0, duplicate: 0, error: 0 };
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = buildScoreRecord(rows[i], ctx);
+    if (r.ok) seen.add(r.record.gk);
+    const cells = columns.map((c) => String(keyOf(rows[i], c) ?? ''));
+    if (r.ok) {
+      summary.ok++;
+      draftRows.push({ row_id: i, line: i + 2, cells, status: 'ok', reason: null, update: r.update, record: r.record });
+    } else {
+      summary.error++;
+      draftRows.push({ row_id: i, line: i + 2, cells, status: 'error', reason: r.reason, record: null });
+    }
+  }
+
+  const token = createDraft('scores', req.user.id, { rows: draftRows, exam_id: id });
+  return res.json({ ok: true, data: { token, rows: draftRows.map(({ record, ...r }) => r), summary } });
+});
+
+// 确认入库
+router.post('/exams/:id/scores/import/confirm', roleRequired(...CLERK_ROLES), (req, res) => {
+  const id = Number(req.params.id);
+  const { token, row_ids } = req.body || {};
+  const draft = getDraft(token, req.user.id, 'scores');
+  if (!draft) return res.status(400).json({ ok: false, error: '预览已失效，请重新上传' });
+
+  const selected = new Set(Array.isArray(row_ids) ? row_ids.map(Number) : []);
+  let imported = 0;
+  const errors = [];
+
+  for (const r of draft.payload.rows) {
+    if (r.status !== 'ok' || !selected.has(r.row_id)) continue;
+    persistScore(r.record, id);
+    imported++;
+  }
+
+  deleteDraft(token);
+  logAudit(req.user.id, 'import_exam_scores', `exams:${id}`, `批量导入各率 ${imported} 条`);
+  return res.json({ ok: true, data: { imported, errors } });
+});
+
+// 旧接口（已弃用）
 router.post('/exams/:id/scores/import', roleRequired(...CLERK_ROLES), uploadMem.single('file'), (req, res) => {
   const id = Number(req.params.id);
   const exam = db.prepare('SELECT * FROM exams WHERE id = ?').get(id);
@@ -281,42 +380,22 @@ router.post('/exams/:id/scores/import', roleRequired(...CLERK_ROLES), uploadMem.
   }
   if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
 
-  // 组名 → 组 key（备课组；按考试年级过滤，避免其它年级组名混入）
   const groupByName = new Map();
   for (const g of filterByExamGrade(listGroups().filter((x) => x.type === '备课组'), exam.grade)) groupByName.set(g.name, g.key);
-
-  const ins = db.prepare(`INSERT INTO exam_scores (exam_id, group_key, group_name, rate_a, rate_b, rate_c, rate_d, rate_e, total_count, avg_score)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`);
-  const upd = db.prepare(`UPDATE exam_scores SET group_name = ?, rate_a = ?, rate_b = ?, rate_c = ?, rate_d = ?, rate_e = ?, total_count = ?, avg_score = ?
-    WHERE exam_id = ? AND group_key = ?`);
   const existing = new Set(db.prepare('SELECT group_key FROM exam_scores WHERE exam_id = ?').all(id).map((r) => r.group_key));
+  const seen = new Set();
+  const ctx = { groupByName, existing, seen };
 
   let imported = 0;
   const errors = [];
-  const seen = new Set();
   for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const gname = String(keyOf(row, '备课组', '备课组名', 'group_name', '组名') ?? '').trim();
-    if (!gname) { errors.push(`第 ${i + 2} 行缺少备课组名`); continue; }
-    const gk = groupByName.get(gname);
-    if (!gk) { errors.push(`第 ${i + 2} 行「${gname}」不是有效备课组`); continue; }
-    if (seen.has(gk)) { errors.push(`第 ${i + 2} 行「${gname}」重复`); continue; }
-    seen.add(gk);
-
-    const ra = clampRate(keyOf(row, 'A率%', 'A率', 'a率') ?? 0);
-    const rb = clampRate(keyOf(row, 'B率%', 'B率', 'b率') ?? 0);
-    const rc = clampRate(keyOf(row, 'C率%', 'C率', 'c率') ?? 0);
-    const rd = clampRate(keyOf(row, 'D率%', 'D率', 'd率') ?? 0);
-    const re = clampRate(keyOf(row, 'E率%', 'E率', 'e率') ?? 0);
-    const tcRaw = keyOf(row, '参考人数', '人数');
-    const tc = tcRaw !== '' && tcRaw != null ? Number(tcRaw) : null;
-    const asRaw = keyOf(row, '均分', '平均分');
-    const as = asRaw !== '' && asRaw != null ? Number(asRaw) : null;
-
-    if (existing.has(gk)) upd.run(gname, ra, rb, rc, rd, re, tc, as, id, gk);
-    else ins.run(id, gk, gname, ra, rb, rc, rd, re, tc, as);
+    const r = buildScoreRecord(rows[i], ctx);
+    if (!r.ok) { errors.push(`第 ${i + 2} 行 ${r.reason}`); continue; }
+    seen.add(r.record.gk);
+    persistScore(r.record, id);
     imported++;
   }
+
   logAudit(req.user.id, 'import_exam_scores', `exams:${id}`, `批量导入各率 ${imported} 条${errors.length ? `，异常 ${errors.length} 条` : ''}`);
   return res.json({ ok: true, data: { imported, errors } });
 });

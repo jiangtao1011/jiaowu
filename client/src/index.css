@@ -1799,3 +1799,10 @@ a.kpi-link:hover .kpi-card { box-shadow: var(--shadow-lg); transform: translateY
   .focus-nav-title { width: 100%; }
   .focus-nav-item { width: auto; }
 }
+
+/* ============ 导入预览确认弹窗 ============ */
+.import-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.import-preview-table td, .import-preview-table th { white-space: nowrap; }
+.import-preview-table .ip-err { background: var(--danger-soft); }
+.import-preview-table .ip-dup { background: var(--warn-soft); }
+.import-preview-table .ip-reason { font-size: 11.5px; color: var(--muted); margin-top: 2px; white-space: normal; max-width: 200px; }

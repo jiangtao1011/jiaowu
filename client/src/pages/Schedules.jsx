@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import ImportPreview from '../components/ImportPreview.jsx';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const TERMS = ['常规', '夏令营', '冬令营', '全员夏令营', '全员冬令营', '节假补课'];
@@ -77,6 +78,7 @@ export default function Schedules() {
   const [view, setView] = useState('grid'); // 'grid' 课表视图 | 'makeup' 补课课表列表
   const [makeupRows, setMakeupRows] = useState([]); // 补课课表（term=节假补课）明细
   const [showImport, setShowImport] = useState(false); // 导入课表弹窗
+  const [importPreview, setImportPreview] = useState(null); // { token, rows, summary }
   const [changes, setChanges] = useState([]); // 课务调整记录
   const [printChange, setPrintChange] = useState(null); // 打印通知单对象
   const [focusClass, setFocusClass] = useState(''); // 下钻的单班 id（空=总览缩略图）
@@ -188,16 +190,17 @@ export default function Schedules() {
     if (scope === 'term') fd.append('scope_term', scopeTerm);
     if (makeupSet !== '') fd.append('makeup_set', makeupSet);
     try {
-      const res = await api.post('/schedules/import', fd);
-      const { inserted, errors } = res.data.data;
-      const range = effFrom ? `${effFrom}${effTo ? '~' + effTo : ' 起'}` : '';
-      const mode = scope === 'append' ? `追加${range ? '（' + range + '）' : ''}` : `替换（${scope === 'all' ? '全校' : scope === 'grade' ? '年级 ' + scopeGrade : '时段 ' + scopeTerm}，${range}）`;
-      if (errors.length) toast.warn(`导入成功 ${inserted} 条（${mode}），${errors.length} 条未导入`);
-      else toast.success(`导入成功 ${inserted} 条（${mode}）`);
-      setFile(null);
-      setShowImport(false);
-      loadSchedules();
+      const { token, rows, summary } = (await api.post('/schedules/import/preview', fd)).data.data;
+      setImportPreview({ token, rows, summary });
     } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  const confirmImport = async (row_ids) => {
+    await api.post('/schedules/import/confirm', { token: importPreview.token, row_ids });
+    setFile(null);
+    setShowImport(false);
+    setImportPreview(null);
+    loadSchedules();
   };
 
   const onDrop = async (targetScheduleId) => {
@@ -579,7 +582,7 @@ export default function Schedules() {
                 </select>
               )}
               <input type="number" min="1" step="1" value={makeupSet} onChange={(e) => setMakeupSet(e.target.value)} placeholder="套号(补课)" style={{ width: 100 }} title="补课课表套号：导入「节假补课」时填 1/2/3 区分多套轮换" />
-              <button className="btn primary" onClick={importFile} disabled={!file}>导入</button>
+              <button className="btn primary" onClick={importFile} disabled={!file}>预览</button>
               <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
             </div>
             <p className="muted" style={{ margin: '12px 0 0', fontSize: 12.5 }}>
@@ -590,6 +593,17 @@ export default function Schedules() {
             </p>
           </div>
         </div>
+      )}
+
+      {importPreview && (
+        <ImportPreview
+          title="导入课表"
+          columns={['班级', '星期', '节次', '类型', '时段', '课程名称', '教师']}
+          rows={importPreview.rows}
+          summary={importPreview.summary}
+          onConfirm={confirmImport}
+          onClose={() => setImportPreview(null)}
+        />
       )}
 
       <div className="card">

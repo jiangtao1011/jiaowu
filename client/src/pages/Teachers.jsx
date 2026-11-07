@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import ImportPreview from '../components/ImportPreview.jsx';
 
 const PAY_KEYS = ['夏令营', '冬令营', '全员夏令营', '全员冬令营', '节假补课'];
 const EMPTY = { name: '', phone: '', subject: '', pay_standard: {} };
@@ -16,6 +17,7 @@ export default function Teachers() {
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null); // { token, rows, summary }
 
   const load = async () => {
     try { setRows((await api.get('/teachers')).data.data); } catch (e) { setError(errMsg(e)); }
@@ -77,12 +79,17 @@ export default function Teachers() {
     const fd = new FormData();
     fd.append('file', file);
     try {
-      const { inserted, skipped, errors } = (await api.post('/teachers/import', fd)).data.data;
-      toast.success(`导入成功 ${inserted} 条${skipped ? `，跳过已存在 ${skipped} 条` : ''}${errors.length ? `，${errors.length} 条未导入` : ''}`);
-      setFile(null);
-      setShowImport(false);
-      load();
+      const { token, rows, summary } = (await api.post('/teachers/import/preview', fd)).data.data;
+      setPreview({ token, rows, summary });
     } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  const confirmImport = async (row_ids) => {
+    await api.post('/teachers/import/confirm', { token: preview.token, row_ids });
+    setFile(null);
+    setShowImport(false);
+    setPreview(null);
+    load();
   };
 
   const filtered = rows.filter((t) => {
@@ -211,11 +218,22 @@ export default function Teachers() {
             <p className="muted" style={{ marginTop: 0 }}>上传 .xlsx / .csv 文件，按姓名匹配，已存在的自动跳过。可先下载模板。</p>
             <div className="toolbar">
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setFile(e.target.files[0])} style={{ width: 'auto' }} />
-              <button className="btn primary" onClick={importFile} disabled={!file}>导入</button>
+              <button className="btn primary" onClick={importFile} disabled={!file}>预览</button>
               <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
             </div>
           </div>
         </div>
+      )}
+
+      {preview && (
+        <ImportPreview
+          title="批量导入教师"
+          columns={['姓名', '电话', '学科', ...PAY_KEYS]}
+          rows={preview.rows}
+          summary={preview.summary}
+          onConfirm={confirmImport}
+          onClose={() => setPreview(null)}
+        />
       )}
     </div>
   );

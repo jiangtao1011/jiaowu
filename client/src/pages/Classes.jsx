@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import ImportPreview from '../components/ImportPreview.jsx';
 
 const TYPES = ['行政班', '分层', '走班'];
 const EMPTY = { name: '', type: '行政班', student_count: '', grade: '', parent_id: '', subject: '' };
@@ -17,6 +18,7 @@ export default function Classes() {
   const [showForm, setShowForm] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null); // { token, rows, summary }
 
   const load = async () => {
     try { setRows((await api.get('/classes')).data.data); } catch (e) { setError(errMsg(e)); }
@@ -77,12 +79,17 @@ export default function Classes() {
     const fd = new FormData();
     fd.append('file', file);
     try {
-      const { inserted, skipped, errors } = (await api.post('/classes/import', fd)).data.data;
-      toast.success(`导入成功 ${inserted} 条${skipped ? `，跳过已存在 ${skipped} 条` : ''}${errors.length ? `，${errors.length} 条未导入` : ''}`);
-      setFile(null);
-      setShowImport(false);
-      load();
+      const { token, rows, summary } = (await api.post('/classes/import/preview', fd)).data.data;
+      setPreview({ token, rows, summary });
     } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  const confirmImport = async (row_ids) => {
+    await api.post('/classes/import/confirm', { token: preview.token, row_ids });
+    setFile(null);
+    setShowImport(false);
+    setPreview(null);
+    load();
   };
 
   const toggleMember = (id) => setMemberIds((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
@@ -242,11 +249,22 @@ export default function Classes() {
             <p className="muted" style={{ marginTop: 0 }}>表头：班级名称、类型（行政班/分层/走班）、人数、年级、所属班级、学科。分层在「所属班级」填父班级名；走班在「所属班级」用逗号列出合班的多个行政班。</p>
             <div className="toolbar">
               <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setFile(e.target.files[0])} style={{ width: 'auto' }} />
-              <button className="btn primary" onClick={importFile} disabled={!file}>导入</button>
+              <button className="btn primary" onClick={importFile} disabled={!file}>预览</button>
               <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
             </div>
           </div>
         </div>
+      )}
+
+      {preview && (
+        <ImportPreview
+          title="批量导入班级"
+          columns={['班级名称', '类型', '人数', '年级', '所属班级', '学科']}
+          rows={preview.rows}
+          summary={preview.summary}
+          onConfirm={confirmImport}
+          onClose={() => setPreview(null)}
+        />
       )}
     </div>
   );

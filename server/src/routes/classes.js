@@ -3,6 +3,7 @@ import multer from 'multer';
 import { db, logAudit } from '../db.js';
 import { authRequired, roleRequired, CLERK_ROLES } from '../auth.js';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
+import { createDraft, getDraft, deleteDraft } from '../import-stage.js';
 
 const router = Router();
 router.use(authRequired);
@@ -61,7 +62,155 @@ router.get('/template', (req, res) => {
   );
 });
 
-// 批量导入
+// 解析 + 规划（不写库）：用「现库 + 本文件」的 name→id 模拟表，逐遍 resolve 跨行引用，
+// 返回每行的 { status, reason, record }。record 保留引用名，confirm 阶段用真实 id 再 resolve。
+function planClasses(rows) {
+  const existing = db.prepare('SELECT id, name FROM classes').all();
+  const nameToId = new Map(existing.map((c) => [c.name, c.id]));
+
+  // 第一遍解析结构
+  const parsed = rows.map((row, i) => {
+    const name = String(keyOf(row, '班级名称', '班级', 'name') ?? '').trim();
+    const type = String(keyOf(row, '类型', 'type') ?? '行政班').trim() || '行政班';
+    const finalType = CLASS_TYPES.includes(type) ? type : '行政班';
+    const student_count = Number(keyOf(row, '人数', 'student_count') ?? 0) || 0;
+    const grade = String(keyOf(row, '年级', 'grade') ?? '').trim() || null;
+    const subject = String(keyOf(row, '学科', 'subject') ?? '').trim() || null;
+    const parentName = String(keyOf(row, '所属班级', 'parent', 'parent_id') ?? '').trim();
+    return { row_id: i, line: i + 2, name, finalType, student_count, grade, subject, parentName, status: 'ok', reason: null, record: null };
+  });
+
+  const mark = (p, status, reason) => { p.status = status; p.reason = reason; };
+  const ok = (p, record) => { p.record = record; };
+
+  // 重名检查 + 空名检查（先统一过一遍，三遍插入前的公共校验）
+  for (const p of parsed) {
+    if (!p.name) { mark(p, 'error', '缺少班级名称'); continue; }
+    if (nameToId.has(p.name)) { mark(p, 'duplicate', '已存在'); continue; }
+  }
+
+  // 三遍规划（模拟插入，把本文件新增班名加入 nameToId）
+  // 第一遍：行政班
+  for (const p of parsed) {
+    if (p.status !== 'ok' || p.finalType !== '行政班') continue;
+    nameToId.set(p.name, -(p.row_id + 1)); // 占位负数 id，标记为本文件新增
+    ok(p, { name: p.name, finalType: p.finalType, student_count: p.student_count, grade: p.grade, subject: p.subject, parentName: null, memberNames: [] });
+  }
+  // 第二遍：走班
+  for (const p of parsed) {
+    if (p.status !== 'ok' || p.finalType !== '走班') continue;
+    const members = (p.parentName || '').split(/[,，、]/).map((s) => s.trim()).filter(Boolean);
+    const missing = members.filter((m) => !nameToId.has(m));
+    if (missing.length) { mark(p, 'error', `合班班级「${missing[0]}」不存在`); continue; }
+    if (!members.length) { mark(p, 'error', '缺少合班班级'); continue; }
+    nameToId.set(p.name, -(p.row_id + 1));
+    ok(p, { name: p.name, finalType: p.finalType, student_count: p.student_count, grade: p.grade, subject: p.subject, parentName: null, memberNames: members });
+  }
+  // 第三遍：分层
+  for (const p of parsed) {
+    if (p.status !== 'ok' || p.finalType !== '分层') continue;
+    if (!p.parentName) { mark(p, 'error', '缺少所属班级'); continue; }
+    if (!nameToId.has(p.parentName)) { mark(p, 'error', `所属班级「${p.parentName}」不存在`); continue; }
+    nameToId.set(p.name, -(p.row_id + 1));
+    ok(p, { name: p.name, finalType: p.finalType, student_count: p.student_count, grade: p.grade, subject: p.subject, parentName: p.parentName, memberNames: [] });
+  }
+
+  return parsed;
+}
+
+// 写库（confirm 阶段三遍，用真实 id resolve 跨行引用）
+function commitClasses(draftRows) {
+  const insert = db.prepare('INSERT INTO classes (name, type, student_count, grade, parent_id, subject) VALUES (?,?,?,?,?,?)');
+  const insMember = db.prepare('INSERT INTO class_members (class_id, member_class_id) VALUES (?,?)');
+  const nameToId = new Map(db.prepare('SELECT id, name FROM classes').all().map((c) => [c.name, c.id]));
+
+  const stats = { inserted: 0, errors: [] };
+
+  const commitOne = (r) => {
+    // 防御：重名再次检查
+    if (nameToId.has(r.record.name)) { stats.errors.push(`第 ${r.line} 行「${r.record.name}」已存在`); return; }
+    const info = insert.run(r.record.name, r.record.finalType, r.record.student_count, r.record.grade, null, r.record.subject);
+    const newId = Number(info.lastInsertRowid);
+    nameToId.set(r.record.name, newId);
+    stats.inserted++;
+    return newId;
+  };
+
+  // 第一遍：行政班
+  for (const r of draftRows) if (r.record.finalType === '行政班') commitOne(r);
+  // 第二遍：走班（此时行政班已插入，memberIds 用真实 id）
+  for (const r of draftRows) {
+    if (r.record.finalType !== '走班') continue;
+    if (nameToId.has(r.record.name)) { stats.errors.push(`第 ${r.line} 行「${r.record.name}」已存在`); continue; }
+    const memberIds = [];
+    let bad = false;
+    for (const m of r.record.memberNames) {
+      const mid = nameToId.get(m);
+      if (!mid) { stats.errors.push(`第 ${r.line} 行合班班级「${m}」不存在`); bad = true; break; }
+      memberIds.push(mid);
+    }
+    if (bad) continue;
+    const newId = commitOne(r);
+    if (newId) for (const mid of memberIds) insMember.run(newId, mid);
+  }
+  // 第三遍：分层
+  for (const r of draftRows) {
+    if (r.record.finalType !== '分层') continue;
+    if (nameToId.has(r.record.name)) { stats.errors.push(`第 ${r.line} 行「${r.record.name}」已存在`); continue; }
+    const pid = nameToId.get(r.record.parentName);
+    if (!pid) { stats.errors.push(`第 ${r.line} 行所属班级「${r.record.parentName}」不存在`); continue; }
+    const info = insert.run(r.record.name, '分层', r.record.student_count, r.record.grade, pid, r.record.subject);
+    nameToId.set(r.record.name, Number(info.lastInsertRowid));
+    stats.inserted++;
+  }
+  return stats;
+}
+
+// 预览
+router.post('/import/preview', roleRequired(...CLERK_ROLES), upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ ok: false, error: '请上传班级文件' });
+  let rows;
+  try {
+    rows = parseSheet(req.file.buffer, req.file.originalname);
+  } catch {
+    return res.status(400).json({ ok: false, error: '无法解析文件，请使用模板的 .xlsx / .csv 格式' });
+  }
+  if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
+
+  const parsed = planClasses(rows);
+  const columns = ['班级名称', '类型', '人数', '年级', '所属班级', '学科'];
+  const draftRows = parsed.map((p) => ({
+    row_id: p.row_id, line: p.line,
+    cells: columns.map((c) => String(keyOf(rows[p.row_id], c) ?? '')),
+    status: p.status, reason: p.reason, record: p.record,
+  }));
+  const summary = {
+    total: rows.length,
+    ok: parsed.filter((p) => p.status === 'ok').length,
+    duplicate: parsed.filter((p) => p.status === 'duplicate').length,
+    error: parsed.filter((p) => p.status === 'error').length,
+  };
+
+  const token = createDraft('classes', req.user.id, { rows: draftRows });
+  return res.json({ ok: true, data: { token, rows: draftRows.map(({ record, ...r }) => r), summary } });
+});
+
+// 确认入库
+router.post('/import/confirm', roleRequired(...CLERK_ROLES), (req, res) => {
+  const { token, row_ids } = req.body || {};
+  const draft = getDraft(token, req.user.id, 'classes');
+  if (!draft) return res.status(400).json({ ok: false, error: '预览已失效，请重新上传' });
+
+  const selected = new Set(Array.isArray(row_ids) ? row_ids.map(Number) : []);
+  const targets = draft.payload.rows.filter((r) => r.status === 'ok' && selected.has(r.row_id));
+  const { inserted, errors } = commitClasses(targets);
+
+  deleteDraft(token);
+  logAudit(req.user.id, 'import_classes', 'classes', `批量导入班级 ${inserted} 条${errors.length ? `，异常 ${errors.length} 条` : ''}`);
+  return res.json({ ok: true, data: { inserted, errors } });
+});
+
+// 旧接口（已弃用）
 router.post('/import', roleRequired(...CLERK_ROLES), upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: '请上传班级文件' });
   let rows;
@@ -72,80 +221,15 @@ router.post('/import', roleRequired(...CLERK_ROLES), upload.single('file'), (req
   }
   if (!rows.length) return res.status(400).json({ ok: false, error: '文件中没有数据' });
 
-  const classByName = Object.fromEntries(db.prepare('SELECT id, name FROM classes').all().map((c) => [c.name, c.id]));
-  const insert = db.prepare('INSERT INTO classes (name, type, student_count, grade, parent_id, subject) VALUES (?,?,?,?,?,?)');
-  const exists = db.prepare('SELECT id FROM classes WHERE name = ?');
-  const insMember = db.prepare('INSERT INTO class_members (class_id, member_class_id) VALUES (?,?)');
+  const parsed = planClasses(rows);
+  const draftRows = parsed.map((p) => ({
+    row_id: p.row_id, line: p.line, status: p.status, reason: p.reason, record: p.record,
+  }));
+  const targets = draftRows.filter((r) => r.status === 'ok');
+  const { inserted, errors } = commitClasses(targets);
 
-  let inserted = 0, skipped = 0;
-  const errors = [];
-
-  // 先解析成结构，两遍导入：
-  //   第一遍：插入行政班（它们的名称是后续分层/走班引用的基础）
-  //   第二遍：插入分层、走班（此时父级/合班成员均已存在，无需按文件顺序）
-  const parsed = [];
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
-    const name = String(keyOf(row, '班级名称', '班级', 'name') ?? '').trim();
-    const type = String(keyOf(row, '类型', 'type') ?? '行政班').trim() || '行政班';
-    const finalType = CLASS_TYPES.includes(type) ? type : '行政班';
-    const student_count = Number(keyOf(row, '人数', 'student_count') ?? 0) || 0;
-    const grade = String(keyOf(row, '年级', 'grade') ?? '').trim() || null;
-    const subject = String(keyOf(row, '学科', 'subject') ?? '').trim() || null;
-    const parentName = String(keyOf(row, '所属班级', 'parent', 'parent_id') ?? '').trim();
-    parsed.push({ line: i + 2, name, finalType, student_count, grade, subject, parentName });
-  }
-
-  const insertRow = (p) => {
-    if (!p.name) { errors.push(`第 ${p.line} 行缺少班级名称`); return false; }
-    if (classByName[p.name] || exists.get(p.name)) { skipped++; return false; }
-    const info = insert.run(p.name, p.finalType, p.student_count, p.grade, null, p.subject);
-    classByName[p.name] = Number(info.lastInsertRowid);
-    inserted++;
-    return true;
-  };
-
-  // 第一遍：行政班（名称是分层/走班引用的基础）
-  for (const p of parsed) if (p.finalType === '行政班') insertRow(p);
-
-  // 第二遍：走班（只依赖行政班）
-  for (const p of parsed) {
-    if (p.finalType !== '走班') continue;
-    if (!p.name) { errors.push(`第 ${p.line} 行缺少班级名称`); continue; }
-    if (classByName[p.name] || exists.get(p.name)) { skipped++; continue; }
-
-    // 所属班级 = 逗号/顿号分隔的合班行政班名单
-    const members = (p.parentName || '').split(/[,，、]/).map((s) => s.trim()).filter(Boolean);
-    const memberIds = [];
-    for (const m of members) {
-      const mid = classByName[m] ?? exists.get(m)?.id;
-      if (!mid) { errors.push(`第 ${p.line} 行合班班级「${m}」不存在`); continue; }
-      memberIds.push(mid);
-    }
-    if (!memberIds.length) { errors.push(`第 ${p.line} 行走班「${p.name}」缺少合班班级`); continue; }
-    const info = insert.run(p.name, '走班', p.student_count, p.grade, null, p.subject);
-    const newId = Number(info.lastInsertRowid);
-    classByName[p.name] = newId;
-    for (const mid of memberIds) insMember.run(newId, mid);
-    inserted++;
-  }
-
-  // 第三遍：分层（依赖行政班或走班）
-  for (const p of parsed) {
-    if (p.finalType !== '分层') continue;
-    if (!p.name) { errors.push(`第 ${p.line} 行缺少班级名称`); continue; }
-    if (classByName[p.name] || exists.get(p.name)) { skipped++; continue; }
-
-    // 所属班级 = 父级（行政班或走班）
-    const pid = classByName[p.parentName] ?? exists.get(p.parentName)?.id;
-    if (!pid) { errors.push(`第 ${p.line} 行所属班级「${p.parentName}」不存在`); continue; }
-    const info = insert.run(p.name, '分层', p.student_count, p.grade, pid, p.subject);
-    classByName[p.name] = Number(info.lastInsertRowid);
-    inserted++;
-  }
-
-  logAudit(req.user.id, 'import_classes', 'classes', `批量导入班级 ${inserted} 条${skipped ? `，跳过已存在 ${skipped} 条` : ''}`);
-  return res.json({ ok: true, data: { inserted, skipped, errors } });
+  logAudit(req.user.id, 'import_classes', 'classes', `批量导入班级 ${inserted} 条${errors.length ? `，异常 ${errors.length} 条` : ''}`);
+  return res.json({ ok: true, data: { inserted, skipped: 0, errors } });
 });
 
 router.post('/', roleRequired(...CLERK_ROLES), (req, res) => {

@@ -800,4 +800,18 @@ export function logAudit(userId, action, target, detail) {
   ).run(userId ?? null, action, target ?? null, detail ?? null);
 }
 
+// 导入草稿暂存表（预览确认两阶段）：token 关联一批「已解析+已校验」的归一化行。
+// confirm 阶段直接读快照写库，不重解析、不重校验。TTL 由 import-stage.js 控制清理。
+db.exec(`
+CREATE TABLE IF NOT EXISTS import_drafts (
+  token TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  user_id INTEGER,
+  payload TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_import_drafts_expires ON import_drafts(expires_at);
+`);
+
 export { UPLOAD_DIR, DB_PATH, DATA_DIR };
