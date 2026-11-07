@@ -1215,6 +1215,7 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .mapply-card-icon.batch { background: #e8590c; }
 .mapply-card-icon.early { background: #e67700; }
 .mapply-card-icon.review { background: #5f3dc4; }
+.mapply-card-icon.custom { background: #0a9396; }
 .mapply-card-body { flex: 1; min-width: 0; }
 .mapply-card-title { font-size: 17px; font-weight: 700; color: var(--text); }
 .mapply-card-desc { font-size: 13px; color: var(--muted); margin-top: 2px; }

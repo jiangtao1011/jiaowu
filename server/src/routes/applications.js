@@ -152,7 +152,10 @@ router.get('/self', authRequired, (req, res) => {
       ORDER BY q.id DESC`).all(tid);
   }
 
-  return res.json({ ok: true, data: { teacher, taught_grades: [...taughtGrades], qna_grades, evening_classes, my_records } });
+  // 可选学科（私人定制课等需要选学科）：全部学科去重
+  const subjects = db.prepare("SELECT DISTINCT subject FROM teachers WHERE subject IS NOT NULL AND subject != '' ORDER BY subject").all().map((r) => r.subject);
+
+  return res.json({ ok: true, data: { teacher, taught_grades: [...taughtGrades], qna_grades, evening_classes, my_records, subjects } });
 });
 
 router.get('/', authRequired, (req, res) => {

@@ -542,6 +542,16 @@ function seedPeriodTypePay(name, key, fallback) {
 seedPeriodTypePay('晚自习', 'late_pay', 40);
 seedPeriodTypePay('答疑', 'qa_pay', 30);
 
+// 私人定制课（一对一/一对二/一对多）：按次计酬，单价为默认值，可在「统计中心」修改。
+// 幂等：已存在则不重复插入。
+function seedCustomType(name, fallback) {
+  if (db.prepare('SELECT 1 FROM period_type_pays WHERE name = ?').get(name)) return;
+  db.prepare('INSERT INTO period_type_pays (name, pay) VALUES (?,?)').run(name, fallback);
+}
+seedCustomType('一对一', 100);
+seedCustomType('一对二', 150);
+seedCustomType('一对多', 200);
+
 // 折算类型字典：把 period_settings 里的早自习折算系数迁移进来（幂等）
 function seedPeriodTypeCoef(name, key, fallback) {
   if (db.prepare('SELECT 1 FROM period_type_coefficients WHERE name = ?').get(name)) return;

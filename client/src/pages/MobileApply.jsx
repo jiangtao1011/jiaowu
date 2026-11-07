@@ -6,7 +6,7 @@ import { CLERK_ROLES, DIRECTOR_ROLES } from '../roles.js';
 
 const STATUS = { pending: '待年级组长审核', grade_approved: '待课程中心终审', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', grade_approved: 'info', approved: 'ok', rejected: '', withdrawn: 'info' };
-const TYPE_ICON = { 答疑: '问', 晚自习: '晚', 晚练: '练', 早自习: '早' };
+const TYPE_ICON = { 答疑: '问', 晚自习: '晚', 晚练: '练', 早自习: '早', 一对一: '一', 一对二: '二', 一对多: '多' };
 
 export default function MobileApply() {
   const location = useLocation();
@@ -15,7 +15,7 @@ export default function MobileApply() {
   const [self, setSelf] = useState(null);
   const [error, setError] = useState('');
   const toast = useToast();
-  const [mode, setMode] = useState(null); // '答疑' | '晚自习' | '早自习' | '批量' | '审核' | null(首页)
+  const [mode, setMode] = useState(null); // '答疑' | '晚自习' | '早自习' | '定制' | '批量' | '审核' | null(首页)
   const [loading, setLoading] = useState(true);
 
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
@@ -28,6 +28,8 @@ export default function MobileApply() {
   // 表单
   const [grade, setGrade] = useState('');
   const [classId, setClassId] = useState('');
+  const [subject, setSubject] = useState(''); // 私人定制课学科
+  const [customType, setCustomType] = useState(''); // 一对一/一对二/一对多
   const [date, setDate] = useState(() => {
     const d = new Date();
     const p = (n) => String(n).padStart(2, '0');
@@ -96,6 +98,7 @@ export default function MobileApply() {
     setMode(m);
     setError('');
     setGrade(''); setClassId(''); setContent('');
+    setSubject(''); setCustomType('');
     setDate(today()); setPeriodCount(1);
     if (m === '批量') {
       setBatchGrade(batchCtx?.managed_grade || '');
@@ -118,24 +121,29 @@ export default function MobileApply() {
     if (mode === '答疑' && !grade) return toast.error('请选择年级');
     if (mode === '晚自习' && !classId) return toast.error('请选择班级');
     if (mode === '早自习' && !grade) return toast.error('请选择年级');
+    if (mode === '定制') {
+      if (!customType) return toast.error('请选择类型（一对一/一对二/一对多）');
+      if (!grade) return toast.error('请选择年级');
+      if (!subject) return toast.error('请选择学科');
+    }
     if (!date) return toast.error('请选择日期');
     try {
-      // 答疑/早自习为年级级（挂年级虚班）；晚自习为班级级（挂行政班）
-      const isGradeLevel = mode === '答疑' || mode === '早自习';
+      // 答疑/早自习为年级级（挂年级虚班）；晚自习为班级级（挂行政班）；定制课也是年级级
+      const isGradeLevel = mode === '答疑' || mode === '早自习' || mode === '定制';
       const virtualClassId = isGradeLevel
         ? (self.qna_grades.find((g) => g.grade === grade)?.virtual_class_id ?? null)
         : null;
       const payload = {
         grade: isGradeLevel ? grade : (self.evening_classes.find((c) => c.id === Number(classId))?.grade || ''),
-        subject: self.teacher.subject,
+        subject: mode === '定制' ? subject : self.teacher.subject,
         class_id: isGradeLevel ? virtualClassId : Number(classId),
         date,
         period_count: periodCount,
-        period_type: mode,
+        period_type: mode === '定制' ? customType : mode,
         content: content || null,
       };
       await api.post('/applications', payload);
-      toast.success(`${mode}申报已提交，待年级组长审核`);
+      toast.success(`${mode === '定制' ? '私人定制课' : mode}申报已提交，待年级组长审核`);
       setMode(null);
       load();
     } catch (e) { toast.error(errMsg(e)); }
@@ -247,6 +255,14 @@ export default function MobileApply() {
                   <div className="mapply-card-body">
                     <div className="mapply-card-title">申报早自习</div>
                     <div className="mapply-card-desc">针对年级 · 按课时数折算</div>
+                  </div>
+                  <div className="mapply-card-arrow">›</div>
+                </button>
+                <button className="mapply-card" onClick={() => openMode('定制')}>
+                  <div className="mapply-card-icon custom">定</div>
+                  <div className="mapply-card-body">
+                    <div className="mapply-card-title">私人定制课</div>
+                    <div className="mapply-card-desc">一对一 / 一对二 / 一对多 · 按次计酬</div>
                   </div>
                   <div className="mapply-card-arrow">›</div>
                 </button>
@@ -426,6 +442,65 @@ export default function MobileApply() {
           </div>
 
           <button className="mapply-submit" onClick={submit}>提交早自习申报</button>
+        </div>
+      )}
+
+      {/* 私人定制课申报表单（年级级，挂年级虚班，按次计酬） */}
+      {mode === '定制' && (
+        <div className="mapply-form">
+          <button className="mapply-back" onClick={() => setMode(null)}>‹ 返回</button>
+          <h2>私人定制课</h2>
+          <p className="mapply-form-hint">一对一 / 一对二 / 一对多，按节计酬。选择类型、年级、学科与日期节数。</p>
+
+          <div className="mapply-field">
+            <label>类型</label>
+            <div className="mapply-chips">
+              {['一对一', '一对二', '一对多'].map((t) => (
+                <button key={t} type="button" className={`mapply-chip ${customType === t ? 'on' : ''}`} onClick={() => setCustomType(t)}>{t}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mapply-field">
+            <label>年级</label>
+            <div className="mapply-chips">
+              {self?.qna_grades?.map((g) => (
+                <button key={g.grade} type="button" className={`mapply-chip ${grade === g.grade ? 'on' : ''}`} onClick={() => setGrade(g.grade)}>{g.grade}</button>
+              ))}
+            </div>
+            {self?.qna_grades?.length === 0 && <p className="mapply-empty">暂无可申报的年级</p>}
+          </div>
+
+          <div className="mapply-field">
+            <label>学科</label>
+            <div className="mapply-chips">
+              {(self?.subjects || []).map((s) => (
+                <button key={s} type="button" className={`mapply-chip ${subject === s ? 'on' : ''}`} onClick={() => setSubject(s)}>{s}</button>
+              ))}
+            </div>
+            {(self?.subjects || []).length === 0 && <p className="mapply-empty">暂无学科数据</p>}
+          </div>
+
+          <div className="mapply-field">
+            <label>日期</label>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </div>
+
+          <div className="mapply-field">
+            <label>节数</label>
+            <div className="mapply-stepper">
+              <button type="button" onClick={() => setPeriodCount((n) => Math.max(1, n - 1))}>−</button>
+              <span>{periodCount}</span>
+              <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+            </div>
+          </div>
+
+          <div className="mapply-field">
+            <label>内容说明（选填）</label>
+            <textarea rows={3} value={content} onChange={(e) => setContent(e.target.value)} placeholder="如 一对一物理辅导" />
+          </div>
+
+          <button className="mapply-submit" onClick={submit}>提交私人定制课</button>
         </div>
       )}
 
