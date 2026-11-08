@@ -21,6 +21,14 @@ function addDays(dateStr, n) {
   return `${d.getFullYear()}-${m}-${day}`;
 }
 
+// 本月最后一天 YYYY-MM-DD
+function monthEnd() {
+  const d = new Date();
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${String(last).padStart(2, '0')}`;
+}
+
 function count(sql, ...params) {
   return Number(db.prepare(sql).get(...params).n);
 }
@@ -101,6 +109,69 @@ router.get('/', (req, res) => {
     WHERE deadline IS NOT NULL AND deadline >= ?
     ORDER BY deadline LIMIT 5`).all(today);
 
+  // ===== 教务日历（按角色过滤，合并工作事项 + 上课日历） =====
+  // 规则：教务主任/教务员/admin 看全部；校长看「除工作类别外」的全部；教学层只看上课日历。
+  // 范围：只显示「本周」（周一 ~ 周日）。
+  const role = req.user.role;
+  const isClerk = ['admin', '教务主任', '教务员'].includes(role);
+  const isPrincipal = role === '校长';
+  const isTeachingLayer = !isClerk && !isPrincipal; // 教师/教研组长/备课组长/年级组长
+
+  // 本周范围：周一 ~ 周日
+  const mondayOffset = (new Date().getDay() + 6) % 7;
+  const weekStart = addDays(today, -mondayOffset);
+  const weekEnd = addDays(today, 6 - mondayOffset);
+
+  // 上课日历（校历：上课/放假/停课/补课/调课）
+  // 管理层看全部；教学层只看「全校（grade 空）+ 自己任课年级」。
+  let calendarCals = [];
+  if (isTeachingLayer) {
+    const tid = req.user.teacher_id ?? null;
+    // 任课年级：从课表推导（teacher_classes 表通常为空，不能依赖）
+    const taughtGrades = tid
+      ? db.prepare(`
+          SELECT DISTINCT c.grade FROM schedules s
+          JOIN classes c ON c.id = s.class_id
+          WHERE s.teacher_id = ? AND c.grade IS NOT NULL AND c.grade != ''`).all(tid).map((r) => r.grade)
+      : [];
+    if (taughtGrades.length === 0) {
+      // 无任课年级：仅看全校校历
+      calendarCals = db.prepare(`
+        SELECT date, grade, type, note FROM school_calendar
+        WHERE date >= ? AND date <= ? AND (grade IS NULL OR grade = '')
+        ORDER BY date, COALESCE(grade, '')`).all(weekStart, weekEnd);
+    } else {
+      const ph = taughtGrades.map(() => '?').join(',');
+      calendarCals = db.prepare(`
+        SELECT date, grade, type, note FROM school_calendar
+        WHERE date >= ? AND date <= ?
+          AND (grade IS NULL OR grade = '' OR grade IN (${ph}))
+        ORDER BY date, COALESCE(grade, '')`).all(weekStart, weekEnd, ...taughtGrades);
+    }
+  } else {
+    calendarCals = db.prepare(`
+      SELECT date, grade, type, note FROM school_calendar
+      WHERE date >= ? AND date <= ? ORDER BY date, COALESCE(grade, '')`).all(weekStart, weekEnd);
+  }
+
+  // 工作事项：教务主任/教务员/admin 看全部；校长看除「工作」外；教学层不看
+  let calendarWorks = [];
+  if (isClerk) {
+    calendarWorks = db.prepare(`
+      SELECT date, title, category, note, remind, done FROM work_plan
+      WHERE date >= ? AND date <= ? ORDER BY date, id`).all(weekStart, weekEnd);
+  } else if (isPrincipal) {
+    calendarWorks = db.prepare(`
+      SELECT date, title, category, note, remind, done FROM work_plan
+      WHERE date >= ? AND date <= ? AND category != '工作' ORDER BY date, id`).all(weekStart, weekEnd);
+  }
+
+  // 合并为统一日历（kind 区分来源），按日期排序
+  const calendar = [
+    ...calendarCals.map((c) => ({ kind: 'cal', date: c.date, type: c.type, grade: c.grade, note: c.note })),
+    ...calendarWorks.map((w) => ({ kind: 'work', date: w.date, title: w.title, category: w.category, note: w.note, remind: w.remind, done: w.done })),
+  ].sort((a, b) => (a.date === b.date ? 0 : a.date < b.date ? -1 : 1));
+
   return res.json({
     ok: true,
     data: {
@@ -113,6 +184,7 @@ router.get('/', (req, res) => {
       reminders,
       overdue,
       deadlines,
+      calendar,
     },
   });
 });

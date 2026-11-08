@@ -37,15 +37,21 @@ function passLineConfig() {
 // 一次返回：核心指标总览 + 待办聚合 + 检查考核（组级排行 + 组内教师下钻）。
 router.get('/', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const today = localDate();
-  const monthStart = `${today.slice(0, 7)}-01`;
+  const defaultFrom = `${today.slice(0, 7)}-01`;
   const in7 = addDays(today, 7);
+
+  // 日期范围（移动端首页筛选：本月/近7天/本学期/自定义）
+  const { from_date, to_date } = req.query;
+  const valid = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const fromDate = valid(from_date) ? from_date : defaultFrom;
+  const toDate = valid(to_date) ? to_date : today;
 
   // ===== 核心指标总览 =====
   const overview = {
     classes: count('SELECT COUNT(*) n FROM classes'),
     teachers: count('SELECT COUNT(*) n FROM teachers WHERE active = 1'),
     users: count('SELECT COUNT(*) n FROM users WHERE active = 1'),
-    month_lessons: count('SELECT COUNT(*) n FROM lesson_instances WHERE cancelled = 0 AND date >= ? AND date <= ?', monthStart, today),
+    month_lessons: count('SELECT COUNT(*) n FROM lesson_instances WHERE cancelled = 0 AND date >= ? AND date <= ?', fromDate, toDate),
     month_weighted: 0,
     month_pay: 0,
     inspections: count('SELECT COUNT(*) n FROM inspections'),
@@ -54,13 +60,13 @@ router.get('/', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
     pending_replies: count("SELECT COUNT(*) n FROM notice_replies WHERE status = 'pending'"),
   };
 
-  // 本月折算课时与课酬（复用 computePay，口径与统计中心一致）
+  // 折算课时与课酬（复用 computePay，口径与统计中心一致）
   {
     const ctx = loadContext();
     const rows = db.prepare(`
       SELECT li.*, t.pay_standard
       FROM lesson_instances li JOIN teachers t ON t.id = li.teacher_id
-      WHERE li.cancelled = 0 AND li.date >= ? AND li.date <= ?`).all(monthStart, today);
+      WHERE li.cancelled = 0 AND li.date >= ? AND li.date <= ?`).all(fromDate, toDate);
     let w = 0, p = 0;
     for (const r of rows) {
       const { weighted, pay } = computePay(ctx, { ...r, count: 1 });

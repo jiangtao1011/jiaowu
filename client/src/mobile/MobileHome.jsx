@@ -9,6 +9,9 @@ const ROLE_LABELS = {
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '', withdrawn: 'info' };
+const CAT_COLORS = {
+  工作: '#167d6f', 会议: '#3b5bdb', 考试: '#c0392b', 检查: '#b0731f', 活动: '#7a4fb0', 其它: '#6b7280',
+};
 
 function todayStr() {
   const d = new Date();
@@ -23,6 +26,7 @@ export default function MobileHome() {
   const [dc, setDc] = useState(null); // 数据看板（管理角色）
   const [expandedGroup, setExpandedGroup] = useState(null); // 检查考核展开的组
   const [inspType, setInspType] = useState('备课组'); // 备课组 | 教研组
+  const [showAllGroups, setShowAllGroups] = useState(false); // 检查考核是否展开全部组
   const [error, setError] = useState('');
 
   // 时间范围：month / 7d / term / custom
@@ -61,7 +65,7 @@ export default function MobileHome() {
       try {
         const { from, to } = rangeOf();
         const reqs = [api.get('/dashboard', { params: { from_date: from, to_date: to } })];
-        if (canViewDc) reqs.push(api.get('/datacenter'));
+        if (canViewDc) reqs.push(api.get('/datacenter', { params: { from_date: from, to_date: to } }));
         else if (isGradeLeader) reqs.push(api.get('/dashboard/grade-leader'));
         else if (isTeacher || user.teacher_id) reqs.push(api.get('/dashboard/teacher'));
         const res = await Promise.all(reqs);
@@ -79,16 +83,66 @@ export default function MobileHome() {
   const weekByDay = {};
   (mine?.week_schedule || []).forEach((r) => { (weekByDay[r.day_of_week] ||= []).push(r); });
 
+  // 教务日历区块（work = 工作事项，cal = 上课日历），按日期分组展示
+  const renderCalendar = (calendar) => {
+    if (!calendar || calendar.length === 0) return null;
+    const byDate = {};
+    for (const c of calendar) {
+      (byDate[c.date] ||= []).push(c);
+    }
+    const dates = Object.keys(byDate).sort();
+    return (
+      <div className="mcard">
+        <div className="mcard-title">教务日历</div>
+        {dates.map((d) => (
+          <div key={d} style={{ marginBottom: 10 }}>
+            <div className="mitem-sub" style={{ fontWeight: 700, marginBottom: 4 }}>{d}</div>
+            {byDate[d].map((c, i) => {
+              if (c.kind === 'cal') {
+                return (
+                  <div key={i} className="mitem">
+                    <div className="mitem-main">
+                      <div className="mitem-title">{c.type}</div>
+                      {c.note && <div className="mitem-sub">{c.note}</div>}
+                    </div>
+                    <div className="mitem-side">
+                      <span className={`badge ${c.type === '放假' || c.type === '停课' ? 'danger' : c.type === '补课' ? 'warn' : 'info'}`}>{c.grade || '全校'}</span>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div key={i} className="mitem">
+                  <div className="mitem-main">
+                    <div className="mitem-title" style={{ textDecoration: c.done ? 'line-through' : 'none', color: c.done ? 'var(--muted)' : undefined }}>
+                      {c.remind ? '🔔' : ''}{c.title}
+                    </div>
+                    {c.note && <div className="mitem-sub">{c.note}</div>}
+                  </div>
+                  <div className="mitem-side">
+                    <span className="badge neutral" style={{ color: CAT_COLORS[c.category] || CAT_COLORS.其它 }}>{c.category}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   // ==================== 结果查看角色（含校长）：数据看板 ====================
   if (canViewDc && dc) {
     const { overview, todo, inspection } = dc;
+    // 范围标签：跟随所选时间范围（本月/近7天/本学期/自定义），避免数字变了标签还叫「本月」
+    const rangeLabel = { month: '本月', '7d': '近7天', term: '本学期', custom: '自定义' }[rangeKey] || '本月';
     const metrics = [
       { label: '班级', value: overview.classes, to: '/m' },
       { label: '教师', value: overview.teachers, to: '/m' },
       { label: '账号', value: overview.users, to: '/m' },
-      { label: '本月课时', value: overview.month_lessons, to: '/m/stats' },
+      { label: `${rangeLabel}课时`, value: overview.month_lessons, to: '/m/stats' },
       { label: '折算课时', value: overview.month_weighted, to: '/m/stats' },
-      { label: '本月课酬', value: overview.month_pay, to: '/m/stats', money: true },
+      { label: `${rangeLabel}课酬`, value: overview.month_pay, to: '/m/stats', money: true },
       { label: '检查记录', value: overview.inspections, to: '/m/inspection' },
       { label: '待审申报', value: overview.pending_qna + overview.pending_applications, to: '/m/apply' },
     ];
@@ -155,7 +209,7 @@ export default function MobileHome() {
           <div className="mcard-title">检查与考核<span className="mitem-sub">达标线 {inspection.pass_line} 分</span></div>
           <div className="mapply-chips" style={{ gap: 6, marginBottom: 10 }}>
             {['备课组', '教研组'].map((t) => (
-              <button key={t} className={`mapply-chip ${inspType === t ? 'on' : ''}`} style={{ padding: '6px 14px', fontSize: 13 }} onClick={() => setInspType(t)}>{t}</button>
+              <button key={t} className={`mapply-chip ${inspType === t ? 'on' : ''}`} style={{ padding: '6px 14px', fontSize: 13 }} onClick={() => { setInspType(t); setShowAllGroups(false); setExpandedGroup(null); }}>{t}</button>
             ))}
           </div>
           {(() => {
@@ -172,49 +226,61 @@ export default function MobileHome() {
             return hbar.length ? <HBarChart data={hbar} height={Math.max(160, hbar.length * 36)} maxValue={100} /> : null;
           })()}
           <div style={{ marginTop: 8 }}>
-            {inspection.groups.filter((g) => g.type === inspType).slice(0, 20).map((g) => {
-              const open = expandedGroup === g.key;
-              const members = inspection.by_teacher[g.key] || [];
-              const lowCoverage = g.coverage != null && g.coverage < 100;
-              const lowPass = g.pass_rate != null && g.pass_rate < inspection.pass_line;
-              return (
-                <div key={g.key}>
-                  <button
-                    className="mitem"
-                    style={{ width: '100%', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', cursor: 'pointer', textAlign: 'left' }}
-                    onClick={() => setExpandedGroup(open ? null : g.key)}
-                  >
-                    <div className="mitem-main">
-                      <div className="mitem-title">
-                        {g.name}
-                        {(lowCoverage || lowPass) && <span className="badge danger" style={{ marginLeft: 6, fontSize: 11 }}>需关注</span>}
-                      </div>
-                      <div className="mitem-sub">覆盖率 {g.coverage ?? '—'}% · 平均分 {g.avg_score ?? '—'} · 合格率 {g.pass_rate ?? '—'}%</div>
-                    </div>
-                    <div className="mitem-side"><span className="mitem-sub">{open ? '▴' : '▾'}</span></div>
-                  </button>
-                  {open && (
-                    <div style={{ padding: '4px 0 8px 8px' }}>
-                      {members.map((t) => (
-                        <div key={t.teacher_id} className="mitem" style={{ padding: '6px 0' }}>
-                          <div className="mitem-main">
-                            <div className="mitem-title" style={{ fontSize: 13.5 }}>{t.name}{t.subject ? ` · ${t.subject}` : ''}</div>
-                            <div className="mitem-sub">被查 {t.count} 次</div>
-                          </div>
-                          <div className="mitem-side">
-                            <span className={`badge ${t.status === '合格' ? 'ok' : t.status === '未合格' ? 'danger' : ''}`}>{t.status === '未检查' ? '未检查' : `${t.avg_score ?? '—'} 分`}</span>
-                          </div>
+            {(() => {
+              // 组列表：默认只显示前 5 个组，点「展开全部」显示全部
+              const typedGroups = inspection.groups.filter((g) => g.type === inspType);
+              const visibleGroups = showAllGroups ? typedGroups : typedGroups.slice(0, 5);
+              return visibleGroups.map((g) => {
+                const open = expandedGroup === g.key;
+                const members = inspection.by_teacher[g.key] || [];
+                const lowCoverage = g.coverage != null && g.coverage < 100;
+                const lowPass = g.pass_rate != null && g.pass_rate < inspection.pass_line;
+                return (
+                  <div key={g.key}>
+                    <button
+                      className="mitem"
+                      style={{ width: '100%', background: 'none', border: 'none', borderBottom: '1px solid var(--border)', cursor: 'pointer', textAlign: 'left' }}
+                      onClick={() => setExpandedGroup(open ? null : g.key)}
+                    >
+                      <div className="mitem-main">
+                        <div className="mitem-title">
+                          {g.name}
+                          {(lowCoverage || lowPass) && <span className="badge danger" style={{ marginLeft: 6, fontSize: 11 }}>需关注</span>}
                         </div>
-                      ))}
-                      {members.length === 0 && <div className="muted" style={{ fontSize: 13 }}>该组暂无教师</div>}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                        <div className="mitem-sub">覆盖率 {g.coverage ?? '—'}% · 平均分 {g.avg_score ?? '—'} · 合格率 {g.pass_rate ?? '—'}%</div>
+                      </div>
+                      <div className="mitem-side"><span className="mitem-sub">{open ? '▴' : '▾'}</span></div>
+                    </button>
+                    {open && (
+                      <div style={{ padding: '4px 0 8px 8px' }}>
+                        {members.map((t) => (
+                          <div key={t.teacher_id} className="mitem" style={{ padding: '6px 0' }}>
+                            <div className="mitem-main">
+                              <div className="mitem-title" style={{ fontSize: 13.5 }}>{t.name}{t.subject ? ` · ${t.subject}` : ''}</div>
+                              <div className="mitem-sub">被查 {t.count} 次</div>
+                            </div>
+                            <div className="mitem-side">
+                              <span className={`badge ${t.status === '合格' ? 'ok' : t.status === '未合格' ? 'danger' : ''}`}>{t.status === '未检查' ? '未检查' : `${t.avg_score ?? '—'} 分`}</span>
+                            </div>
+                          </div>
+                        ))}
+                        {members.length === 0 && <div className="muted" style={{ fontSize: 13 }}>该组暂无教师</div>}
+                      </div>
+                    )}
+                  </div>
+                );
+              });
+            })()}
+            {inspection.groups.filter((g) => g.type === inspType).length > 5 && (
+              <button className="mbtn ghost" style={{ width: '100%', marginTop: 8 }} onClick={() => setShowAllGroups(!showAllGroups)}>
+                {showAllGroups ? '收起' : `展开全部（${inspection.groups.filter((g) => g.type === inspType).length} 组）`}
+              </button>
+            )}
           </div>
-          {inspection.groups.length > 20 && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>仅显示前 20 个组</div>}
         </div>
+
+        {/* 教务日历（教务主任/教务员看全部；校长看除工作外） */}
+        {renderCalendar(dash.calendar)}
       </div>
     );
   }
@@ -333,18 +399,8 @@ export default function MobileHome() {
         </>
       )}
 
-      {/* 今日校历（所有人） */}
-      {dash.today?.calendar?.length > 0 && (
-        <div className="mcard">
-          <div className="mcard-title">今日校历</div>
-          {dash.today.calendar.map((c, i) => (
-            <div key={i} className="mitem">
-              <div className="mitem-main"><div className="mitem-title">{c.type}</div>{c.note && <div className="mitem-sub">{c.note}</div>}</div>
-              <div className="mitem-side"><span className={`badge ${c.type === '放假' || c.type === '停课' ? 'danger' : c.type === '补课' ? 'warn' : 'info'}`}>{c.grade || '全校'}</span></div>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* 上课日历（教师可见，仅上课日历、不含工作事项） */}
+      {renderCalendar(dash.calendar)}
 
       {/* 近期通知（所有人） */}
       {dash.recentNotices?.length > 0 && (
