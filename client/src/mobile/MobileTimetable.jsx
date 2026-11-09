@@ -162,7 +162,7 @@ export default function MobileTimetable() {
               return list.map((r) => (
                 <div key={r.id} className="mitem">
                   <div className="mitem-main">
-                    <div className="mitem-title">第{r.period_no}节 · {r.subject || '-'}</div>
+                    <div className="mitem-title">{r.period_no > 0 ? `第${r.period_no}节 · ` : ''}{r.subject || '-'}</div>
                     <div className="mitem-sub">{r.class_name} · {r.teacher_name}{r.cancelled ? ' · 已停' : ''}</div>
                   </div>
                   <div className="mitem-side"><span className="badge">{r.period_type}</span></div>

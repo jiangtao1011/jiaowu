@@ -471,13 +471,14 @@ function applyQnaPayroll(q) {
     if (!classId) return 0; // 年级无虚班，无法计酬
   }
   if (q.date) {
-    // 临时/不定期：按填报的日期与节数生成上课记录，类型用记录里的 period_type
+    // 临时/不定期：按填报的日期与节数生成上课记录，类型用记录里的 period_type。
+    // period_no 记 0（无节次）——按次计酬只看条数，不占具体节次，避免与正课第 1 节等冲突。
     const count = Math.max(1, Number(q.period_count) || 1);
     const insert = db.prepare(`
       INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
-      VALUES (?,?,?,?,?,?, '常规', 'qna', ?, ?)`);
+      VALUES (?,?,?,?,0,?, '常规', 'qna', ?, ?)`);
     for (let i = 0; i < count; i++) {
-      insert.run(classId, q.teacher_id, q.subject, q.date, (q.period_no || 1) + i, q.period_type, q.id, q.content ?? null);
+      insert.run(classId, q.teacher_id, q.subject, q.date, q.period_type, q.id, q.content ?? null);
     }
     return count;
   }
@@ -783,9 +784,9 @@ router.patch('/applications/:id/review', authRequired, roleRequired(...REVIEW_RO
     const count = Math.max(1, Number(a.period_count) || 1);
     const insert = db.prepare(`
       INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
-      VALUES (?,?,?,?,?,?, '常规', 'course', ?, ?)`);
+      VALUES (?,?,?,?,0,?, '常规', 'course', ?, ?)`);
     for (let i = 0; i < count; i++) {
-      insert.run(classId, a.teacher_id, a.subject ?? null, a.date, (a.period_no || 1) + i, a.period_type, a.id, a.course_name ?? null);
+      insert.run(classId, a.teacher_id, a.subject ?? null, a.date, a.period_type, a.id, a.course_name ?? null);
     }
     created = count;
   }

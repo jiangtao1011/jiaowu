@@ -507,6 +507,10 @@ db.prepare("UPDATE users SET role = '教务主任' WHERE role = '教务处'").ru
 // 迁移（2026-11-06）：角色「分管领导」改名为「校长」，现有账号自动继承。
 db.prepare("UPDATE users SET role = '校长' WHERE role = '分管领导'").run();
 
+// 迁移（2026-11-09）：按次计酬课务（qna/course）生成的上课记录，节次统一记 0（无节次），
+// 不再从第 1 节起递增——避免与正课第 1 节等冲突。幂等回填历史记录（仅 source IN qna/course 且 period_no>0 的置 0）。
+db.prepare("UPDATE lesson_instances SET period_no = 0 WHERE source IN ('qna','course') AND period_no > 0").run();
+
 // 初始化系数表：课时系数、班额系数（仅常规时段使用）
 function seedIfEmpty(table, insert) {
   if (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n === 0) insert();

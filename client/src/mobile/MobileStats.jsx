@@ -143,7 +143,7 @@ export default function MobileStats() {
                 <div key={r.id} className="mitem" style={{ padding: '6px 0' }}>
                   <div className="mitem-main">
                     <div className="mitem-title" style={{ fontSize: 13.5 }}>
-                      {r.date} 第{r.period_no}节 · {r.subject || '-'}
+                      {r.date}{r.period_no > 0 ? ` 第${r.period_no}节` : ''} · {r.subject || '-'}
                       {r.term === '节假补课' && <span className="badge warn" style={{ marginLeft: 6, fontSize: 11 }}>补课</span>}
                     </div>
                     <div className="mitem-sub">{r.class_name}{r.teacher_name ? ' · ' + r.teacher_name : ''}</div>

@@ -682,7 +682,7 @@ router.get('/export', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
       r.teacher_name,
       r.class_name,
       r.subject ?? '',
-      r.period_no,
+      r.period_no > 0 ? r.period_no : '—',
       r.period_type,
       r.term,
       srcLabel[r.source] || r.source,
@@ -1023,7 +1023,7 @@ router.get('/financial-pack', roleRequired(...RESULT_VIEW_ROLES), (req, res) => 
   for (const r of allRows) {
     const { weighted, pay } = r.cancelled ? { weighted: 0, pay: 0 } : computePay(ctx, { ...r, count: 1 });
     detailAoa.push([
-      r.date, r.teacher_name, r.class_name, r.subject ?? '', r.period_no, r.period_type, r.term,
+      r.date, r.teacher_name, r.class_name, r.subject ?? '', r.period_no > 0 ? r.period_no : '—', r.period_type, r.term,
       srcLabel[r.source] || r.source, (r.source === 'adjust' ? r.parent_teacher_name : '') || '',
       r.cancelled ? '已停课' : '', round2(weighted), round2(pay),
     ]);

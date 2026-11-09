@@ -544,7 +544,7 @@ export default function Stats() {
                           <td>{r.class_name}</td>
                           <td>{r.teacher_name}</td>
                           <td>{r.subject || '-'}</td>
-                          <td className="num">{r.period_no}</td>
+                          <td className="num">{r.period_no > 0 ? r.period_no : '—'}</td>
                           <td><span className={`period-tag period-${r.period_type}`}>{r.period_type}</span></td>
                           <td>{r.term !== '常规' ? r.term : ''}</td>
                           <td>{SOURCE_LABEL[r.source] || r.source}</td>
