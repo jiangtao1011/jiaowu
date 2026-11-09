@@ -3,13 +3,18 @@ import multer from 'multer';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import * as XLSX from 'xlsx';
 import { db, logAudit, UPLOAD_DIR } from '../db.js';
-import { authRequired, roleRequired, ADMIN_ROLES, INSPECTION_CONFIG_ROLES, INSPECTION_SUBMIT_ROLES } from '../auth.js';
+import { authRequired, roleRequired, ADMIN_ROLES, INSPECTION_CONFIG_ROLES, INSPECTION_SUBMIT_ROLES, RESULT_VIEW_ROLES } from '../auth.js';
 import { visibleTeacherIds } from '../scope.js';
 import { autoGroups, manualGroups } from '../groups.js';
 
 const router = Router();
 router.use(authRequired);
+
+// 导出报表权限：管理层（admin/校长/教务主任/教务员）+ 组长（教研组长/备课组长/年级组长）
+// = 除普通教师外的所有角色。
+const EXPORT_ROLES = [...RESULT_VIEW_ROLES, '教研组长', '备课组长', '年级组长'];
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
@@ -45,6 +50,18 @@ function passLineConfig() {
   const row = db.prepare("SELECT value FROM app_settings WHERE key = 'pass_line'").get();
   const n = Number(row?.value);
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 90;
+}
+// 需关注覆盖率关注线（默认 100，覆盖率低于该值即需关注）
+function attentionCoverageConfig() {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'attention_coverage'").get();
+  const n = Number(row?.value);
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 100;
+}
+// 需关注事项条数上限（默认 5）
+function attentionLimitConfig() {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'attention_limit'").get();
+  const n = Number(row?.value);
+  return Number.isFinite(n) && n >= 1 && n <= 100 ? Math.floor(n) : 5;
 }
 // 日期 -> 「第 N 周」；早于学期起始返回空
 function weekLabel(dateStr) {
@@ -262,10 +279,18 @@ router.get('/score-settings', (req, res) => {
   return res.json({ ok: true, data: first ? typeDimensions(first.id) : [] });
 });
 
-// ===== 检查配置（学期起始 + 达标线）=====
-router.get('/config', (req, res) => res.json({ ok: true, data: { semester_start: semesterStart(), pass_line: passLineConfig() } }));
+// ===== 检查配置（学期起始 + 达标线 + 需关注阈值）=====
+router.get('/config', (req, res) => res.json({
+  ok: true,
+  data: {
+    semester_start: semesterStart(),
+    pass_line: passLineConfig(),
+    attention_coverage: attentionCoverageConfig(),
+    attention_limit: attentionLimitConfig(),
+  },
+}));
 router.put('/config', roleRequired(...INSPECTION_CONFIG_ROLES), (req, res) => {
-  const { semester_start, pass_line } = req.body || {};
+  const { semester_start, pass_line, attention_coverage, attention_limit } = req.body || {};
   if (semester_start !== undefined) {
     if (!semester_start || !/^\d{4}-\d{2}-\d{2}$/.test(String(semester_start))) {
       return res.status(400).json({ ok: false, error: '学期起始日期格式应为 YYYY-MM-DD' });
@@ -281,7 +306,31 @@ router.put('/config', roleRequired(...INSPECTION_CONFIG_ROLES), (req, res) => {
     db.prepare(`INSERT INTO app_settings (key, value) VALUES ('pass_line', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')`).run(String(n));
   }
-  return res.json({ ok: true, data: { semester_start: semesterStart(), pass_line: passLineConfig() } });
+  if (attention_coverage !== undefined) {
+    const n = Number(attention_coverage);
+    if (!Number.isFinite(n) || n < 0 || n > 100) {
+      return res.status(400).json({ ok: false, error: '覆盖率关注线需为 0-100 的数值' });
+    }
+    db.prepare(`INSERT INTO app_settings (key, value) VALUES ('attention_coverage', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')`).run(String(n));
+  }
+  if (attention_limit !== undefined) {
+    const n = Number(attention_limit);
+    if (!Number.isFinite(n) || n < 1 || n > 100) {
+      return res.status(400).json({ ok: false, error: '需关注条数上限需为 1-100 的整数' });
+    }
+    db.prepare(`INSERT INTO app_settings (key, value) VALUES ('attention_limit', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')`).run(String(Math.floor(n)));
+  }
+  return res.json({
+    ok: true,
+    data: {
+      semester_start: semesterStart(),
+      pass_line: passLineConfig(),
+      attention_coverage: attentionCoverageConfig(),
+      attention_limit: attentionLimitConfig(),
+    },
+  });
 });
 router.get('/week-label', (req, res) => {
   const { date } = req.query;
@@ -645,6 +694,256 @@ router.get('/stats/groups', (req, res) => {
     };
   });
   return res.json({ ok: true, data, pass_line: passLine });
+});
+
+// ===== 导出常规检查情况报表（Excel 多 sheet） =====
+// 权限：管理层 + 组长（EXPORT_ROLES），普通教师不可导出。
+// 数据范围：按 from/to/category_id/type_id 过滤 + 作用域（组长限本组/本学科/本年级）。
+router.get('/export', roleRequired(...EXPORT_ROLES), (req, res) => {
+  const { from, to, category_id, type_id, pass_line } = req.query;
+  const passLine = pass_line != null && pass_line !== '' ? Number(pass_line) : passLineConfig();
+  const attCov = attentionCoverageConfig();
+  const attLimit = attentionLimitConfig();
+
+  // ===== 明细（含打分快照） =====
+  let sql = `
+    SELECT i.*, t.name AS template_name, t.category, t.category_id, t.cycle,
+           c.name AS class_name, c.grade AS class_grade, tc.name AS teacher_name,
+           u.name AS checker_name
+    FROM inspections i
+    JOIN inspection_templates t ON t.id = i.template_id
+    LEFT JOIN classes c ON c.id = i.class_id
+    LEFT JOIN teachers tc ON tc.id = i.teacher_id
+    LEFT JOIN users u ON u.id = i.checker_id
+    WHERE 1=1`;
+  const params = [];
+  if (from) { sql += ' AND i.lesson_date >= ?'; params.push(String(from)); }
+  if (to) { sql += ' AND i.lesson_date <= ?'; params.push(String(to)); }
+  if (type_id) { sql += ' AND i.template_id = ?'; params.push(Number(type_id)); }
+  if (category_id) { sql += ' AND t.category_id = ?'; params.push(Number(category_id)); }
+  const scope = visibleTeacherIds(req.user);
+  if (scope) {
+    sql += ` AND (i.teacher_id IS NULL OR i.teacher_id IN (${scope.map(() => '?').join(',')}))`;
+    params.push(...scope);
+  }
+  sql += ' ORDER BY i.lesson_date DESC, i.id DESC';
+  const detailRows = db.prepare(sql).all(...params).map((r) => {
+    let data = {}; try { data = JSON.parse(r.data); } catch { data = {}; }
+    let scores = {}; try { scores = JSON.parse(r.score_data || 'null') || {}; } catch { scores = {}; }
+    return { ...r, data, scores };
+  });
+
+  // 维度列：从所有记录的打分快照去重，按首次出现顺序排列
+  const dimCols = [];      // [{ name, label }]
+  const dimSeen = new Set();
+  for (const r of detailRows) {
+    for (const [name, v] of Object.entries(r.scores)) {
+      if (dimSeen.has(name)) continue;
+      dimSeen.add(name);
+      dimCols.push({ name, label: (v && v.label) || name });
+    }
+  }
+
+  // ===== 教师汇总（Σ实得/Σ满分×100） =====
+  let tSql = `
+    SELECT i.teacher_id, tc.name AS teacher_name, tc.subject,
+           COUNT(*) AS cnt,
+           COALESCE(SUM(i.score_total), 0) AS sum_total,
+           COALESCE(SUM(i.score_max), 0) AS sum_max
+    FROM inspections i
+    JOIN inspection_templates t ON t.id = i.template_id
+    LEFT JOIN teachers tc ON tc.id = i.teacher_id
+    WHERE 1=1`;
+  const tParams = [];
+  if (from) { tSql += ' AND i.lesson_date >= ?'; tParams.push(String(from)); }
+  if (to) { tSql += ' AND i.lesson_date <= ?'; tParams.push(String(to)); }
+  if (type_id) { tSql += ' AND i.template_id = ?'; tParams.push(Number(type_id)); }
+  if (category_id) { tSql += ' AND t.category_id = ?'; tParams.push(Number(category_id)); }
+  if (scope) { tSql += ` AND i.teacher_id IN (${scope.map(() => '?').join(',')})`; tParams.push(...scope); }
+  tSql += ' GROUP BY i.teacher_id';
+  const teacherAgg = db.prepare(tSql).all(...tParams)
+    .filter((r) => r.teacher_id != null)
+    .map((r) => {
+      const avg = r.sum_max > 0 ? Math.round((r.sum_total / r.sum_max) * 1000) / 10 : null;
+      return { teacher_id: r.teacher_id, teacher_name: r.teacher_name, subject: r.subject, count: r.cnt, avg_score: avg };
+    });
+
+  // ===== 组汇总（复用 stats/groups 口径） =====
+  const teacherScoreMap = new Map(teacherAgg.map((r) => [r.teacher_id, r.avg_score]));
+  let groups = [...manualGroups(), ...autoGroups()];
+  if (scope) {
+    const scopeSet = new Set(scope);
+    groups = groups.filter((g) => g.members.some((mid) => scopeSet.has(mid)));
+  }
+  const groupAgg = groups.map((g) => {
+    let members = g.members || [];
+    if (scope) { const scopeSet = new Set(scope); members = members.filter((mid) => scopeSet.has(mid)); }
+    const scored = members.map((tid) => teacherScoreMap.get(tid)).filter((v) => v != null && Number.isFinite(v));
+    const avg = scored.length ? Math.round((scored.reduce((a, b) => a + b, 0) / scored.length) * 10) / 10 : null;
+    const passed = scored.filter((v) => v >= passLine).length;
+    const passRate = scored.length ? Math.round((passed / scored.length) * 1000) / 10 : null;
+    const coverage = members.length ? Math.round((scored.length / members.length) * 1000) / 10 : null;
+    return {
+      name: g.name, type: g.type, subject: g.subject, grade: g.grade,
+      leader_name: g.leader_name ?? null, is_auto: g.is_auto,
+      teacher_count: members.length, checked_count: scored.length,
+      avg_score: avg, pass_rate: passRate, coverage,
+    };
+  });
+
+  // ===== 概述统计 =====
+  const total = detailRows.length;
+  const teacherCount = teacherAgg.length;
+  const classCount = new Set(detailRows.filter((r) => r.class_id != null).map((r) => r.class_id)).size;
+  const categoryIds = new Set(detailRows.map((r) => r.category_id));
+  const typeIds = new Set(detailRows.map((r) => r.template_id));
+  const allAvg = teacherAgg.filter((r) => r.avg_score != null);
+  const avgOfAvg = allAvg.length
+    ? Math.round((allAvg.reduce((a, b) => a + b.avg_score, 0) / allAvg.length) * 10) / 10
+    : null;
+  const scoredGroups = groupAgg.filter((g) => g.pass_rate != null);
+  const passRateOverall = scoredGroups.length
+    ? Math.round((scoredGroups.reduce((a, b) => a + b.pass_rate, 0) / scoredGroups.length) * 10) / 10
+    : null;
+  const covGroups = groupAgg.filter((g) => g.coverage != null);
+  const coverageOverall = covGroups.length
+    ? Math.round((covGroups.reduce((a, b) => a + b.coverage, 0) / covGroups.length) * 10) / 10
+    : null;
+
+  // 检查构成（按大类）
+  const catCountMap = {};
+  for (const r of detailRows) {
+    const cname = r.category || '未分类';
+    catCountMap[cname] = (catCountMap[cname] || 0) + 1;
+  }
+
+  // 需关注事项
+  const lowCovGroups = groupAgg.filter((g) => g.coverage != null && g.coverage < attCov)
+    .sort((a, b) => a.coverage - b.coverage).slice(0, attLimit);
+  const failTeachers = teacherAgg.filter((r) => r.avg_score != null && r.avg_score < passLine)
+    .sort((a, b) => a.avg_score - b.avg_score).slice(0, attLimit);
+  const failGroups = groupAgg.filter((g) => g.pass_rate != null && g.pass_rate < passLine)
+    .sort((a, b) => a.pass_rate - b.pass_rate).slice(0, attLimit);
+
+  // ===== 生成 Excel =====
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: 基本情况概述
+  const genName = db.prepare('SELECT name FROM users WHERE id = ?').get(req.user.id)?.name || req.user.name || '';
+  const nowStr = new Date().toISOString().slice(0, 16).replace('T', ' ');
+  const lines = [
+    ['常规检查情况报告'],
+    [''],
+    [`统计区间：${from || '（不限）'} 至 ${to || '（不限）'}`],
+    [`生成时间：${nowStr}`],
+    [`生成人：${genName}`],
+    [''],
+    ['一、基本情况'],
+    [`本次共开展常规检查 ${total} 次，覆盖 ${teacherCount} 名教师、${classCount} 个班级，`],
+    [`涉及 ${categoryIds.size} 个检查大类、${typeIds.size} 个检查类型。`],
+    [`教师个人平均分为 ${avgOfAvg ?? '—'} 分，组达标率 ${passRateOverall ?? '—'}%，覆盖率 ${coverageOverall ?? '—'}%。`],
+    [''],
+    ['二、检查构成'],
+    ...Object.entries(catCountMap).map(([k, v]) => [`- ${k}：${v} 次`]),
+    [''],
+    ['三、需关注事项'],
+    [`1. 覆盖率不足的组：${lowCovGroups.length ? lowCovGroups.map((g) => `${g.name}（${g.coverage}%）`).join('、') : '无'}`],
+    [`2. 未达标教师：${failTeachers.length ? failTeachers.map((t) => `${t.teacher_name}（${t.avg_score}分）`).join('、') : '无'}`],
+    [`3. 未达标组：${failGroups.length ? failGroups.map((g) => `${g.name}（达标率 ${g.pass_rate}%）`).join('、') : '无'}`],
+    [''],
+    ['四、关键指标'],
+    ['检查次数', total],
+    ['覆盖教师', teacherCount],
+    ['覆盖班级', classCount],
+    ['检查大类数', categoryIds.size],
+    ['检查类型数', typeIds.size],
+    ['教师平均分', avgOfAvg ?? '—'],
+    ['组达标率(%)', passRateOverall ?? '—'],
+    ['覆盖率(%)', coverageOverall ?? '—'],
+    ['达标线', passLine],
+    ['覆盖率关注线', attCov],
+  ];
+  const ws1 = XLSX.utils.aoa_to_sheet(lines);
+  ws1['!cols'] = [{ wch: 90 }];
+  XLSX.utils.book_append_sheet(wb, ws1, '基本情况概述');
+
+  // Sheet 2: 检查明细
+  const detailHeader = ['日期', '大类', '检查类型', '周期标记', '班级', '教师', '学科', '节次', '实得分', '满分', '检查人', ...dimCols.map((d) => d.label)];
+  const detailAoa = [detailHeader];
+  for (const r of detailRows) {
+    const row = [
+      r.lesson_date || '',
+      r.category || '',
+      r.template_name || '',
+      r.cycle_label || '',
+      r.class_name || '',
+      r.teacher_name || '',
+      r.subject || '',
+      r.period_no != null ? r.period_no : '',
+      r.score_total != null ? r.score_total : '',
+      r.score_max != null ? r.score_max : '',
+      r.checker_name || '',
+    ];
+    for (const d of dimCols) {
+      const v = r.scores[d.name];
+      row.push(v && v.score != null ? v.score : '');
+    }
+    detailAoa.push(row);
+  }
+  const ws2 = XLSX.utils.aoa_to_sheet(detailAoa);
+  ws2['!cols'] = detailHeader.map((h) => ({ wch: Math.max(8, String(h).length * 2 + 2) }));
+  XLSX.utils.book_append_sheet(wb, ws2, '检查明细');
+
+  // Sheet 3: 按教师汇总
+  const tHeader = ['教师', '学科', '检查次数', '平均分', '达标状态'];
+  const tAoa = [tHeader];
+  for (const r of teacherAgg) {
+    tAoa.push([r.teacher_name, r.subject || '', r.count, r.avg_score != null ? r.avg_score : '', r.avg_score != null ? (r.avg_score >= passLine ? '达标' : '未达标') : '未检查']);
+  }
+  const ws3 = XLSX.utils.aoa_to_sheet(tAoa);
+  ws3['!cols'] = tHeader.map((h) => ({ wch: Math.max(8, String(h).length * 2 + 2) }));
+  XLSX.utils.book_append_sheet(wb, ws3, '按教师汇总');
+
+  // Sheet 4: 按组汇总
+  const gHeader = ['组名', '类型', '学科', '年级', '组长', '人数', '已检', '平均分', '达标率(%)', '覆盖率(%)', '需关注'];
+  const gAoa = [gHeader];
+  for (const g of groupAgg) {
+    const needAtt = (g.coverage != null && g.coverage < attCov) || (g.pass_rate != null && g.pass_rate < passLine);
+    gAoa.push([g.name, g.type, g.subject || '', g.grade || '', g.leader_name || '', g.teacher_count, g.checked_count, g.avg_score != null ? g.avg_score : '', g.pass_rate != null ? g.pass_rate : '', g.coverage != null ? g.coverage : '', needAtt ? '是' : '']);
+  }
+  const ws4 = XLSX.utils.aoa_to_sheet(gAoa);
+  ws4['!cols'] = gHeader.map((h) => ({ wch: Math.max(8, String(h).length * 2 + 2) }));
+  XLSX.utils.book_append_sheet(wb, ws4, '按组汇总');
+
+  // Sheet 5: 口径说明
+  const noteAoa = [
+    ['常规检查导出口径说明'],
+    [''],
+    ['统计区间', `${from || '不限'} 至 ${to || '不限'}`],
+    ['达标线', passLine],
+    ['覆盖率关注线', attCov],
+    ['需关注条数上限', attLimit],
+    ['学期起始（算周次用）', semesterStart()],
+    [''],
+    ['口径说明：'],
+    ['教师平均分 = Σ(该教师各次实得分) / Σ(该教师各次满分) × 100'],
+    ['组平均分 = 组内已检教师个人平均分的均值'],
+    ['组达标率 = 组内个人得分 ≥ 达标线的教师占比'],
+    ['覆盖率 = 组内已检教师占比'],
+    ['需关注 = 覆盖率 < 覆盖率关注线，或 达标率 < 达标线'],
+    [''],
+    [`生成时间：${nowStr}`],
+    [`生成人：${genName}`],
+  ];
+  const ws5 = XLSX.utils.aoa_to_sheet(noteAoa);
+  ws5['!cols'] = [{ wch: 22 }, { wch: 60 }];
+  XLSX.utils.book_append_sheet(wb, ws5, '口径说明');
+
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  const fname = `常规检查情况_${from || 'all'}_${to || 'all'}.xlsx`;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(fname)}`);
+  res.send(buf);
 });
 
 // 单条详情（放末尾，避免 /:id 抢在 /groups /stats 等单段路径之前）

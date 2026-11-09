@@ -89,8 +89,8 @@ export default function Inspections() {
   const [editingType, setEditingType] = useState(null); // 展开编辑维度的类型 id
   const [dimForm, setDimForm] = useState([]); // 编辑某类型维度
 
-  // 检查配置状态（学期起始 + 达标线）
-  const [config, setConfig] = useState({ semester_start: '', pass_line: 90 });
+  // 检查配置状态（学期起始 + 达标线 + 需关注阈值）
+  const [config, setConfig] = useState({ semester_start: '', pass_line: 90, attention_coverage: 100, attention_limit: 5 });
 
   // 统计状态
   const [statMode, setStatMode] = useState('teachers'); // teachers | groups
@@ -367,12 +367,14 @@ export default function Inspections() {
     } catch (e) { toast.error(errMsg(e)); }
   };
 
-  // 保存检查配置（学期起始 + 达标线）
+  // 保存检查配置（学期起始 + 达标线 + 需关注阈值）
   const saveConfig = async () => {
     try {
       const res = await api.put('/inspections/config', {
         semester_start: config.semester_start,
         pass_line: Number(config.pass_line),
+        attention_coverage: Number(config.attention_coverage),
+        attention_limit: Number(config.attention_limit),
       });
       setConfig(res.data.data);
       setPassLine(res.data.data.pass_line);
@@ -396,6 +398,36 @@ export default function Inspections() {
       setStatTeachers(tr.data.data);
       setStatGroups(gr.data.data);
     } catch (e) { setError(errMsg(e)); }
+  };
+
+  // 导出常规检查报表（Excel），带 token 下载
+  const exportReport = async () => {
+    const token = localStorage.getItem('edu_token');
+    const qs = new URLSearchParams();
+    if (sFrom) qs.set('from', sFrom);
+    if (sTo) qs.set('to', sTo);
+    if (sCategory) qs.set('category_id', sCategory);
+    if (sType) qs.set('type_id', sType);
+    qs.set('pass_line', passLine);
+    try {
+      const r = await fetch(`/api/inspections/export?${qs.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) {
+        let msg = '导出失败';
+        try { msg = (await r.json()).error || msg; } catch { /* 忽略 */ }
+        return toast.error(msg);
+      }
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `常规检查情况_${sFrom || 'all'}_${sTo || 'all'}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast.success('报表已导出');
+    } catch (e) {
+      toast.error('导出失败：' + (e?.message || '网络错误'));
+    }
   };
   useEffect(() => { if (tab === 'stats') loadStats(); }, [tab, sFrom, sTo, sCategory, sType, passLine]);
 
@@ -678,6 +710,7 @@ export default function Inspections() {
               <span className="muted">达标线</span>
               <input type="number" min="0" max="100" value={passLine} onChange={(e) => setPassLine(Number(e.target.value))} style={{ width: 60 }} />
             </div>
+            <button className="btn primary" onClick={exportReport}>导出报表</button>
           </div>
 
           <div className="toolbar" style={{ marginTop: 10 }}>
@@ -765,6 +798,14 @@ export default function Inspections() {
             <div>
               <label>达标线（达标率口径，0-100）</label>
               <input type="number" min="0" max="100" step="1" value={config.pass_line} onChange={(e) => setConfig({ ...config, pass_line: Number(e.target.value) })} />
+            </div>
+            <div>
+              <label>覆盖率关注线（0-100，低于此值需关注）</label>
+              <input type="number" min="0" max="100" step="1" value={config.attention_coverage} onChange={(e) => setConfig({ ...config, attention_coverage: Number(e.target.value) })} />
+            </div>
+            <div>
+              <label>需关注条数上限</label>
+              <input type="number" min="1" max="100" step="1" value={config.attention_limit} onChange={(e) => setConfig({ ...config, attention_limit: Number(e.target.value) })} />
             </div>
             <div style={{ alignSelf: 'end' }}>
               <button className="btn primary" onClick={saveConfig}>保存配置</button>
