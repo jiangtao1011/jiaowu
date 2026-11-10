@@ -876,25 +876,63 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .cfg-tile-count { font-size: 12px; color: var(--primary); font-weight: 600; }
 @media (max-width: 560px) { .cfg-grid { grid-template-columns: 1fr; } }
 
-/* ============ 打印通知单 ============ */
+/* ============ 打印：通知单 + 课表 ============ */
 .print-sheet {
   background: #fff; color: #000;
   font-family: "Songti SC", "STSong", "SimSun", "Noto Serif CJK SC", serif;
   padding: 8px 4px;
+  line-height: 1.5;
 }
-.ps-title { text-align: center; font-size: 22px; font-weight: 700; letter-spacing: 0.15em; margin: 0 0 8px; }
-.ps-meta { text-align: center; font-size: 12px; color: #333; margin-bottom: 16px; }
-.ps-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.ps-table th, .ps-table td { border: 1px solid #000; padding: 10px 12px; text-align: left; }
-.ps-table th { width: 90px; background: #f4f4f4; font-weight: 600; }
-.ps-foot { margin-top: 22px; display: flex; justify-content: space-between; font-size: 13px; color: #333; }
+/* 标题区：居中，上下粗线分隔，正式公文感 */
+.ps-head { text-align: center; border-bottom: 3px double #000; padding-bottom: 12px; margin-bottom: 14px; }
+.ps-title { font-size: 24px; font-weight: 700; letter-spacing: 0.2em; margin: 0 0 4px; }
+.ps-sub { font-size: 12px; color: #444; letter-spacing: 0.05em; }
+.ps-meta { text-align: right; font-size: 11.5px; color: #555; margin-bottom: 10px; }
+
+/* 关键：表格用 separate 模式，外层边框兜底，最右/最下边框不再丢失 */
+.ps-table { width: 100%; border-collapse: separate; border-spacing: 0; border: 1.5px solid #000; font-size: 14px; }
+.ps-table th, .ps-table td {
+  border-right: 1px solid #000;
+  border-bottom: 1px solid #000;
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.ps-table tr > *:last-child { border-right: none; }
+.ps-table tr:last-child > * { border-bottom: none; }
+.ps-table th { background: #f2f2f2; font-weight: 600; width: 90px; white-space: nowrap; }
+/* 课表网格：表头深色底白字 */
+.ps-sched thead th {
+  background: #2b2b2b; color: #fff; font-weight: 600;
+  text-align: center; padding: 8px 6px; font-size: 13.5px;
+}
+.ps-sched tbody th { text-align: center; padding: 8px 6px; font-size: 13px; }
+.ps-sched td { text-align: left; padding: 6px 8px; font-size: 12.5px; line-height: 1.6; }
+.ps-sched .ps-course { padding: 1px 0; white-space: nowrap; }
+.ps-sched .ps-course .subj { font-weight: 600; }
+.ps-sched .ps-course .teach { color: #333; margin-left: 4px; }
+.ps-sched td.ps-empty { background: #fafafa; }
+
+/* 落款区 */
+.ps-foot { margin-top: 26px; display: flex; justify-content: space-between; align-items: flex-end; font-size: 13px; color: #333; }
+.ps-sign { text-align: center; min-width: 140px; }
+.ps-sign .line { display: inline-block; width: 120px; border-bottom: 1px solid #000; margin-top: 28px; }
+
+@page { margin: 14mm 12mm; }
+
+/* 强制浏览器打印时保留背景色/边框（深色表头、浅灰底、边框线打印时不丢失） */
+.print-sheet, .print-sheet * {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
 
 @media print {
+  /* 用 visibility 隔离：隐藏整页，只让 .print-sheet 可见（display:none 会连弹窗一起藏） */
   body * { visibility: hidden; }
   .print-sheet, .print-sheet * { visibility: visible; }
-  .print-sheet { position: absolute; left: 0; top: 0; width: 100%; padding: 24px; }
+  .print-sheet { position: absolute; left: 0; top: 0; width: 100%; padding: 0; margin: 0; }
   .modal-overlay { position: static; padding: 0; background: none; }
-  .modal { max-width: none !important; box-shadow: none; border: none; padding: 0; overflow: visible; max-height: none; }
+  .modal { max-width: none !important; width: 100% !important; box-shadow: none; border: none; padding: 0; overflow: visible; max-height: none; background: none; }
   .no-print { display: none !important; }
 }
 

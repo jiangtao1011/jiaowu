@@ -37,10 +37,14 @@ function PrintSheet({ c, rangeLabel }) {
     ? `${c.date || ''} ${c.period_no ? `第 ${c.period_no} 节` : ''}`.trim()
     : `${c.day_of_week ? `星期${'一二三四五六日'[c.day_of_week - 1]}` : ''} ${c.period_no ? `第 ${c.period_no} 节` : ''}`.trim();
   const range = rangeLabel(c);
+  const typeLabel = { 代课: '代课通知单', 调课: '调课通知单', 停课: '停课通知单' }[c.change_type] || `${c.change_type}通知单`;
   return (
     <div className="print-sheet">
-      <h1 className="ps-title">{c.change_type}通知单</h1>
-      <div className="ps-meta">编号：{String(c.id).padStart(4, '0')} · 签发日期：{String(c.created_at || '').slice(0, 10)}</div>
+      <div className="ps-head">
+        <h1 className="ps-title">{typeLabel}</h1>
+        <div className="ps-sub">课程中心 · 教务管理</div>
+      </div>
+      <div className="ps-meta">编号：{String(c.id).padStart(4, '0')}　签发日期：{String(c.created_at || '').slice(0, 10)}</div>
       <table className="ps-table">
         <tbody>
           <tr><th>班级</th><td>{c.class_grade ? `${c.class_grade} · ` : ''}{c.class_name || '—'}</td><th>课程</th><td>{c.subject || '—'}</td></tr>
@@ -50,9 +54,10 @@ function PrintSheet({ c, rangeLabel }) {
         </tbody>
       </table>
       <div className="ps-foot">
-        <div>签发人：{c.operator_name || '教务主任'}</div>
-        <div>（本通知单一式一份，交相关教师留存）</div>
+        <div className="ps-sign">签发人<span className="line">{c.operator_name || '教务主任'}</span></div>
+        <div className="ps-sign">相关教师签收<span className="line"></span></div>
       </div>
+      <div className="ps-meta" style={{ marginTop: 10, textAlign: 'center' }}>（本通知单一式一份，交相关教师留存）</div>
     </div>
   );
 }
@@ -70,12 +75,15 @@ function PrintScheduleSheet({ title, gridRows }) {
   })();
   return (
     <div className="print-sheet">
-      <h1 className="ps-title">{title} 课表</h1>
+      <div className="ps-head">
+        <h1 className="ps-title">{title} 课表</h1>
+        <div className="ps-sub">课程中心 · 教务管理</div>
+      </div>
       <div className="ps-meta">打印日期：{printDate}</div>
-      <table className="ps-table">
+      <table className="ps-table ps-sched">
         <thead>
           <tr>
-            <th>节次</th>
+            <th style={{ width: 64 }}>节次</th>
             {days.map((d) => <th key={d}>{DAYS[d - 1]}</th>)}
           </tr>
         </thead>
@@ -86,12 +94,13 @@ function PrintScheduleSheet({ title, gridRows }) {
               {days.map((d) => {
                 const cellRows = gridRows.filter((r) => r.period_no === p && r.day_of_week === d);
                 return (
-                  <td key={d} style={{ verticalAlign: 'top' }}>
+                  <td key={d} className={cellRows.length === 0 ? 'ps-empty' : ''}>
                     {cellRows.length === 0 ? null : cellRows.map((r) => {
                       const layer = (r.form === '分层' || r.form === '走班分层') ? layerToken(r.class_name).replace('层', '') : '';
                       return (
-                        <div key={r.id} style={{ padding: '2px 0' }}>
-                          {baseSubject(r.subject)}{layer} · {r.teacher_name}
+                        <div key={r.id} className="ps-course">
+                          <span className="subj">{baseSubject(r.subject)}{layer}</span>
+                          <span className="teach">{r.teacher_name}</span>
                         </div>
                       );
                     })}

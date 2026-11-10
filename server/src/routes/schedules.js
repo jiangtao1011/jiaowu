@@ -69,14 +69,18 @@ router.get('/', (req, res) => {
     WHERE 1=1`;
   const params = [];
   if (class_id) {
-    // 选中某班时，带入：自身课表 + 其分层子班课表 + 其参与的走班（合班成员）课表
+    // 选中某班时，带入：自身课表 + 其分层子班课表 + 其参与的走班（合班成员）课表 + 走班内的分层子班课表
     const cid = Number(class_id);
     sql += ` AND s.class_id IN (
       SELECT id FROM classes WHERE id = ? OR parent_id = ?
       UNION
       SELECT class_id FROM class_members WHERE member_class_id = ?
+      UNION
+      SELECT c.id FROM classes c WHERE c.parent_id IN (
+        SELECT class_id FROM class_members WHERE member_class_id = ?
+      )
     )`;
-    params.push(cid, cid, cid);
+    params.push(cid, cid, cid, cid);
   }
   if (teacher_id) { sql += ' AND s.teacher_id = ?'; params.push(Number(teacher_id)); }
   if (period_type) { sql += ' AND s.period_type = ?'; params.push(period_type); }
