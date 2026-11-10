@@ -150,7 +150,24 @@ export default function MobileHome() {
 
     return (
       <div>
-        <MobileTopBar title="教务数据看板" sub={`${dash.date_str} · ${ROLE_LABELS[user?.role]}`} todo={todo} unread={unread} />
+        <MobileTopBar
+          hero={{
+            day: dash.date_str.slice(8),
+            ym: dash.date_str.slice(0, 7),
+            week: '周' + '日一二三四五六'[new Date(`${dash.date_str}T00:00:00`).getDay()],
+            stats: [
+              { v: dash.today?.lessons ?? 0, l: '今日课节' },
+              { v: (dc.todo?.qna ?? 0) + (dc.todo?.applications ?? 0), l: '待审申报' },
+              { v: dc.todo?.replies ?? 0, l: '通知回复' },
+            ],
+            tags: [
+              ...(dash.today?.calendar || []).map((c) => ({ text: c.type, tone: c.type === '放假' || c.type === '停课' ? 'danger' : c.type === '补课' ? 'warn' : 'info' })),
+              ...(dash.today?.works || []).slice(0, 3).map((w) => ({ text: `${w.category} · ${w.title}` })),
+            ],
+          }}
+          todo={todo}
+          unread={unread}
+        />
 
         {/* 时间范围：快捷 + 自定义 */}
         <div className="mcard" style={{ padding: 10 }}>
@@ -284,7 +301,21 @@ export default function MobileHome() {
   // ==================== 教师视角 ====================
   return (
     <div>
-      <MobileTopBar title={`你好，${user?.name}`} sub={`${ROLE_LABELS[user?.role] || user?.role} · ${dash.date_str}`} todo={todo} unread={unread} />
+      <MobileTopBar
+        hero={{
+          day: dash.date_str.slice(8),
+          ym: dash.date_str.slice(0, 7),
+          week: '周' + '日一二三四五六'[new Date(`${dash.date_str}T00:00:00`).getDay()],
+          stats: [
+            { v: (mine?.today || []).length, l: '今日课程' },
+            { v: mine?.taught_classes?.length ?? 0, l: '任教班级' },
+            { v: mine?.my_applications?.length ?? 0, l: '我的申报' },
+          ],
+          tags: (dash.today?.calendar || []).map((c) => ({ text: c.type, tone: c.type === '放假' || c.type === '停课' ? 'danger' : c.type === '补课' ? 'warn' : 'info' })),
+        }}
+        todo={todo}
+        unread={unread}
+      />
 
       {mine?.bound && Array.isArray(mine.today) && (
         <>
