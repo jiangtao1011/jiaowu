@@ -698,6 +698,11 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 }
 .n-body pre code { background: none; padding: 0; }
 .n-body hr { border: none; border-top: 1px solid var(--border); margin: 1.2em 0; }
+.n-body img {
+  max-width: 100%; height: auto; display: block;
+  border-radius: 8px; margin: 0.9em 0;
+  border: 1px solid var(--border);
+}
 .n-body a { color: var(--primary); text-decoration: underline; }
 .n-body table { border-collapse: collapse; margin: 0.9em 0; font-size: 14px; }
 .n-body th, .n-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
@@ -1512,6 +1517,7 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .mnotice-body code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
 .mnotice-body table { border-collapse: collapse; margin: 0.7em 0; }
 .mnotice-body th, .mnotice-body td { border: 1px solid var(--border); padding: 4px 8px; }
+.mnotice-body img { max-width: 100%; height: auto; display: block; border-radius: 8px; margin: 0.7em 0; }
 
 /* 移动壳内的申报页：去掉全屏约束，融入底部导航 */
 .mapply-embedded {
@@ -1549,6 +1555,46 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .tline-cls { font-size: 12px; color: var(--muted); margin-top: 1px; }
 .tline-side { flex-shrink: 0; }
 
+/* ============ 移动端顶部栏（墨绿渐变 + 快捷入口） ============ */
+.mtop {
+  background: linear-gradient(135deg, #0a3f38 0%, #167d6f 55%, #1f8f80 100%);
+  color: #fff;
+  padding: calc(16px + env(safe-area-inset-top)) 16px 16px;
+  margin: -14px -14px 14px;
+  position: sticky; top: 0; z-index: 20;
+  box-shadow: 0 2px 10px rgba(10, 63, 56, 0.18);
+}
+.mtop-main {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.mtop-titles { min-width: 0; flex: 1; }
+.mtop-title {
+  font-size: 20px; font-weight: 800; letter-spacing: 0.01em; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mtop-sub { font-size: 12.5px; color: rgba(255,255,255,0.82); margin-top: 3px; }
+.mtop-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.mtop-chip {
+  position: relative; display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 10px;
+  background: rgba(255,255,255,0.16); text-decoration: none;
+  transition: background 0.15s;
+}
+.mtop-chip:active { background: rgba(255,255,255,0.28); }
+.mtop-chip-ico { font-size: 14px; font-weight: 700; color: #fff; line-height: 1; }
+.mtop-chip-badge {
+  position: absolute; top: -4px; right: -4px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  background: #e8590c; color: #fff; border-radius: 8px;
+  font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+/* 顶部按钮（复用 .mbtn ghost 白字版） */
+.mtop .mbtn-ghost {
+  background: rgba(255,255,255,0.16); color: #fff; border: none;
+  padding: 6px 12px; font-size: 13px; border-radius: 8px;
+}
+
 /* ============ 移动端分辨率自适应 ============ */
 
 /* 顶部/底部安全区（刘海屏、底部横条） */
@@ -1560,6 +1606,7 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .mobile-body { padding: 14px clamp(12px, 4vw, 16px) 20px; }
 .mobile-topbar .mt-title { font-size: clamp(16px, 4.5vw, 18px); }
 .mobile-topbar .mt-sub { font-size: clamp(12px, 3.2vw, 13px); }
+.mtop-title { font-size: clamp(18px, 5vw, 21px); }
 .mcard { padding: 12px clamp(12px, 4vw, 16px); }
 .mcard-title { font-size: clamp(13.5px, 3.6vw, 15px); }
 .mstat .mstat-v { font-size: clamp(18px, 5vw, 22px); }

@@ -193,6 +193,16 @@ CREATE TABLE IF NOT EXISTS notice_attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_notice_attachments_notice ON notice_attachments(notice_id);
 
+-- 通知正文图片（图文混排用）：独立于通知，正文 Markdown 里以 /api/notices/images/:id 引用
+CREATE TABLE IF NOT EXISTS notice_images (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT NOT NULL,
+  stored_path TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  uploaded_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 CREATE TABLE IF NOT EXISTS notice_replies (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   notice_id INTEGER NOT NULL REFERENCES notices(id),

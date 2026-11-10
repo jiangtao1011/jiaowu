@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
+import MobileTopBar from './MobileTopBar.jsx';
 
 // 当前月份 'YYYY-MM'
 function nowYm() {
@@ -161,9 +162,7 @@ export default function MobileStats() {
 
   return (
     <div>
-      <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-        <div className="mt-title">课时查询</div>
-      </div>
+      <MobileTopBar title="课时查询" />
 
       <div className="mcard" style={{ padding: 8 }}>
         <div className="mstat-row">

@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import api from '../api.js';
 import { ADMIN_ROLES, RESULT_VIEW_ROLES, CLERK_ROLES, DIRECTOR_ROLES } from '../roles.js';
 
 const ROLE_LABELS = {
@@ -21,6 +22,24 @@ export default function MobileShell({ user, unread, onUnreadChange, onLogout }) 
   const canViewDc = RESULT_VIEW_ROLES.includes(user?.role);
   const isGradeLeader = user?.role === '年级组长';
   const bound = !!user?.teacher_id; // 是否绑定教师档案
+  const [todo, setTodo] = useState({ qna: 0, applications: 0, replies: 0, overdue_uploads: 0, reminders: [] });
+
+  // 拉取待办聚合（待审申报、待办工作），供顶部快捷入口与各页复用
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await api.get('/dashboard');
+        const d = r.data.data;
+        setTodo({
+          qna: d.todo?.qna ?? 0,
+          applications: d.todo?.applications ?? 0,
+          replies: d.todo?.replies ?? 0,
+          overdue_uploads: d.todo?.overdue_uploads ?? 0,
+          reminders: d.reminders ?? [],
+        });
+      } catch { /* 忽略，顶部入口只是辅助 */ }
+    })();
+  }, []);
 
   // 「申报」tab：教师本人（绑定）可自主申报；教务员/教务主任/admin/年级组长可批量申报/审核
   const canApply = bound || CLERK_ROLES.includes(user?.role) || DIRECTOR_ROLES.includes(user?.role) || isGradeLeader;
@@ -41,7 +60,7 @@ export default function MobileShell({ user, unread, onUnreadChange, onLogout }) 
   return (
     <div className="mobile-shell">
       <div className="mobile-body">
-        <Outlet context={{ isAdmin, canViewDc, isGradeLeader, unread, onUnreadChange }} />
+        <Outlet context={{ isAdmin, canViewDc, isGradeLeader, unread, onUnreadChange, todo, user }} />
       </div>
       <nav className="mobile-tabbar">
         {tabs.map((t) => (

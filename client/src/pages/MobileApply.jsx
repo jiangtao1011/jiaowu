@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
 import { CLERK_ROLES, DIRECTOR_ROLES } from '../roles.js';
+import MobileTopBar from '../mobile/MobileTopBar.jsx';
 
 const STATUS = { pending: '待年级组长审核', grade_approved: '待课程中心终审', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', grade_approved: 'info', approved: 'ok', rejected: '', withdrawn: 'info' };
@@ -206,12 +207,7 @@ export default function MobileApply() {
       )}
 
       {embedded && (
-        <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-          <div>
-            <div className="mt-title">自主申报</div>
-            <div className="mt-sub">{teacher ? `${teacher.name} · ${teacher.subject}` : '课程中心'}</div>
-          </div>
-        </div>
+        <MobileTopBar title="自主申报" sub={teacher ? `${teacher.name} · ${teacher.subject}` : '课程中心'} />
       )}
 
       {error && <div className="alert error">{error}</div>}

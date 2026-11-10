@@ -5,6 +5,7 @@ import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import MobileTopBar from './MobileTopBar.jsx';
 
 const REPLY_STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回' };
 const REPLY_CLS = { pending: 'warn', approved: 'ok', rejected: '' };
@@ -60,12 +61,7 @@ export default function MobileNotices() {
 
   return (
     <div>
-      <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-        <div>
-          <div className="mt-title">通知</div>
-          <div className="mt-sub">{unread > 0 ? `${unread} 条未读` : '全部已读'}</div>
-        </div>
-      </div>
+      <MobileTopBar title="通知" sub={unread > 0 ? `${unread} 条未读` : '全部已读'} />
 
       {error && <div className="alert error">{error}</div>}
 

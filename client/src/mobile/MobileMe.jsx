@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
 import { isAdmin, RESULT_VIEW_ROLES, INSPECTION_SUBMIT_ROLES } from '../roles.js';
+import MobileTopBar from './MobileTopBar.jsx';
 const ROLE_LABELS = {
   admin: '管理员', 校长: '校长', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
 };
@@ -29,9 +30,7 @@ export default function MobileMe({ onLogout }) {
 
   return (
     <div>
-      <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-        <div className="mt-title">我的</div>
-      </div>
+      <MobileTopBar title="我的" />
 
       <div className="mcard">
         <div className="mitem" style={{ border: 'none' }}>

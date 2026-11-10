@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useOutletContext, Link } from 'react-router-dom';
 import api from '../api.js';
 import { StackedBar, HBarChart, CHART_COLORS } from '../components/charts.jsx';
+import MobileTopBar from './MobileTopBar.jsx';
 
 const ROLE_LABELS = {
   admin: '管理员', 校长: '校长', 教务主任: '教务主任', 教务员: '教务员', 教研组长: '教研组长', 备课组长: '备课组长', 年级组长: '年级组长', 教师: '教师',
@@ -20,7 +21,7 @@ function todayStr() {
 }
 
 export default function MobileHome() {
-  const { isAdmin, canViewDc } = useOutletContext();
+  const { isAdmin, canViewDc, todo, unread } = useOutletContext();
   const [dash, setDash] = useState(null);
   const [mine, setMine] = useState(null);
   const [dc, setDc] = useState(null); // 数据看板（管理角色）
@@ -149,12 +150,7 @@ export default function MobileHome() {
 
     return (
       <div>
-        <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-          <div>
-            <div className="mt-title">教务数据看板</div>
-            <div className="mt-sub">{dash.date_str} · {ROLE_LABELS[user?.role]}</div>
-          </div>
-        </div>
+        <MobileTopBar title="教务数据看板" sub={`${dash.date_str} · ${ROLE_LABELS[user?.role]}`} todo={todo} unread={unread} />
 
         {/* 时间范围：快捷 + 自定义 */}
         <div className="mcard" style={{ padding: 10 }}>
@@ -288,12 +284,7 @@ export default function MobileHome() {
   // ==================== 教师视角 ====================
   return (
     <div>
-      <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-        <div>
-          <div className="mt-title">你好，{user?.name}</div>
-          <div className="mt-sub">{ROLE_LABELS[user?.role] || user?.role} · {dash.date_str}</div>
-        </div>
-      </div>
+      <MobileTopBar title={`你好，${user?.name}`} sub={`${ROLE_LABELS[user?.role] || user?.role} · ${dash.date_str}`} todo={todo} unread={unread} />
 
       {mine?.bound && Array.isArray(mine.today) && (
         <>

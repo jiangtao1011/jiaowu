@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import MobileTopBar from './MobileTopBar.jsx';
 
 const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回' };
 const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '' };
@@ -86,12 +87,7 @@ export default function MobileSubstitute() {
 
   return (
     <div>
-      <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-        <div>
-          <div className="mt-title">代课调课</div>
-          <div className="mt-sub">申请由教务主任审核后生效</div>
-        </div>
-      </div>
+      <MobileTopBar title="代课调课" sub="申请由教务主任审核后生效" />
 
       {error && <div className="alert error">{error}</div>}
 

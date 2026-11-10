@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
 import { ADMIN_ROLES, INSPECTION_SUBMIT_ROLES, RESULT_VIEW_ROLES } from '../roles.js';
+import MobileTopBar from './MobileTopBar.jsx';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const GRADE_ORDER = ['高一', '高二', '高三', '初一', '初二', '初三'];
@@ -205,9 +206,7 @@ export default function MobileInspection() {
   if (!canSubmit && !canView) {
     return (
       <div>
-        <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-          <div className="mt-title">常规检查</div>
-        </div>
+        <MobileTopBar title="常规检查" />
         <div className="alert error">无权限：常规检查仅教务员、教务主任、教研组长、备课组长可提交；校长、年级组长可查看。</div>
       </div>
     );
@@ -265,12 +264,7 @@ export default function MobileInspection() {
 
   return (
     <div className="minsp">
-      <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-        <div>
-          <div className="mt-title">常规检查</div>
-          <div className="mt-sub">{readonlyView ? '查看记录 · 统计' : '选类型 · 定对象 · 打分拍照'}</div>
-        </div>
-      </div>
+      <MobileTopBar title="常规检查" sub={readonlyView ? '查看记录 · 统计' : '选类型 · 定对象 · 打分拍照'} />
 
       {/* 只读查看：记录 + 统计 tab */}
       {readonlyView ? (

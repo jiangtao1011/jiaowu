@@ -148,6 +148,36 @@ router.get('/attachments/:id/download', authOptional, (req, res) => {
   res.download(path.join(UPLOAD_DIR, f.stored_path), f.filename);
 });
 
+// ===== 通知正文图片（图文混排）=====
+
+// 上传正文图片：返回可访问的 URL，前端插入到 Markdown 正文。
+// 需登录（教务员/教务主任等有通知发布权限的角色）。
+router.post('/images', authRequired, roleRequired(...CLERK_ROLES), upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ ok: false, error: '请选择图片' });
+  const ext = (path.extname(req.file.originalname) || '').toLowerCase();
+  const allowed = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
+  if (!allowed.includes(ext)) {
+    return res.status(400).json({ ok: false, error: '仅支持 png / jpg / jpeg / gif / webp 图片' });
+  }
+  // 存记录到独立的图片表（正文图片不关联具体通知）
+  const info = db.prepare('INSERT INTO notice_images (filename, stored_path, size, uploaded_by) VALUES (?, ?, ?, ?)')
+    .run(decodeName(req.file.originalname), req.file.filename, req.file.size || 0, req.user.id);
+  const id = Number(info.lastInsertRowid);
+  // 图片访问 URL：免登录直接访问（图片本身无敏感数据，正文里引用）
+  return res.json({ ok: true, data: { id, url: `/api/notices/images/${id}` } });
+});
+
+// 图片访问（免登录，直接内联展示，供 Markdown 图片引用）
+router.get('/images/:id', (req, res) => {
+  const f = db.prepare('SELECT * FROM notice_images WHERE id = ?').get(Number(req.params.id));
+  if (!f) return res.status(404).json({ ok: false, error: '图片不存在' });
+  const ext = (path.extname(f.stored_path) || '').toLowerCase();
+  const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }[ext] || 'application/octet-stream';
+  res.setHeader('Content-Type', mime);
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.sendFile(path.join(UPLOAD_DIR, f.stored_path));
+});
+
 // ===== 管理（需登录） =====
 router.use(authRequired);
 

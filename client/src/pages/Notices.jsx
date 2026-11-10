@@ -37,11 +37,27 @@ export default function Notices() {
   const [copied, setCopied] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState('');
   const taRef = React.useRef(null);
+  const imgRef = React.useRef(null);
 
   const load = async () => {
     try { setRows((await api.get('/notices')).data.data); } catch (e) { setError(errMsg(e)); }
   };
   useEffect(() => { load(); }, []);
+
+  // 上传正文图片，返回 URL 后插入 Markdown
+  const uploadImage = async (file) => {
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await api.post('/notices/images', fd);
+      const url = r.data.data.url;
+      // 用相对路径，前端经 vite proxy 访问；分享落地页直接用绝对地址拼 origin
+      const full = url.startsWith('http') ? url : `${window.location.origin}${url}`;
+      insertMd({ label: '图片', insert: () => `\n![图片](${full})\n` });
+      toast.success('图片已插入正文');
+    } catch (e) { toast.error(errMsg(e)); }
+  };
 
   // 在光标处插入 Markdown 片段（无选区时用整段/占位）
   const insertMd = (tool) => {
@@ -232,6 +248,8 @@ export default function Notices() {
                     {MD_TOOLS.map((t) => (
                       <button type="button" key={t.label} className="btn sm md-tool" title={t.hint} onClick={() => insertMd(t)}>{t.label}</button>
                     ))}
+                    <button type="button" className="btn sm md-tool" title="插入图片（上传后嵌入正文）" onClick={() => imgRef.current?.click()}>图片</button>
+                    <input ref={imgRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { uploadImage(e.target.files[0]); e.target.value = ''; }} />
                     <button type="button" className={`btn sm ${preview ? 'primary' : ''}`} onClick={() => setPreview(!preview)}>{preview ? '关闭预览' : '预览'}</button>
                   </div>
                 </div>
@@ -353,6 +371,14 @@ export default function Notices() {
               <h3>{detail.notice.title}</h3>
               <button className="btn ghost" onClick={() => setDetail(null)}>关闭</button>
             </div>
+
+            {detail.notice.content && (
+              <div className="md-preview" style={{ marginBottom: 16, maxHeight: 300, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: '12px 14px' }}>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                  {detail.notice.content}
+                </ReactMarkdown>
+              </div>
+            )}
 
             <h4 className="notice-section-title">已读名单（{detail.read_count}）</h4>
             {detail.reads.length > 0 ? (

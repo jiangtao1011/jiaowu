@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import api, { errMsg } from '../api.js';
+import MobileTopBar from './MobileTopBar.jsx';
 
 // 教师业绩档案（只读）：查看自己已固化的学期考核分
 export default function MobileAssessment() {
@@ -25,10 +26,7 @@ export default function MobileAssessment() {
 
   return (
     <div className="minsp">
-      <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-        <div className="mt-title">我的业绩</div>
-        <div className="mt-sub">学期考核分（按备课组）</div>
-      </div>
+      <MobileTopBar title="我的业绩" sub="学期考核分（按备课组）" />
 
       {error && <div className="alert error">{error}</div>}
       {loading && <div className="mempty">加载中…</div>}

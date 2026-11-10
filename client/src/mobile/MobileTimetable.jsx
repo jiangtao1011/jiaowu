@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
 import { RESULT_VIEW_ROLES } from '../roles.js';
+import MobileTopBar from './MobileTopBar.jsx';
 
 const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
@@ -76,13 +77,15 @@ export default function MobileTimetable() {
 
     return (
       <div>
-        <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-          <div className="mt-title">课表查询</div>
-          <div className="mapply-chips" style={{ gap: 4 }}>
-            <button className={`mapply-chip ${mode === 'school' ? 'on' : ''}`} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMode('school')}>全校</button>
-            {user.teacher_id && <button className={`mapply-chip ${mode === 'mine' ? 'on' : ''}`} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMode('mine')}>我的课表</button>}
-          </div>
-        </div>
+        <MobileTopBar
+          title="课表查询"
+          extra={
+            <div className="mapply-chips" style={{ gap: 4 }}>
+              <button className={`mapply-chip ${mode === 'school' ? 'on' : ''}`} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMode('school')}>全校</button>
+              {user.teacher_id && <button className={`mapply-chip ${mode === 'mine' ? 'on' : ''}`} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMode('mine')}>我的课表</button>}
+            </div>
+          }
+        />
 
         {error && <div className="alert error">{error}</div>}
 
@@ -188,15 +191,15 @@ export default function MobileTimetable() {
 
   return (
     <div>
-      <div className="mobile-topbar" style={{ position: 'static', margin: '-14px -14px 12px' }}>
-        <div className="mt-title">我的课表</div>
-        {isManager && (
+      <MobileTopBar
+        title="我的课表"
+        extra={isManager ? (
           <div className="mapply-chips" style={{ gap: 4 }}>
             <button className={`mapply-chip ${mode === 'school' ? 'on' : ''}`} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMode('school')}>全校</button>
             <button className={`mapply-chip ${mode === 'mine' ? 'on' : ''}`} style={{ padding: '6px 12px', fontSize: 13 }} onClick={() => setMode('mine')}>我的课表</button>
           </div>
-        )}
-      </div>
+        ) : null}
+      />
 
       {error && <div className="alert error">{error}</div>}
 
