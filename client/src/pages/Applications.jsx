@@ -37,9 +37,11 @@ export default function Applications() {
   const [tasks, setTasks] = useState([]);
   const [typeCoefs, setTypeCoefs] = useState([]); // 折算类型字典
   const [grades, setGrades] = useState([]);       // 年级枚举
-  // 课程创建表单
+  // 课程创建/编辑表单
   const [taskForm, setTaskForm] = useState({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
   const [fieldList, setFieldList] = useState([]); // 自定义字段 [{key,label,type,required,options}]
+  const [editingTask, setEditingTask] = useState(null); // 正在编辑的课程；null=新建
+  const [taskModal, setTaskModal] = useState(false); // 课程新建/编辑弹窗
   const [openTask, setOpenTask] = useState(null);
   const [apps, setApps] = useState([]);
   const [linkModal, setLinkModal] = useState(null); // 分享弹层
@@ -165,26 +167,67 @@ export default function Applications() {
     loadQna();
   };
 
+  // 打开新建/编辑课程弹窗
+  const openTaskModal = (task) => {
+    if (task) {
+      setEditingTask(task);
+      setTaskForm({
+        title: task.title || '',
+        deadline: task.deadline || '',
+        filler_role: task.filler_role || '教师',
+        pay_mode: task.pay_mode === '折算' ? '固定折算' : (task.pay_mode || '按次计酬'),
+        period_type: task.period_type || '',
+        subject: task.subject || '',
+        grade: task.grade || '',
+      });
+      setFieldList((task.form_schema || []).map((f) => ({ key: f.key, label: f.label || '', type: f.type || 'text', required: !!f.required, options: f.options || '' })));
+    } else {
+      setEditingTask(null);
+      setTaskForm({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
+      setFieldList([]);
+    }
+    setTaskModal(true);
+  };
+  const closeTaskModal = () => {
+    setTaskModal(false);
+    setEditingTask(null);
+    setTaskForm({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
+    setFieldList([]);
+  };
+
   const submitTask = async (e) => {
     e.preventDefault();
     try {
-      const res = await api.post('/applications/tasks', {
-        title: taskForm.title,
-        deadline: taskForm.deadline || null,
-        filler_role: taskForm.filler_role,
-        pay_mode: taskForm.pay_mode,
-        period_type: taskForm.period_type,
-        subject: taskForm.subject || null,
-        grade: taskForm.grade || null,
-        form_schema: fieldList.filter((f) => f.label && f.key),
-      });
-      const created = res.data.data;
-      setTaskForm({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
-      setFieldList([]);
-      toast.success('课程已创建');
+      if (editingTask) {
+        await api.patch(`/applications/tasks/${editingTask.id}`, {
+          title: taskForm.title,
+          deadline: taskForm.deadline || null,
+          filler_role: taskForm.filler_role,
+          pay_mode: taskForm.pay_mode,
+          period_type: taskForm.period_type,
+          subject: taskForm.subject || null,
+          grade: taskForm.grade || null,
+          form_schema: fieldList.filter((f) => f.label && f.key),
+        });
+        toast.success('课程已更新');
+      } else {
+        const res = await api.post('/applications/tasks', {
+          title: taskForm.title,
+          deadline: taskForm.deadline || null,
+          filler_role: taskForm.filler_role,
+          pay_mode: taskForm.pay_mode,
+          period_type: taskForm.period_type,
+          subject: taskForm.subject || null,
+          grade: taskForm.grade || null,
+          form_schema: fieldList.filter((f) => f.label && f.key),
+        });
+        const created = res.data.data;
+        toast.success('课程已创建');
+        // 自动打开分享弹层
+        if (created.share_token) openLinkModal(created);
+      }
+      closeTaskModal();
       loadTasks();
-      // 自动打开分享弹层
-      if (created.share_token) openLinkModal(created);
     } catch (e) { toast.error(errMsg(e)); }
   };
 
@@ -205,6 +248,17 @@ export default function Applications() {
   const deleteApp = async (id) => {
     if (!(await toast.confirm('确定删除该申报记录？若已通过，其已生成的上课记录（计酬）将一并删除。', { danger: true }))) return;
     try { await api.delete(`/applications/applications/${id}`); toast.success('已删除'); openApps(openTask); } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  const deleteTask = async (task) => {
+    const n = task.apply_count ?? 0;
+    const warn = n > 0 ? `该课程已有 ${n} 条填报记录，删除将一并删除这些填报及其计酬记录。` : '删除后不可恢复。';
+    if (!(await toast.confirm(`确定删除课程「${task.title}」？${warn}`, { danger: true }))) return;
+    try {
+      const r = await api.delete(`/applications/tasks/${task.id}`);
+      toast.success(`已删除（填报 ${r.data.data.removed_apps} 条）`);
+      loadTasks();
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   // ===== 字段定义器 =====
@@ -384,90 +438,32 @@ export default function Applications() {
       {tab === 'tasks' && isAdmin && (
         <>
           <div className="card">
-            <h3>新建课程（自定义申报字段 + 计酬方式 + 分享填报）</h3>
-            <form onSubmit={submitTask}>
-              <div className="form-grid">
-                <div><label>课程标题</label><input value={taskForm.title} onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })} required placeholder="如 2026 秋季竞赛辅导" /></div>
-                <div><label>年级</label>
-                  <select value={taskForm.grade} onChange={(e) => setTaskForm({ ...taskForm, grade: e.target.value })}>
-                    <option value="">请选择</option>
-                    {grades.map((g) => <option key={g} value={g}>{g}</option>)}
-                  </select>
-                </div>
-                <div><label>学科</label><input value={taskForm.subject} onChange={(e) => setTaskForm({ ...taskForm, subject: e.target.value })} placeholder="如 数学" /></div>
-                <div><label>截止日期</label><input type="date" value={taskForm.deadline} onChange={(e) => setTaskForm({ ...taskForm, deadline: e.target.value })} /></div>
-                <div><label>计酬方式</label>
-                  <select value={taskForm.pay_mode} onChange={(e) => setTaskForm({ ...taskForm, pay_mode: e.target.value, period_type: '' })}>
-                    <option value="按次计酬">按次计酬（单价 × 节数）</option>
-                    <option value="折算">折算（节数 × 系数，不计钱）</option>
-                  </select>
-                </div>
-                <div><label>{taskForm.pay_mode === '折算' ? '折算类型' : '按次计酬类型'}</label>
-                  <select value={taskForm.period_type} onChange={(e) => setTaskForm({ ...taskForm, period_type: e.target.value })}>
-                    <option value="">请选择</option>
-                    {taskForm.pay_mode === '折算'
-                      ? typeCoefs.map((t) => <option key={t.id} value={t.name}>{t.name}（系数 {t.coefficient}）</option>)
-                      : typePays.map((t) => <option key={t.id} value={t.name}>{t.name}（{t.pay}元/节）</option>)}
-                  </select>
-                </div>
-              </div>
-
-              <div className="mt">
-                <div className="toolbar" style={{ marginBottom: 8 }}>
-                  <label style={{ margin: 0 }}>自定义申报字段（教师填报时需填写）</label>
-                  <span className="spacer" />
-                  <button type="button" className="btn sm" onClick={addField}>+ 添加字段</button>
-                </div>
-                {fieldList.length === 0 && <p className="muted">尚未添加自定义字段；教师填报时只需填「课时数 + 上课日期」。</p>}
-                {fieldList.map((f, i) => (
-                  <div key={i} className="form-grid" style={{ marginBottom: 8 }}>
-                    <div><label>字段名</label><input value={f.label} onChange={(e) => setField(i, 'label', e.target.value)} placeholder="如 辅导专题" /></div>
-                    <div><label>类型</label>
-                      <select value={f.type} onChange={(e) => setField(i, 'type', e.target.value)}>
-                        <option value="text">文本</option>
-                        <option value="textarea">多行文本</option>
-                        <option value="number">数字</option>
-                        <option value="date">日期</option>
-                        <option value="select">下拉</option>
-                      </select>
-                    </div>
-                    {f.type === 'select' && (
-                      <div><label>下拉选项（逗号分隔）</label><input value={f.options} onChange={(e) => setField(i, 'options', e.target.value)} placeholder="如 高一,高二,高三" /></div>
-                    )}
-                    <div><label>必填</label>
-                      <input type="checkbox" checked={!!f.required} onChange={(e) => setField(i, 'required', e.target.checked)} />
-                    </div>
-                    <div><button type="button" className="btn sm danger" onClick={() => delField(i)}>删除</button></div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt"><button className="btn primary">创建课程并生成分享</button></div>
-            </form>
-          </div>
-
-          <div className="card">
-            <h3>课程列表</h3>
+            <div className="card-head">
+              <h3>课程列表</h3>
+              <button className="btn primary sm" onClick={() => openTaskModal(null)}>+ 新建课程</button>
+            </div>
             <table>
               <thead><tr><th>标题</th><th>年级</th><th>学科</th><th>计酬</th><th>填报</th><th>截止</th><th>操作</th></tr></thead>
               <tbody>
                 {tasks.map((t) => (
                   <tr key={t.id}>
-                    <td>{t.title}</td>
+                    <td className="strong">{t.title}</td>
                     <td>{t.grade || '-'}</td>
                     <td>{t.subject || '-'}</td>
-                    <td>{t.period_type ? (t.pay_mode === '折算' ? `${t.period_type}（折算）` : `${t.period_type}（${t.pay_rate ?? '按字典'}元/节）`) : '-'}</td>
+                    <td>{t.pay_mode === '正课折算' ? `${t.subject || '-'}（正课折算）` : t.period_type ? (t.pay_mode === '固定折算' || t.pay_mode === '折算' ? `${t.period_type}（固定折算）` : `${t.period_type}（${t.pay_rate ?? '按字典'}元/节）`) : '-'}</td>
                     <td><span className="badge">{t.apply_count ?? 0} 人</span></td>
                     <td>{t.deadline || '-'}</td>
                     <td>
-                      <div className="toolbar" style={{ marginBottom: 0 }}>
+                      <div className="toolbar" style={{ marginBottom: 0, gap: 6 }}>
                         <button className="btn sm" onClick={() => openApps(t)}>审核</button>
                         <button className="btn sm" onClick={() => openLinkModal(t)}>分享</button>
+                        <button className="btn sm" onClick={() => openTaskModal(t)}>编辑</button>
+                        <button className="btn sm danger" onClick={() => deleteTask(t)}>删除</button>
                       </div>
                     </td>
                   </tr>
                 ))}
-                {tasks.length === 0 && <tr><td colSpan={7} className="muted">暂无课程</td></tr>}
+                {tasks.length === 0 && <tr><td colSpan={7} className="muted">暂无课程，点「新建课程」创建</td></tr>}
               </tbody>
             </table>
           </div>
@@ -476,7 +472,7 @@ export default function Applications() {
             <div className="card" style={{ borderColor: 'var(--primary)' }}>
               <div className="toolbar">
                 <h3 style={{ margin: 0 }}>{openTask.title}</h3>
-                <span className="badge">{openTask.pay_mode === '折算' ? '折算' : '按次计酬'}</span>
+                <span className="badge">{openTask.pay_mode === '正课折算' ? '正课折算' : (openTask.pay_mode === '固定折算' || openTask.pay_mode === '折算' ? '固定折算' : '按次计酬')}</span>
                 <span className="spacer" />
                 <button className="btn sm" onClick={() => openLinkModal(openTask)}>分享</button>
                 <button className="btn sm" onClick={() => setOpenTask(null)}>关闭</button>
@@ -484,7 +480,7 @@ export default function Applications() {
               <p className="muted">
                 {openTask.grade ? `年级：${openTask.grade} · ` : ''}
                 {openTask.subject ? `学科：${openTask.subject} · ` : ''}
-                计酬：{openTask.period_type}（{openTask.pay_mode === '折算' ? '折算·不计钱' : '按次计酬'}）
+                计酬：{openTask.pay_mode === '正课折算' ? `${openTask.subject}（正课折算·学科+班额系数）` : `${openTask.period_type}（${openTask.pay_mode === '折算' || openTask.pay_mode === '固定折算' ? '固定折算·不计钱' : '按次计酬'}）`}
               </p>
 
               <table className="mt">
@@ -523,6 +519,83 @@ export default function Applications() {
             </div>
           )}
         </>
+      )}
+
+      {/* 课程新建/编辑弹窗 */}
+      {taskModal && (
+        <div className="modal-overlay" onClick={closeTaskModal}>
+          <div className="modal" style={{ maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>{editingTask ? '编辑课程' : '新建课程'}</h3>
+              <button className="btn ghost sm" onClick={closeTaskModal}>关闭</button>
+            </div>
+            <form onSubmit={submitTask}>
+              <div className="form-grid">
+                <div><label>课程标题</label><input value={taskForm.title} onChange={(e) => setTaskForm({ ...taskForm, title: e.target.value })} required placeholder="如 2026 秋季竞赛辅导" /></div>
+                <div><label>年级</label>
+                  <select value={taskForm.grade} onChange={(e) => setTaskForm({ ...taskForm, grade: e.target.value })}>
+                    <option value="">请选择</option>
+                    {grades.map((g) => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </div>
+                <div><label>学科</label><input value={taskForm.subject} onChange={(e) => setTaskForm({ ...taskForm, subject: e.target.value })} placeholder="如 数学" /></div>
+                <div><label>截止日期</label><input type="date" value={taskForm.deadline} onChange={(e) => setTaskForm({ ...taskForm, deadline: e.target.value })} /></div>
+                <div><label>计酬方式</label>
+                  <select value={taskForm.pay_mode} onChange={(e) => setTaskForm({ ...taskForm, pay_mode: e.target.value, period_type: '' })}>
+                    <option value="按次计酬">按次计酬（单价 × 节数）</option>
+                    <option value="固定折算">固定折算（节数 × 固定系数）</option>
+                    <option value="正课折算">正课折算（节数 ×（学科系数+班额系数））</option>
+                  </select>
+                </div>
+                {taskForm.pay_mode !== '正课折算' && (
+                  <div><label>{taskForm.pay_mode === '固定折算' ? '折算类型' : '按次计酬类型'}</label>
+                    <select value={taskForm.period_type} onChange={(e) => setTaskForm({ ...taskForm, period_type: e.target.value })}>
+                      <option value="">请选择</option>
+                      {taskForm.pay_mode === '固定折算'
+                        ? typeCoefs.map((t) => <option key={t.id} value={t.name}>{t.name}（系数 {t.coefficient}）</option>)
+                        : typePays.map((t) => <option key={t.id} value={t.name}>{t.name}（{t.pay}元/节）</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt">
+                <div className="toolbar" style={{ marginBottom: 8 }}>
+                  <label style={{ margin: 0 }}>自定义申报字段（教师填报时需填写）</label>
+                  <span className="spacer" />
+                  <button type="button" className="btn sm" onClick={addField}>+ 添加字段</button>
+                </div>
+                {fieldList.length === 0 && <p className="muted">尚未添加自定义字段；教师填报时只需填「课时数 + 上课日期」。</p>}
+                {fieldList.map((f, i) => (
+                  <div key={i} className="form-grid" style={{ marginBottom: 8 }}>
+                    <div><label>字段名</label><input value={f.label} onChange={(e) => setField(i, 'label', e.target.value)} placeholder="如 辅导专题" /></div>
+                    <div><label>类型</label>
+                      <select value={f.type} onChange={(e) => setField(i, 'type', e.target.value)}>
+                        <option value="text">文本</option>
+                        <option value="textarea">多行文本</option>
+                        <option value="number">数字</option>
+                        <option value="date">日期</option>
+                        <option value="select">下拉</option>
+                      </select>
+                    </div>
+                    {f.type === 'select' && (
+                      <div><label>下拉选项（逗号分隔）</label><input value={f.options} onChange={(e) => setField(i, 'options', e.target.value)} placeholder="如 高一,高二,高三" /></div>
+                    )}
+                    <div><label>必填</label>
+                      <input type="checkbox" checked={!!f.required} onChange={(e) => setField(i, 'required', e.target.checked)} />
+                    </div>
+                    <div><button type="button" className="btn sm danger" onClick={() => delField(i)}>删除</button></div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, marginBottom: 0 }}>
+                <button type="button" className="btn" onClick={closeTaskModal}>取消</button>
+                <button type="submit" className="btn primary">{editingTask ? '保存修改' : '创建课程并生成分享'}</button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* 分享二维码弹层 */}

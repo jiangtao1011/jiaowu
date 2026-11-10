@@ -362,6 +362,16 @@ CREATE TABLE IF NOT EXISTS applications (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+CREATE TABLE IF NOT EXISTS application_attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  application_id INTEGER NOT NULL REFERENCES applications(id),
+  filename TEXT NOT NULL,
+  stored_path TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_application_attachments_app ON application_attachments(application_id);
+
 CREATE TABLE IF NOT EXISTS work_plan (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   date TEXT NOT NULL,
@@ -476,6 +486,9 @@ ensureColumn('application_tasks', 'share_token', 'TEXT');          // 分享 tok
 ensureColumn('applications', 'form_data', 'TEXT');                 // JSON 教师填报值
 ensureColumn('applications', 'period_count', 'INTEGER NOT NULL DEFAULT 1'); // 课时数
 ensureColumn('applications', 'date', 'TEXT');                      // 上课日期（计酬必需）
+ensureColumn('applications', 'class_id', 'INTEGER REFERENCES classes(id)'); // 正课折算挂班（心理/音乐等非周期课）
+ensureColumn('applications', 'period_no', 'INTEGER');              // 节次（心理课记录第几节，不参与量）
+ensureColumn('applications', 'subject', 'TEXT');                   // 正课折算学科快照（任务未预设时由老师填报选）
 
 // 迁移：school_calendar 支持「年级级停课」——加 grade 列，并把唯一约束从 date 改为 (date, grade)。
 // 旧表是 date UNIQUE，需重建（该表本次会话刚建、生产无真实数据，重建安全）。
@@ -591,6 +604,21 @@ function seedGradeVirtualClasses() {
   }
 }
 seedGradeVirtualClasses();
+
+// 通用虚班：面向「学生个人」的课务（一对一/竞赛等），不依赖年级班级。
+// lesson_instances.class_id 是 NOT NULL，个人课务挂此通用虚班占位；computePay 对按次计酬/固定折算
+// 不读班级（仅分年级覆盖价读 gradeOf，通用虚班 grade 为空 → 回退基准价），故不影响计酬。
+function seedUniversalVirtualClass() {
+  const name = '个人课务';
+  const existing = db.prepare('SELECT id FROM classes WHERE name = ?').get(name);
+  if (!existing) {
+    db.prepare("INSERT INTO classes (name, type, student_count, grade, parent_id, subject, is_virtual) VALUES (?, '走班', 0, NULL, NULL, NULL, 1)")
+      .run(name);
+  } else {
+    db.prepare('UPDATE classes SET is_virtual = 1 WHERE id = ?').run(existing.id);
+  }
+}
+seedUniversalVirtualClass();
 
 // ===== 常规检查重构（2026-10-06）：两级归类 + 按类型维度 + 周期标记 + 备课组/教研组建模 =====
 db.exec(`

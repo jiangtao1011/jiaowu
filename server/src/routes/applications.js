@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import crypto from 'node:crypto';
 import multer from 'multer';
-import { db, logAudit } from '../db.js';
+import path from 'node:path';
+import fs from 'node:fs';
+import { db, logAudit, UPLOAD_DIR } from '../db.js';
 import { authRequired, roleRequired, ADMIN_ROLES, DIRECTOR_ROLES, CLERK_ROLES } from '../auth.js';
 import { parseSheet, keyOf, downloadTemplate } from '../template.js';
 import { publicBase } from '../share.js';
@@ -9,7 +11,29 @@ import { createDraft, getDraft, deleteDraft } from '../import-stage.js';
 
 const router = Router();
 
+// 模板/批量导入：内存存储，直接解析
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+
+// 附件：磁盘存储（一对一辅导资料等）
+const attachmentStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext}`);
+  },
+});
+const uploadAttachment = multer({ storage: attachmentStorage, limits: { fileSize: 20 * 1024 * 1024 } });
+
+// multer 磁盘存储中文名按 latin1 解码，转回 UTF-8
+function decodeName(name) {
+  return Buffer.from(name, 'latin1').toString('utf8');
+}
+
+// 日期 -> 星期几（1=周一 … 7=周日，与 schedules.day_of_week 约定一致）
+function dayOfWeekOf(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  return d.getDay() === 0 ? 7 : d.getDay();
+}
 
 // 可批量申报的角色：录入维护（admin/教务主任/教务员）+ 年级组长
 const BATCH_ROLES = [...CLERK_ROLES, '年级组长'];
@@ -642,11 +666,18 @@ router.patch('/:id/withdraw', authRequired, roleRequired(...DIRECTOR_ROLES), (re
 
 // ===== 课程申报（自定义表单 + 分享填报 + 审核计酬） =====
 
-// 校验课程计酬配置合法，返回 { ok, error } 或 { ok, period_type }。
-// 按次计酬：period_type 需命中 period_type_pays；折算：需命中 period_type_coefficients。
-function validatePayConfig(pay_mode, period_type) {
+// 校验课程计酬配置合法，返回 { ok, error }。
+// 三种计酬方式：
+//  - 按次计酬：period_type 需命中 period_type_pays（单价×节数）
+//  - 固定折算：period_type 需命中 period_type_coefficients（节数×固定系数）
+//  - 正课折算：学科系数+班额系数（节数×（学科+班额）），period_type 固定记「正课」，需有 subject
+function validatePayConfig(pay_mode, period_type, subject) {
+  if (pay_mode === '正课折算') {
+    if (!subject) return { ok: false, error: '正课折算需设置学科' };
+    return { ok: true };
+  }
   if (!period_type) return { ok: false, error: '请选择计酬类型' };
-  if (pay_mode === '折算') {
+  if (pay_mode === '折算' || pay_mode === '固定折算') {
     const hit = db.prepare('SELECT 1 FROM period_type_coefficients WHERE name = ?').get(period_type);
     return hit ? { ok: true } : { ok: false, error: `折算类型「${period_type}」不在折算字典里，请先在统计配置中添加` };
   }
@@ -657,6 +688,11 @@ function validatePayConfig(pay_mode, period_type) {
 
 // 取年级虚班 id（课程计酬挂虚班，满足 lesson_instances.class_id NOT NULL）
 // 注：复用前文早自习申报的 virtualClassIdForGrade（定义于文件头部）
+
+// 通用虚班 id（面向学生个人的课务：一对一/竞赛等，无年级时挂此占位）
+function universalVirtualClassId() {
+  return db.prepare("SELECT id FROM classes WHERE is_virtual = 1 AND (grade IS NULL OR grade = '')").get()?.id ?? null;
+}
 
 // 解析任务/填报里的 JSON 字段，容错
 function parseJSON(v, fallback) {
@@ -690,8 +726,11 @@ router.post('/tasks', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) 
   const { title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade } = req.body || {};
   if (!title) return res.status(400).json({ ok: false, error: '课程标题必填' });
 
-  const mode = pay_mode === '折算' ? '折算' : '按次计酬';
-  const v = validatePayConfig(mode, period_type);
+  // 归一化 pay_mode：旧「折算」→「固定折算」；未知/空→「按次计酬」
+  const mode = pay_mode === '折算' || pay_mode === '固定折算' ? '固定折算'
+    : pay_mode === '正课折算' ? '正课折算'
+    : '按次计酬';
+  const v = validatePayConfig(mode, period_type, subject);
   if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
 
   const schema = Array.isArray(form_schema) ? form_schema : [];
@@ -701,10 +740,10 @@ router.post('/tasks', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) 
       (title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade, share_token, created_by)
     VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(title, deadline ?? null, filler_role ?? '教师', JSON.stringify(schema),
-      mode, String(period_type).trim(), subject ?? null, grade ?? null, share_token, req.user.id);
+      mode, mode === '正课折算' ? '正课' : String(period_type || '').trim(), subject ?? null, grade ?? null, share_token, req.user.id);
 
   const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(info.lastInsertRowid);
-  logAudit(req.user.id, 'create_application_task', `application_tasks:${info.lastInsertRowid}`, `创建课程 ${title}（${mode}·${period_type}）`);
+  logAudit(req.user.id, 'create_application_task', `application_tasks:${info.lastInsertRowid}`, `创建课程 ${title}（${mode}·${mode === '正课折算' ? subject : period_type}）`);
   return res.json({ ok: true, data: { id: Number(info.lastInsertRowid), ...courseShare(req, task) } });
 });
 
@@ -716,6 +755,41 @@ router.get('/tasks/:taskId', authRequired, (req, res) => {
   return res.json({ ok: true, data: { ...task, form_schema: parseJSON(task.form_schema, []), ...courseShare(req, task) } });
 });
 
+// 编辑课程（教务主任）：标题/截止/学科/年级/计酬方式/自定义字段
+router.patch('/tasks/:taskId', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
+  const taskId = Number(req.params.taskId);
+  const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(taskId);
+  if (!task) return res.status(404).json({ ok: false, error: '课程不存在' });
+
+  const { title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade } = req.body || {};
+  const nextTitle = title !== undefined ? String(title).trim() : task.title;
+  if (!nextTitle) return res.status(400).json({ ok: false, error: '课程标题必填' });
+
+  const mode = pay_mode === '折算' || pay_mode === '固定折算' ? '固定折算'
+    : pay_mode === '正课折算' ? '正课折算'
+    : pay_mode !== undefined ? '按次计酬' : task.pay_mode;
+  const nextSubject = subject !== undefined ? (subject || null) : task.subject;
+  const nextPeriodType = period_type !== undefined ? (mode === '正课折算' ? '正课' : String(period_type || '').trim()) : task.period_type;
+  // 校验计酬配置：正课折算允许学科为空（三科合一场景，老师填报时再选学科）
+  if (mode !== '正课折算') {
+    const v = validatePayConfig(mode, nextPeriodType, nextSubject);
+    if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  }
+
+  db.prepare(`
+    UPDATE application_tasks SET title = ?, deadline = ?, filler_role = ?, form_schema = ?, pay_mode = ?, period_type = ?, subject = ?, grade = ?
+    WHERE id = ?`)
+    .run(nextTitle,
+      deadline !== undefined ? (deadline || null) : task.deadline,
+      filler_role !== undefined ? (filler_role || '教师') : task.filler_role,
+      form_schema !== undefined ? JSON.stringify(Array.isArray(form_schema) ? form_schema : []) : task.form_schema,
+      mode, nextPeriodType, nextSubject,
+      grade !== undefined ? (grade || null) : task.grade,
+      taskId);
+  logAudit(req.user.id, 'update_application_task', `application_tasks:${taskId}`, `编辑课程 ${nextTitle}`);
+  return res.json({ ok: true, data: { id: taskId } });
+});
+
 // 课程详情（按分享 token，供手机端分享页；需登录识别身份）
 router.get('/course/:token', authRequired, (req, res) => {
   const task = db.prepare('SELECT * FROM application_tasks WHERE share_token = ?').get(req.params.token);
@@ -724,23 +798,88 @@ router.get('/course/:token', authRequired, (req, res) => {
 });
 
 // 教师填报课程（手机端分享页）。teacher_id 优先取登录账号绑定的教师档案。
-router.post('/tasks/:taskId/apply', authRequired, (req, res) => {
+// 支持附件（一对一辅导资料等）；按场景字段 + 计酬方式计算「量」。
+router.post('/tasks/:taskId/apply', authRequired, uploadAttachment.array('attachments', 5), (req, res) => {
   const taskId = Number(req.params.taskId);
   const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(taskId);
   if (!task) return res.status(404).json({ ok: false, error: '课程不存在' });
 
-  const { form_data, period_count, date } = req.body || {};
+  const { form_data, period_count, date, class_id, period_no } = req.body || {};
   const teacherId = req.user.teacher_id ?? null;
   if (!teacherId) return res.status(400).json({ ok: false, error: '你的账号尚未绑定教师档案，无法申报，请联系教务员绑定' });
   if (!date) return res.status(400).json({ ok: false, error: '请填写上课日期' });
-  const count = Math.max(1, Number(period_count) || 1);
+
+  // 解析 form_data（可能已由前端 JSON 序列化）
+  let fd = form_data;
+  if (typeof fd === 'string') { try { fd = JSON.parse(fd); } catch { fd = {}; } }
+  if (fd == null) fd = {};
+
+  // ===== 场景化「量」计算 =====
+  let count = 1;
+  if (task.pay_mode === '按次计酬') {
+    // 一对一：⌈时长(分钟)/90⌉ 节，最小 1 节
+    const durationMin = Number(fd.duration ?? fd.时长 ?? 0);
+    count = Number.isFinite(durationMin) && durationMin > 0 ? Math.max(1, Math.ceil(durationMin / 90)) : 1;
+  } else if (task.pay_mode === '正课折算') {
+    // 心理课：每次固定 1 课时
+    count = 1;
+  } else {
+    // 固定折算（竞赛）：老师自填课时数（period_count 优先，其次 form_data 里的课时数）
+    const pc = Number(period_count) || Number(fd.period_count ?? fd.课时数) || 1;
+    count = Math.max(1, pc);
+  }
+
+  // 正课折算：必须选具体班级（班额系数依赖班级）
+  let resolvedClassId = class_id ? Number(class_id) : null;
+  if (task.pay_mode === '正课折算' && !resolvedClassId) {
+    return res.status(400).json({ ok: false, error: '请选择上课班级' });
+  }
+  // 正课折算学科：任务预设了学科则用任务的；否则老师填报时必选（存快照）
+  let resolvedSubject = task.subject || null;
+  if (task.pay_mode === '正课折算' && !resolvedSubject) {
+    resolvedSubject = String(fd.subject ?? '').trim() || null;
+    if (!resolvedSubject) return res.status(400).json({ ok: false, error: '请选择学科' });
+  }
+
+  // ===== 正课折算（心理/中医等）重复性检查：班级 + 日期 + 节次不能与现有课表冲突 =====
+  if (task.pay_mode === '正课折算' && resolvedClassId && period_no) {
+    const pno = Number(period_no);
+    const dow = dayOfWeekOf(date);
+    // 1) 固定课表：同班同星期同节次是否已有课（含常规/各时段）
+    const sch = db.prepare(`
+      SELECT s.id, s.subject, t.name AS teacher_name
+      FROM schedules s LEFT JOIN teachers t ON t.id = s.teacher_id
+      WHERE s.class_id = ? AND s.day_of_week = ? AND s.period_no = ? AND s.effective_to IS NULL
+      LIMIT 1`).get(resolvedClassId, dow, pno);
+    if (sch) {
+      return res.status(409).json({ ok: false, error: `该班周${'一二三四五六日'[dow - 1]}第${pno}节已有课（${sch.subject || '未命名'}，${sch.teacher_name || '未知教师'}），请换节次或班级` });
+    }
+    // 2) 已生成的上课记录（含已通过的 course/qna/加课等）：同班同日期同节次
+    const inst = db.prepare(`
+      SELECT li.id, li.subject, t.name AS teacher_name
+      FROM lesson_instances li LEFT JOIN teachers t ON t.id = li.teacher_id
+      WHERE li.class_id = ? AND li.date = ? AND li.period_no = ? AND li.cancelled = 0
+      LIMIT 1`).get(resolvedClassId, date, pno);
+    if (inst) {
+      return res.status(409).json({ ok: false, error: `该班${date}第${pno}节已有课（${inst.subject || '未命名'}，${inst.teacher_name || '未知教师'}），请换节次或班级` });
+    }
+  }
 
   const info = db.prepare(`
-    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, status, filled_by)
-    VALUES (?,?,?,?,?,?,?)`)
-    .run(taskId, teacherId, form_data != null ? JSON.stringify(form_data) : null, count, date, 'pending', req.user.id);
-  logAudit(req.user.id, 'apply_course', `applications:${info.lastInsertRowid}`, `申报课程（${task.title}）`);
-  return res.json({ ok: true, data: { id: Number(info.lastInsertRowid) } });
+    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, class_id, period_no, subject, status, filled_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(taskId, teacherId, JSON.stringify(fd), count, date, resolvedClassId,
+      period_no ? Number(period_no) : null, resolvedSubject, 'pending', req.user.id);
+
+  // 附件落盘
+  const attId = Number(info.lastInsertRowid);
+  for (const f of req.files || []) {
+    db.prepare('INSERT INTO application_attachments (application_id, filename, stored_path, size) VALUES (?,?,?,?)')
+      .run(attId, decodeName(f.originalname), f.filename, f.size || 0);
+  }
+
+  logAudit(req.user.id, 'apply_course', `applications:${attId}`, `申报课程（${task.title}）`);
+  return res.json({ ok: true, data: { id: attId } });
 });
 
 // 某课程下的填报记录
@@ -754,14 +893,26 @@ router.get('/tasks/:taskId/applications', authRequired, (req, res) => {
     LEFT JOIN users ru ON ru.id = a.reviewed_by
     WHERE a.task_id = ?
     ORDER BY a.id DESC`).all(taskId);
-  return res.json({ ok: true, data: rows.map((a) => ({ ...a, form_data: parseJSON(a.form_data, {}) })) });
+  const attStmt = db.prepare('SELECT id, filename, size FROM application_attachments WHERE application_id = ?');
+  return res.json({ ok: true, data: rows.map((a) => ({
+    ...a,
+    form_data: parseJSON(a.form_data, {}),
+    attachments: attStmt.all(a.id),
+  })) });
+});
+
+// 附件下载（登录即可，需属本申报的审核人/填报人可看；此处简化为登录可下载）
+router.get('/applications/attachments/:attId/download', authRequired, (req, res) => {
+  const att = db.prepare('SELECT * FROM application_attachments WHERE id = ?').get(Number(req.params.attId));
+  if (!att) return res.status(404).json({ ok: false, error: '附件不存在' });
+  res.download(path.join(UPLOAD_DIR, att.stored_path), att.filename);
 });
 
 // 审核课程申报：通过后生成 lesson_instances（source='course'），按课程计酬配置进统计中心。
 router.patch('/applications/:id/review', authRequired, roleRequired(...REVIEW_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const a = db.prepare(`
-    SELECT a.*, t.period_type, t.pay_mode, t.subject, t.grade AS task_grade
+    SELECT a.*, t.period_type, t.pay_mode, t.subject AS task_subject, t.grade AS task_grade
     FROM applications a JOIN application_tasks t ON t.id = a.task_id
     WHERE a.id = ?`).get(id);
   if (!a) return res.status(404).json({ ok: false, error: '申报记录不存在' });
@@ -774,21 +925,41 @@ router.patch('/applications/:id/review', authRequired, roleRequired(...REVIEW_RO
   // 审核通过：生成上课记录计酬
   let created = 0;
   if (approved) {
-    const classId = virtualClassIdForGrade(a.task_grade);
-    if (!classId) {
-      return res.status(400).json({ ok: false, error: `课程年级「${a.task_grade || '未设置'}」暂无虚拟班，请先设置课程年级` });
-    }
     if (!a.date) {
       return res.status(400).json({ ok: false, error: '该申报缺少上课日期，无法计酬' });
     }
     const count = Math.max(1, Number(a.period_count) || 1);
-    const insert = db.prepare(`
-      INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
-      VALUES (?,?,?,?,0,?, '常规', 'course', ?, ?)`);
-    for (let i = 0; i < count; i++) {
-      insert.run(classId, a.teacher_id, a.subject ?? null, a.date, a.period_type, a.id, a.course_name ?? null);
+
+    // 正课折算：挂填报的具体班级，period_type='正课'，命中 computePay 兜底（学科+班额系数）
+    if (a.pay_mode === '正课折算') {
+      const classId = a.class_id ? Number(a.class_id) : null;
+      if (!classId) {
+        return res.status(400).json({ ok: false, error: '该正课折算申报缺少班级，无法计酬' });
+      }
+      const pno = a.period_no != null ? Number(a.period_no) : 0; // 心理课填节次则落到第 N 节，否则 0（无节次）
+      const insert = db.prepare(`
+        INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
+        VALUES (?,?,?,?,?, '正课', '常规', 'course', ?, ?)`);
+      for (let i = 0; i < count; i++) {
+        insert.run(classId, a.teacher_id, a.subject ?? null, a.date, pno + i, a.id, a.course_name ?? null);
+      }
+      created = count;
+    } else {
+      // 按次计酬 / 固定折算：挂虚班占位（不读班级的计酬，仅满足 class_id NOT NULL）。
+      // 课程设了年级则挂年级虚班（保留分年级覆盖价能力）；否则挂通用虚班（个人课）。
+      let classId = a.task_grade ? virtualClassIdForGrade(a.task_grade) : null;
+      if (!classId) classId = universalVirtualClassId();
+      if (!classId) {
+        return res.status(400).json({ ok: false, error: '缺少计酬挂靠的虚班，请联系管理员初始化' });
+      }
+      const insert = db.prepare(`
+        INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
+        VALUES (?,?,?,?,0,?, '常规', 'course', ?, ?)`);
+      for (let i = 0; i < count; i++) {
+        insert.run(classId, a.teacher_id, a.task_subject ?? null, a.date, a.period_type, a.id, a.course_name ?? null);
+      }
+      created = count;
     }
-    created = count;
   }
 
   logAudit(req.user.id, 'review_application', `applications:${id}`, `审核课程申报 ${status}${created ? `，生成上课记录 ${created} 条` : ''}`);
@@ -809,16 +980,45 @@ router.patch('/applications/:id/withdraw', authRequired, roleRequired(...DIRECTO
   return res.json({ ok: true, data: { id, status: 'withdrawn', removed_instances: removed.changes } });
 });
 
-// 删除课程申报：联动删除已生成的上课记录
+// 删除课程申报：联动删除已生成的上课记录 + 附件
 router.delete('/applications/:id', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const a = db.prepare('SELECT * FROM applications WHERE id = ?').get(id);
   if (!a) return res.status(404).json({ ok: false, error: '申报记录不存在' });
 
   const removed = db.prepare('DELETE FROM lesson_instances WHERE source = ? AND source_id = ?').run('course', id);
+  // 删除附件文件 + 记录
+  const atts = db.prepare('SELECT stored_path FROM application_attachments WHERE application_id = ?').all(id);
+  for (const f of atts) { try { fs.unlinkSync(path.join(UPLOAD_DIR, f.stored_path)); } catch { /* 忽略 */ } }
+  db.prepare('DELETE FROM application_attachments WHERE application_id = ?').run(id);
   db.prepare('DELETE FROM applications WHERE id = ?').run(id);
   logAudit(req.user.id, 'delete_application', `applications:${id}`, `删除课程申报（联动删除上课记录 ${removed.changes} 条）`);
   return res.json({ ok: true, data: { id, removed_instances: removed.changes } });
+});
+
+// 删除课程任务：级联删除该课程下所有填报记录、其生成的上课记录、附件，再删课程本身。
+router.delete('/tasks/:taskId', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
+  const taskId = Number(req.params.taskId);
+  const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(taskId);
+  if (!task) return res.status(404).json({ ok: false, error: '课程不存在' });
+
+  // 该课程下所有填报记录
+  const apps = db.prepare('SELECT id FROM applications WHERE task_id = ?').all(taskId);
+  let removedInstances = 0;
+  let removedAtts = 0;
+  for (const a of apps) {
+    // 删生成的上课记录
+    removedInstances += db.prepare('DELETE FROM lesson_instances WHERE source = ? AND source_id = ?').run('course', a.id).changes;
+    // 删附件文件 + 记录
+    const atts = db.prepare('SELECT stored_path FROM application_attachments WHERE application_id = ?').all(a.id);
+    for (const f of atts) { try { fs.unlinkSync(path.join(UPLOAD_DIR, f.stored_path)); } catch { /* 忽略 */ } }
+    removedAtts += db.prepare('DELETE FROM application_attachments WHERE application_id = ?').run(a.id).changes;
+  }
+  const removedApps = db.prepare('DELETE FROM applications WHERE task_id = ?').run(taskId).changes;
+  db.prepare('DELETE FROM application_tasks WHERE id = ?').run(taskId);
+
+  logAudit(req.user.id, 'delete_application_task', `application_tasks:${taskId}`, `删除课程「${task.title}」（联动删除填报 ${removedApps} 条、上课记录 ${removedInstances} 条、附件 ${removedAtts} 个）`);
+  return res.json({ ok: true, data: { id: taskId, removed_apps: removedApps, removed_instances: removedInstances, removed_attachments: removedAtts } });
 });
 
 export default router;
