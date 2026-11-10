@@ -38,6 +38,12 @@ export default function MobileTopBar({ title, sub, todo, unread, extra, hero }) 
   if (hero) {
     return (
       <div className="mhero">
+        {hero.name ? (
+          <div className="mhero-greet">
+            <span className="mhero-greet-text">{hero.greet || '你好'}</span>
+            <span className="mhero-greet-name">{hero.name}</span>
+          </div>
+        ) : null}
         <div className="mhero-top">
           <div className="mhero-date">
             <div className="mhero-day">{hero.day}</div>

@@ -1619,6 +1619,12 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
   box-shadow: 0 6px 20px rgba(10, 63, 56, 0.22);
 }
 .mhero-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.mhero-greet {
+  display: flex; align-items: baseline; gap: 6px;
+  margin-bottom: 10px;
+}
+.mhero-greet-text { font-size: 13px; opacity: 0.85; }
+.mhero-greet-name { font-size: 17px; font-weight: 700; letter-spacing: 0.02em; }
 .mhero-date { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .mhero-day { font-size: 44px; font-weight: 800; line-height: 1; letter-spacing: -0.02em; }
 .mhero-ym { font-size: 13px; opacity: 0.85; white-space: nowrap; }

@@ -152,6 +152,8 @@ export default function MobileHome() {
       <div>
         <MobileTopBar
           hero={{
+            name: user?.name,
+            greet: '你好',
             day: dash.date_str.slice(8),
             ym: dash.date_str.slice(0, 7),
             week: '周' + '日一二三四五六'[new Date(`${dash.date_str}T00:00:00`).getDay()],
@@ -303,6 +305,8 @@ export default function MobileHome() {
     <div>
       <MobileTopBar
         hero={{
+          name: user?.name,
+          greet: '你好',
           day: dash.date_str.slice(8),
           ym: dash.date_str.slice(0, 7),
           week: '周' + '日一二三四五六'[new Date(`${dash.date_str}T00:00:00`).getDay()],
