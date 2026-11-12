@@ -21,8 +21,8 @@ export default function CourseApply() {
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   });
   // 通用
-  const [studentName, setStudentName] = useState(''); // 一对一/竞赛课：学生姓名
-  const [content, setContent] = useState('');          // 竞赛课：上课内容
+  const [studentName, setStudentName] = useState(''); // 一对一：学生姓名
+  const [values, setValues] = useState({});            // 固定折算：自定义字段值（form_schema 驱动）
   // 心理课（正课折算）
   const [classId, setClassId] = useState('');
   const [periodNo, setPeriodNo] = useState('');
@@ -31,7 +31,7 @@ export default function CourseApply() {
   // 一对一（按次计酬）
   const [duration, setDuration] = useState('');        // 时长（分钟）
   const [files, setFiles] = useState([]);              // 辅导资料附件
-  // 竞赛课（固定折算）
+  // 固定折算（监考/竞赛等）
   const [periodCount, setPeriodCount] = useState(1);   // 自填课时数
 
   useEffect(() => {
@@ -61,7 +61,10 @@ export default function CourseApply() {
 
   const isPsych = course?.pay_mode === '正课折算';      // 心理课
   const isOneToOne = course?.pay_mode === '按次计酬';    // 一对一
-  const isCompetition = course?.pay_mode === '固定折算' || course?.pay_mode === '折算'; // 竞赛课
+  const isCompetition = course?.pay_mode === '固定折算' || course?.pay_mode === '折算'; // 固定折算（监考/竞赛等）
+  const schema = course?.form_schema || [];
+
+  const setVal = (key, v) => setValues((prev) => ({ ...prev, [key]: v }));
 
   const submit = async () => {
     if (!date) return toast.error('请选择上课日期');
@@ -81,17 +84,20 @@ export default function CourseApply() {
       fd.append('form_data', JSON.stringify({ duration: Number(duration), student_name: studentName.trim() }));
       for (const f of files) fd.append('attachments', f);
     } else {
-      // 竞赛课
-      if (!studentName.trim()) return toast.error('请填写学生姓名');
-      if (!content.trim()) return toast.error('请填写上课内容');
+      // 固定折算（监考/竞赛等）：字段由 form_schema 自定义驱动，必填校验
+      for (const f of schema) {
+        if (f.required && !String(values[f.key] ?? '').trim()) {
+          return toast.error(`请填写「${f.label}」`);
+        }
+      }
       fd.append('period_count', String(periodCount));
-      fd.append('form_data', JSON.stringify({ student_name: studentName.trim(), content: content.trim() }));
+      fd.append('form_data', JSON.stringify(values));
     }
 
     try {
       await api.post(`/applications/tasks/${course.id}/apply`, fd);
       toast.success('申报已提交，待教务主任审核');
-      setStudentName(''); setContent(''); setClassId(''); setPeriodNo(''); setSubject(''); setDuration(''); setFiles([]); setPeriodCount(1);
+      setStudentName(''); setValues({}); setClassId(''); setPeriodNo(''); setSubject(''); setDuration(''); setFiles([]); setPeriodCount(1);
     } catch (e) { toast.error(errMsg(e)); }
   };
 
@@ -180,17 +186,28 @@ export default function CourseApply() {
             </>
           )}
 
-          {/* ===== 竞赛课（固定折算）===== */}
+          {/* ===== 固定折算（监考/竞赛等，字段由课程自定义）===== */}
           {isCompetition && (
             <>
-              <div className="mapply-field">
-                <label>学生姓名 *</label>
-                <input value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="如 李四" />
-              </div>
-              <div className="mapply-field">
-                <label>上课内容 *</label>
-                <textarea rows={3} value={content} onChange={(e) => setContent(e.target.value)} placeholder="如 数学竞赛辅导" />
-              </div>
+              {schema.map((f) => (
+                <div className="mapply-field" key={f.key}>
+                  <label>{f.label}{f.required ? ' *' : ''}</label>
+                  {f.type === 'textarea' ? (
+                    <textarea rows={3} value={values[f.key] || ''} onChange={(e) => setVal(f.key, e.target.value)} />
+                  ) : f.type === 'select' ? (
+                    <select className="mapply-select" value={values[f.key] || ''} onChange={(e) => setVal(f.key, e.target.value)}>
+                      <option value="">请选择</option>
+                      {(String(f.options || '').split(/[,，]/).filter(Boolean)).map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  ) : f.type === 'number' ? (
+                    <input type="number" value={values[f.key] || ''} onChange={(e) => setVal(f.key, e.target.value)} />
+                  ) : f.type === 'date' ? (
+                    <input type="date" value={values[f.key] || ''} onChange={(e) => setVal(f.key, e.target.value)} />
+                  ) : (
+                    <input value={values[f.key] || ''} onChange={(e) => setVal(f.key, e.target.value)} />
+                  )}
+                </div>
+              ))}
               <div className="mapply-field">
                 <label>课时数</label>
                 <div className="mapply-stepper">

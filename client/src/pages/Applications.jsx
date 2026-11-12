@@ -47,6 +47,11 @@ export default function Applications() {
   const [linkModal, setLinkModal] = useState(null); // 分享弹层
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [copied, setCopied] = useState(false);
+  // 固定折算课程审核时的档位覆盖（每笔待审记录 → 选中的折算档位名）
+  const [appCoefMap, setAppCoefMap] = useState({});
+  // 课程填报批量导入
+  const [courseImport, setCourseImport] = useState(null); // { task, file }
+  const [coursePreview, setCoursePreview] = useState(null); // { token, rows, summary }
 
   const loadQna = async (filter = qnaFilter) => {
     try {
@@ -236,8 +241,8 @@ export default function Applications() {
     try { setApps((await api.get(`/applications/tasks/${task.id}/applications`)).data.data); } catch (e) { toast.error(errMsg(e)); }
   };
 
-  const reviewApp = async (id, approved) => {
-    try { await api.patch(`/applications/applications/${id}/review`, { approved }); toast.success('已审核'); openApps(openTask); } catch (e) { toast.error(errMsg(e)); }
+  const reviewApp = async (id, approved, periodType) => {
+    try { await api.patch(`/applications/applications/${id}/review`, { approved, period_type: periodType }); toast.success('已审核'); openApps(openTask); } catch (e) { toast.error(errMsg(e)); }
   };
 
   const withdrawApp = async (id) => {
@@ -265,6 +270,36 @@ export default function Applications() {
   const addField = () => setFieldList([...fieldList, { key: `f${Date.now()}`, label: '', type: 'text', required: false, options: '' }]);
   const setField = (i, k, v) => { const n = [...fieldList]; n[i] = { ...n[i], [k]: v }; setFieldList(n); };
   const delField = (i) => setFieldList(fieldList.filter((_, idx) => idx !== i));
+
+  // ===== 课程填报批量导入 =====
+  const downloadCourseTemplate = async (task) => {
+    const token = localStorage.getItem('edu_token');
+    try {
+      const r = await fetch(`/api/applications/tasks/${task.id}/import-template`, { headers: { Authorization: `Bearer ${token}` } });
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `课程填报导入模板_${task.title}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+  const previewCourseImport = async () => {
+    if (!courseImport?.file) return toast.error('请先选择文件（.xlsx / .csv）');
+    const fd = new FormData();
+    fd.append('file', courseImport.file);
+    try {
+      const { token, rows, summary } = (await api.post(`/applications/tasks/${courseImport.task.id}/import/preview`, fd)).data.data;
+      setCoursePreview({ token, rows, summary });
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+  const confirmCourseImport = async (row_ids) => {
+    await api.post(`/applications/tasks/${courseImport.task.id}/import/confirm`, { token: coursePreview.token, row_ids });
+    setCourseImport(null);
+    setCoursePreview(null);
+    if (openTask?.id === courseImport.task.id) openApps(openTask);
+    toast.success('导入完成');
+  };
 
   // ===== 分享二维码 =====
   const copyToClipboard = async (text) => {
@@ -474,6 +509,7 @@ export default function Applications() {
                 <h3 style={{ margin: 0 }}>{openTask.title}</h3>
                 <span className="badge">{openTask.pay_mode === '正课折算' ? '正课折算' : (openTask.pay_mode === '固定折算' || openTask.pay_mode === '折算' ? '固定折算' : '按次计酬')}</span>
                 <span className="spacer" />
+                <button className="btn sm" onClick={() => { setCourseImport({ task: openTask, file: null }); setCoursePreview(null); }}>批量导入</button>
                 <button className="btn sm" onClick={() => openLinkModal(openTask)}>分享</button>
                 <button className="btn sm" onClick={() => setOpenTask(null)}>关闭</button>
               </div>
@@ -497,9 +533,19 @@ export default function Applications() {
                       <td><span className={`badge ${STATUS_CLS[a.status]}`}>{STATUS[a.status]}</span></td>
                       <td>
                         <div className="toolbar" style={{ marginBottom: 0 }}>
+                          {isAdmin && a.status === 'pending' && (openTask.pay_mode === '固定折算' || openTask.pay_mode === '折算') && (
+                            <select
+                              style={{ width: 140, padding: '4px 8px' }}
+                              value={appCoefMap[a.id] || openTask.period_type || ''}
+                              onChange={(e) => setAppCoefMap({ ...appCoefMap, [a.id]: e.target.value })}
+                              title="折算档位（按实际时长手工调整）"
+                            >
+                              {typeCoefs.map((t) => <option key={t.id} value={t.name}>{t.name}（{t.coefficient}）</option>)}
+                            </select>
+                          )}
                           {isAdmin && a.status === 'pending' && (
                             <>
-                              <button className="btn sm primary" onClick={() => reviewApp(a.id, true)}>通过</button>
+                              <button className="btn sm primary" onClick={() => reviewApp(a.id, true, appCoefMap[a.id])}>通过</button>
                               <button className="btn sm danger" onClick={() => reviewApp(a.id, false)}>驳回</button>
                             </>
                           )}
@@ -519,6 +565,40 @@ export default function Applications() {
             </div>
           )}
         </>
+      )}
+
+      {/* 课程填报批量导入弹窗 */}
+      {courseImport && (
+        <div className="modal-overlay" onClick={() => { setCourseImport(null); setCoursePreview(null); }}>
+          <div className="modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>批量导入「{courseImport.task.title}」填报</h3>
+              <button className="btn ghost" onClick={() => { setCourseImport(null); setCoursePreview(null); }}>关闭</button>
+            </div>
+            <div className="toolbar">
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setCourseImport({ ...courseImport, file: e.target.files[0] })} style={{ width: 'auto' }} />
+              <button className="btn primary" onClick={previewCourseImport} disabled={!courseImport.file}>预览</button>
+              <button className="btn" onClick={() => downloadCourseTemplate(courseImport.task)}>下载导入模板</button>
+            </div>
+            <p className="muted" style={{ margin: '12px 0 0' }}>
+              {courseImport.task.pay_mode === '按次计酬' ? '表头：教师、上课日期、学生姓名、时长(分钟)。' :
+               courseImport.task.pay_mode === '正课折算' ? '表头：教师、上课日期、班级、节次、学科。' :
+               '表头：教师、上课日期、学生姓名、上课内容、课时数。'}
+              导入后统一待审核。
+            </p>
+          </div>
+        </div>
+      )}
+
+      {coursePreview && (
+        <ImportPreview
+          title={`批量导入「${courseImport.task.title}」填报`}
+          columns={['教师', '上课日期', '学生/班级', '时长/节次', '学科/内容']}
+          rows={coursePreview.rows}
+          summary={coursePreview.summary}
+          onConfirm={confirmCourseImport}
+          onClose={() => setCoursePreview(null)}
+        />
       )}
 
       {/* 课程新建/编辑弹窗 */}
