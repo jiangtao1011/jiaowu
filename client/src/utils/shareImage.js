@@ -1,5 +1,5 @@
 // 生成「分享卡片图」：复刻通知分享落地页的公文版式。
-// 纯前端 Canvas 实现。关键：测量高度与绘制共用同一套折行逻辑，避免错位。
+// 纯前端 Canvas 实现。正文支持 Markdown 排版 + 图片块（异步加载后绘制）。
 
 const W = 750;
 const PAD = 48;
@@ -53,10 +53,8 @@ function wrap(ctx, segs, size, maxWidth) {
     while (text.length) {
       ctx.font = fontOf(seg, size);
       let take = text.length;
-      // 找能放下的最大前缀（至少 1 个字符）
       while (take > 0 && ctx.measureText(text.slice(0, take)).width > maxWidth - curW) take--;
       if (take === 0) {
-        // 当前行放不下任何字符 → 换行
         lines.push([]);
         curW = 0;
         continue;
@@ -70,13 +68,16 @@ function wrap(ctx, segs, size, maxWidth) {
   return lines;
 }
 
-// 把 Markdown 解析成 block 数组，每项带类型与文本
+// 把 Markdown 解析成 block 数组。图片语法 ![alt](url) 识别为 img 块。
 function mdBlocks(md) {
   if (!md) return [];
   const lines = String(md).replace(/\r\n/g, '\n').split('\n');
   const blocks = [];
   for (let raw of lines) {
     raw = raw.replace(/\s+$/, '');
+    // 图片（单独成行）
+    const img = /^!\[[^\]]*\]\(([^)]+)\)\s*$/.exec(raw);
+    if (img) { blocks.push({ type: 'img', url: img[1] }); continue; }
     if (/^\s*([-*_])\1{2,}\s*$/.test(raw)) { blocks.push({ type: 'hr' }); continue; }
     const h = /^(#{1,4})\s+(.*)$/.exec(raw);
     if (h) { blocks.push({ type: 'h', level: h[1].length, text: h[2] }); continue; }
@@ -91,30 +92,41 @@ function mdBlocks(md) {
   return blocks;
 }
 
-// 计算单个 block 的布局（折行结果 + 尺寸），测量与绘制共用
-function blockLayout(ctx, b) {
+// 加载图片（支持跨域，通知图片接口免登录），返回 HTMLImageElement 或 null
+function loadImage(url) {
+  return new Promise((resolve) => {
+    if (!url) return resolve(null);
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+// 计算单个 block 布局（图片高度需在图片加载后按宽高比算）
+function blockLayout(ctx, b, imgHeights) {
   if (b.type === 'hr') return { kind: 'hr', height: 26 };
   if (b.type === 'sp') return { kind: 'sp', height: 14 };
-
+  if (b.type === 'img') {
+    const ih = imgHeights.get(b.url) || 0; // 已按 CONTENT_W 缩放后的高度
+    return { kind: 'img', url: b.url, height: ih > 0 ? ih + 16 : 16 };
+  }
   if (b.type === 'h') {
     const size = [0, 22, 20, 18, 16][b.level] || 16;
     const lines = wrap(ctx, [{ t: b.text, b: true, i: false, c: false }], size, CONTENT_W);
     return { kind: 'h', size, lines, lineH: size + 10, height: lines.length * (size + 10) + 8 };
   }
-
   if (b.type === 'quote') {
     const size = 15;
     const lines = wrap(ctx, inlineSegs(b.text), size, CONTENT_W - 22);
     return { kind: 'quote', size, lines, lineH: 26, height: lines.length * 26 + 10 };
   }
-
   if (b.type === 'li') {
     const size = 17;
     const lines = wrap(ctx, inlineSegs(b.text), size, CONTENT_W - 24);
     return { kind: 'li', size, lines, lineH: 28, height: lines.length * 28 };
   }
-
-  // p
   const size = 17;
   const lines = wrap(ctx, inlineSegs(b.text), size, CONTENT_W);
   return { kind: 'p', size, lines, lineH: 28, height: lines.length * 28 + 6 };
@@ -130,7 +142,7 @@ function drawSegLine(ctx, segs, x, y, size) {
   }
 }
 
-function drawBlock(ctx, b, x, y) {
+function drawBlock(ctx, b, x, y, images) {
   ctx.textAlign = 'left';
   if (b.kind === 'hr') {
     const g = ctx.createLinearGradient(x, y, x + CONTENT_W, y);
@@ -143,6 +155,15 @@ function drawBlock(ctx, b, x, y) {
     return;
   }
   if (b.kind === 'sp') return;
+  if (b.kind === 'img') {
+    const img = images.get(b.url);
+    if (img) {
+      const drawW = CONTENT_W;
+      const drawH = img.naturalHeight * (CONTENT_W / img.naturalWidth);
+      ctx.drawImage(img, x, y, drawW, drawH);
+    }
+    return;
+  }
   if (b.kind === 'h') {
     ctx.fillStyle = '#1f2937';
     for (let i = 0; i < b.lines.length; i++) {
@@ -169,32 +190,42 @@ function drawBlock(ctx, b, x, y) {
     }
     return;
   }
-  // p
   for (let i = 0; i < b.lines.length; i++) {
     drawSegLine(ctx, b.lines[i], x, y + i * b.lineH + b.size, b.size);
   }
 }
 
-export function downloadShareImage({ title, sub, content, qrDataUrl, url, filename, meta }) {
+export async function downloadShareImage({ title, sub, content, qrDataUrl, url, filename, meta }) {
   if (!qrDataUrl) return;
 
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
 
-  // 1. 测量：头部 + 正文 + 底部
-  const blocks = mdBlocks(content).map((b) => blockLayout(ctx, b));
+  const rawBlocks = mdBlocks(content);
 
-  // 标题折行（宋体 26 居中）
+  // 1. 异步加载所有正文图片 + 二维码，得到尺寸
+  const images = new Map(); // url -> Image
+  const imgHeights = new Map(); // url -> 缩放后高度
+  const imgUrls = [...new Set(rawBlocks.filter((b) => b.type === 'img').map((b) => b.url))];
+  for (const u of imgUrls) {
+    const img = await loadImage(u);
+    if (img) {
+      images.set(u, img);
+      imgHeights.set(u, Math.round(img.naturalHeight * (CONTENT_W / img.naturalWidth)));
+    }
+  }
+  const qrImg = await loadImage(qrDataUrl);
+
+  // 2. 布局
+  const blocks = rawBlocks.map((b) => blockLayout(ctx, b, imgHeights));
+
   ctx.font = `bold 26px ${SERIF}`;
   const titleLines = wrap(ctx, [{ t: title || '', b: true, i: false, c: false }], 26, CONTENT_W);
 
-  // 头部高度：品牌(30) + 间距(16) + 徽章(26) + 间距(14) + 标题 + 间距(10) + meta(20) + 间距(14) + 红线(2) + 间距(22)
   let headH = 30 + 16 + 26 + 14 + titleLines.length * 34 + 10 + 20 + 14 + 2 + 22;
-
   let bodyH = 0;
   for (const b of blocks) bodyH += b.height;
 
-  // 底部：二维码 120 + 引导语 + 链接
   const QR = 120;
   const FOOTER_H = QR + 40;
   const TOP = 40;
@@ -204,13 +235,13 @@ export function downloadShareImage({ title, sub, content, qrDataUrl, url, filena
   canvas.width = W;
   canvas.height = H;
 
-  // 2. 绘制
+  // 3. 绘制
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, W, H);
 
   let y = TOP;
 
-  // 品牌（圆标 + 文字，整体水平居中，模拟落地页 .n-brand）
+  // 品牌
   {
     const brandText = '课程中心 · 教务管理';
     ctx.textAlign = 'left';
@@ -218,10 +249,7 @@ export function downloadShareImage({ title, sub, content, qrDataUrl, url, filena
     const textW = ctx.measureText(brandText).width;
     const markSize = 24;
     const gap = 8;
-    const totalW = markSize + gap + textW;
-    const startX = (W - totalW) / 2;
-
-    // 圆标（墨绿底白字「教」）
+    const startX = (W - (markSize + gap + textW)) / 2;
     const markY = y + 2;
     ctx.fillStyle = '#167d6f';
     roundRect(ctx, startX, markY, markSize, markSize, 6);
@@ -230,16 +258,12 @@ export function downloadShareImage({ title, sub, content, qrDataUrl, url, filena
     ctx.font = `bold 13px ${SANS}`;
     ctx.textAlign = 'center';
     ctx.fillText('教', startX + markSize / 2, markY + 17);
-
-    // 品牌文字
     ctx.textAlign = 'left';
     ctx.fillStyle = '#6b7280';
     ctx.font = `12.5px ${SANS}`;
     ctx.fillText(brandText, startX + markSize + gap, y + 17);
     y += 30 + 16;
   }
-
-  // 后续徽章/标题/meta 都是居中，显式恢复 textAlign
   ctx.textAlign = 'center';
 
   // 徽章
@@ -253,7 +277,7 @@ export function downloadShareImage({ title, sub, content, qrDataUrl, url, filena
     y += 26 + 14;
   }
 
-  // 标题（居中，宋体）
+  // 标题
   ctx.fillStyle = '#1f2937';
   ctx.font = `bold 26px ${SERIF}`;
   for (let i = 0; i < titleLines.length; i++) {
@@ -282,7 +306,7 @@ export function downloadShareImage({ title, sub, content, qrDataUrl, url, filena
   // 正文
   ctx.textAlign = 'left';
   for (const b of blocks) {
-    drawBlock(ctx, b, PAD, y);
+    drawBlock(ctx, b, PAD, y, images);
     y += b.height;
   }
 
@@ -298,7 +322,6 @@ export function downloadShareImage({ title, sub, content, qrDataUrl, url, filena
   ctx.fillStyle = '#167d6f';
   ctx.font = `bold 16px ${SANS}`;
   ctx.fillText('长按识别二维码，或复制链接打开', PAD, footerTop + 30);
-
   ctx.fillStyle = '#6b7280';
   ctx.font = `13px ${SANS}`;
   ctx.fillText(url || '', PAD, footerTop + 54);
@@ -308,17 +331,13 @@ export function downloadShareImage({ title, sub, content, qrDataUrl, url, filena
   const qy = footerTop + 20;
   ctx.fillStyle = '#f5f6f8';
   ctx.fillRect(qx - 6, qy - 6, QR + 12, QR + 12);
+  if (qrImg) ctx.drawImage(qrImg, qx, qy, QR, QR);
 
-  const img = new Image();
-  img.onload = () => {
-    ctx.drawImage(img, qx, qy, QR, QR);
-    canvas.toBlob((blob) => {
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = filename || '分享图.png';
-      a.click();
-      URL.revokeObjectURL(a.href);
-    }, 'image/png');
-  };
-  img.src = qrDataUrl;
+  canvas.toBlob((blob) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename || '分享图.png';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, 'image/png');
 }
