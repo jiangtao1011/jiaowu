@@ -5,6 +5,7 @@ import remarkBreaks from 'remark-breaks';
 import QRCode from 'qrcode';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import { downloadShareImage } from '../utils/shareImage.js';
 
 const TYPE_STYLES = {
   课务调整: 'info',
@@ -200,6 +201,22 @@ export default function Notices() {
     a.click();
   };
 
+  // 下载分享图（复刻通知落地页公文版式）
+  const downloadShare = () => {
+    if (!qrDataUrl) return;
+    const url = linkModal.share_url || `${window.location.origin}/n/${linkModal.share_token}`;
+    const dateStr = (linkModal.published_at || linkModal.created_at || '').slice(0, 10);
+    downloadShareImage({
+      title: linkModal.title,
+      sub: linkModal.type,
+      content: linkModal.content || '',
+      meta: `${linkModal.creator_name || '教务主任'} 发布 · ${dateStr}`,
+      qrDataUrl,
+      url,
+      filename: `通知分享_${linkModal?.title || '分享'}.png`,
+    });
+  };
+
   const openDetail = async (id) => {
     setError('');
     try {
@@ -352,6 +369,7 @@ export default function Notices() {
                   <button className="btn primary" onClick={() => copyText(linkModal)}>{copied ? '已复制 ✓' : '复制整段文案'}</button>
                   <button className="btn" onClick={() => copyLink(linkModal)}>复制链接</button>
                   <button className="btn" onClick={downloadQr} disabled={!qrDataUrl}>下载二维码</button>
+                  <button className="btn" onClick={downloadShare} disabled={!qrDataUrl}>下载分享图</button>
                 </div>
                 {linkModal.publish_status !== 'published' && (
                   <div className="toolbar" style={{ marginTop: 10, marginBottom: 0 }}>

@@ -4,6 +4,7 @@ import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
 import { DIRECTOR_ROLES } from '../roles.js';
 import ImportPreview from '../components/ImportPreview.jsx';
+import { downloadShareImage } from '../utils/shareImage.js';
 
 const STATUS = { pending: '待年级组长审核', grade_approved: '待课程中心终审', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', grade_approved: 'info', approved: 'ok', rejected: '', withdrawn: 'info' };
@@ -342,6 +343,18 @@ export default function Applications() {
     a.href = qrDataUrl;
     a.download = `课程二维码_${linkModal?.title || '课程'}.png`;
     a.click();
+  };
+  const downloadShare = () => {
+    if (!qrDataUrl) return;
+    const url = linkModal.share_url || `${window.location.origin}/course/${linkModal.share_token}`;
+    downloadShareImage({
+      title: linkModal.title,
+      sub: '课程申报 · 老师扫码填报',
+      content: '',
+      qrDataUrl,
+      url,
+      filename: `课程分享_${linkModal?.title || '课程'}.png`,
+    });
   };
 
   // 课务申报：admin/教务主任 全权；年级组长仅一审本年级申报
@@ -697,6 +710,7 @@ export default function Applications() {
                 <div className="toolbar" style={{ marginTop: 8 }}>
                   <button className="btn primary sm" onClick={copyLink}>{copied ? '已复制' : '复制链接'}</button>
                   <button className="btn sm" onClick={downloadQr} disabled={!qrDataUrl}>下载二维码</button>
+                  <button className="btn sm" onClick={downloadShare} disabled={!qrDataUrl}>下载分享图</button>
                 </div>
               </div>
             </div>
