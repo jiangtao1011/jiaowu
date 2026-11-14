@@ -204,31 +204,44 @@ function parseImportOptions(body) {
 }
 
 // 一个业务槽位（同一节课）的标识：班级+星期+节次+类型+时段+补课套号。
-// 追加导入（带生效日期）时，新课表从生效日起接管这些槽位，需关闭同槽位的旧版本。
+// 仅用于差异对比/去重等场景；「追加带日期」的旧表关闭已改为按「班级×时段」整体关闭（见下）。
 const slotKeyOf = (record, makeupSet) =>
   `${record.class_id}|${record.day_of_week}|${record.period_no}|${record.period_type}|${record.term}|${makeupSet ?? ''}`;
 
-// 追加带生效日期时，找出本次导入涉及的同槽位、当前仍生效（effective_to IS NULL）的旧版本 id
-function findAppendOldIds(slotKeys) {
-  if (!slotKeys || !slotKeys.size) return [];
-  const sel = db.prepare(`SELECT id FROM schedules WHERE effective_to IS NULL
-    AND class_id = ? AND day_of_week = ? AND period_no = ? AND period_type = ? AND term = ?
-    AND IFNULL(makeup_set, -1) = ?`);
-  const ids = [];
-  for (const k of slotKeys) {
-    const [class_id, day_of_week, period_no, period_type, term, makeup_set] = k.split('|');
-    for (const r of sel.all(Number(class_id), Number(day_of_week), Number(period_no), period_type, term, makeup_set === '' ? -1 : Number(makeup_set))) {
-      ids.push(r.id);
-    }
+// 从一批待入库记录里提取「追加带日期」的关闭范围：
+//   classIds = 文件涉及的班级；terms = 涉及的时段（排除节假补课，补课课表是独立的一套）。
+function collectAppendScope(records) {
+  const classIds = new Set();
+  const terms = new Set();
+  for (const r of records) {
+    classIds.add(r.record.class_id);
+    if (r.record.term !== '节假补课') terms.add(r.record.term);
   }
-  return ids;
+  return { classIds, terms };
+}
+
+// 追加带生效日期时，找出需关闭的旧课表记录：
+// 「本次涉及的班级 × 本次涉及的时段」下，当前仍生效、且生效日早于本次生效日的所有记录。
+// 语义 = 从生效日起，这些班级的课表就是文件里的状态；文件未覆盖到的旧课视为被移除，一并关闭。
+function findAppendOldIds(classIds, terms, effectiveFrom) {
+  if (!classIds.size || !terms.size || !effectiveFrom) return [];
+  const cph = [...classIds].map(() => '?').join(',');
+  const tph = [...terms].map(() => '?').join(',');
+  return db.prepare(`
+    SELECT id FROM schedules
+    WHERE effective_to IS NULL
+      AND class_id IN (${cph})
+      AND term IN (${tph})
+      AND (effective_from IS NULL OR effective_from < ?)`)
+    .all(...classIds, ...terms, effectiveFrom)
+    .map((r) => r.id);
 }
 
 // 计算「将关闭旧课表 N 条」（只读，不执行 UPDATE）。
-// 替换模式：关闭范围内全部旧记录；追加带生效日期：只关闭同槽位旧版本。
-function countCloseSchedules(opts, slotKeys) {
+// 替换模式：关闭范围内全部旧记录；追加带生效日期：关闭涉及的班级×时段下的旧版本。
+function countCloseSchedules(opts, classIds, terms) {
   if (!opts.effectiveFrom) return 0;
-  if (opts.scope === 'append') return findAppendOldIds(slotKeys).length;
+  if (opts.scope === 'append') return findAppendOldIds(classIds, terms, opts.effectiveFrom).length;
   let sql = 'SELECT COUNT(*) AS n FROM schedules WHERE effective_to IS NULL';
   const params = [opts.effectiveFrom];
   if (opts.scope === 'grade' && opts.scopeGrade) {
@@ -286,11 +299,12 @@ function persistSchedule(record, opts) {
 
 // 关闭旧表（confirm 阶段执行）：
 //   替换模式（scope≠append）：关闭范围内的全部旧记录；
-//   追加带生效日期（scope=append + effectiveFrom）：只关闭本次导入涉及的同槽位旧版本，实现「按时间节点换表」。
-function closeOldSchedules(opts, slotKeys) {
+//   追加带生效日期（scope=append + effectiveFrom）：关闭涉及的「班级 × 时段」下的旧版本，
+//     使这些班级从生效日起课表 = 文件内容（文件未覆盖的旧课视为被移除）。
+function closeOldSchedules(opts, classIds, terms) {
   if (!opts.effectiveFrom) return 0;
   if (opts.scope === 'append') {
-    const ids = findAppendOldIds(slotKeys);
+    const ids = findAppendOldIds(classIds, terms, opts.effectiveFrom);
     if (!ids.length) return 0;
     const upd = db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?');
     for (const id of ids) upd.run(opts.effectiveFrom, id);
@@ -361,14 +375,14 @@ router.post('/import/preview', roleRequired(...CLERK_ROLES), upload.single('file
     }
   }
 
-  // 追加带生效日期时，收集本次涉及的业务槽位，用于计算将关闭的同槽位旧版本数
-  const slotKeys = new Set(draftRows.filter((r) => r.status === 'ok').map((r) => slotKeyOf(r.record, opts.makeupSet)));
+  // 追加带生效日期时，收集本次涉及的班级×时段，用于计算将关闭的旧课表数
+  const { classIds, terms } = collectAppendScope(draftRows.filter((r) => r.status === 'ok'));
   const summary = {
     total: rows.length,
     ok: draftRows.filter((r) => r.status === 'ok').length,
     duplicate: draftRows.filter((r) => r.status === 'duplicate').length,
     error: draftRows.filter((r) => r.status === 'error').length,
-    close_count: countCloseSchedules(opts, slotKeys),
+    close_count: countCloseSchedules(opts, classIds, terms),
   };
 
   const token = createDraft('schedules', req.user.id, { rows: draftRows, options: opts });
@@ -385,9 +399,9 @@ router.post('/import/confirm', roleRequired(...CLERK_ROLES), (req, res) => {
   const selected = new Set(Array.isArray(row_ids) ? row_ids.map(Number) : []);
   const targets = draft.payload.rows.filter((r) => r.status === 'ok' && selected.has(r.row_id));
 
-  // 先执行「关旧表」（替换模式关全部；追加带生效日期关同槽位旧版本）
-  const slotKeys = new Set(targets.map((r) => slotKeyOf(r.record, opts.makeupSet)));
-  const closed = closeOldSchedules(opts, slotKeys);
+  // 先执行「关旧表」（替换模式关全部；追加带生效日期关涉及的班级×时段旧版本）
+  const { classIds, terms } = collectAppendScope(targets);
+  const closed = closeOldSchedules(opts, classIds, terms);
 
   let inserted = 0;
   const errors = [];
@@ -448,12 +462,18 @@ router.post('/import', roleRequired(...CLERK_ROLES), upload.single('file'), (req
     typePayNames, existsMakeup, makeupSet: opts.makeupSet, scope: opts.scope,
   };
 
-  const closed = closeOldSchedules(opts);
-  let inserted = 0;
+  // 先解析出可入库的记录，再据此决定关闭范围（追加带日期按「班级×时段」关闭）
+  const parsed = [];
   const errors = [];
   for (let i = 0; i < rows.length; i++) {
     const r = buildScheduleRecord(rows[i], ctx);
     if (!r.ok) { if (!r.duplicate) errors.push(`第 ${i + 2} 行 ${r.reason}`); continue; }
+    parsed.push(r);
+  }
+  const { classIds, terms } = collectAppendScope(parsed);
+  const closed = closeOldSchedules(opts, classIds, terms);
+  let inserted = 0;
+  for (const r of parsed) {
     persistSchedule(r.record, opts);
     inserted++;
   }
