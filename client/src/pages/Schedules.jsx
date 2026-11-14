@@ -7,6 +7,13 @@ const DAYS = ['周一', '周二', '周三', '周四', '周五', '周六', '周�
 const TERMS = ['常规', '夏令营', '冬令营', '全员夏令营', '全员冬令营', '节假补课'];
 const FORM_LABEL = { 行政班: '行政班', 分层: '分层', 走班: '走班', 走班分层: '走班分层' };
 
+// 今天（本地日期 YYYY-MM-DD）
+function todayStr() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 // 科目简称对照表（格子内容过多时用简称）
 const ABBR = {
   政治: '政', 生物: '生', 通用技术: '通', 通用: '通', 技术: '技', 地理: '地', 历史: '史',
@@ -115,6 +122,54 @@ function PrintScheduleSheet({ title, gridRows }) {
   );
 }
 
+// 版本时间轴：列出课表换表节点（effective_from 聚合），点节点跳到那天快照。
+// 大节点（记录数 ≥ 阈值）= 一次换表；小节点 = 代课/调课等零星调整。
+const VERSION_THRESHOLD = 20;
+
+function VersionTimeline({ versions, current, onJump }) {
+  if (!versions || versions.length === 0) return null;
+  const sorted = [...versions].sort((a, b) => a.effective_from.localeCompare(b.effective_from));
+  const cur = current || ''; // '' = 最新
+
+  return (
+    <div className="version-timeline">
+      <div className="vt-label">课表版本</div>
+      <div className="vt-track">
+        {sorted.map((v, i) => {
+          const big = v.count >= VERSION_THRESHOLD;
+          const gradeList = Object.keys(v.grades || {}).sort();
+          const scopeLabel = gradeList.length === 0 ? '' : gradeList.length >= 3 ? '全校' : gradeList.join('/');
+          // 当前日期落在哪个节点「之后」（含该节点起）→ 该节点为活跃起点
+          const isCurrentNode = big && (() => {
+            if (!cur) return i === sorted.filter((x) => x.count >= VERSION_THRESHOLD).length - 1; // 最新=最后一个大节点
+            return v.effective_from <= cur && (!sorted[i + 1] || sorted[i + 1].effective_from > cur);
+          })();
+          return (
+            <button
+              key={v.effective_from}
+              className={`vt-node ${big ? 'big' : 'small'} ${isCurrentNode ? 'active' : ''}`}
+              onClick={() => onJump(v.effective_from)}
+              title={`${v.effective_from} 生效${scopeLabel ? ' · ' + scopeLabel : ''} · ${v.count} 条`}
+            >
+              <span className="vt-dot" />
+              <span className="vt-date">{v.effective_from.slice(5)}</span>
+              {big && scopeLabel && <span className="vt-scope">{scopeLabel}</span>}
+            </button>
+          );
+        })}
+        <button
+          className={`vt-node latest ${!cur ? 'active' : ''}`}
+          onClick={() => onJump('')}
+          title="当前最新课表"
+        >
+          <span className="vt-dot" />
+          <span className="vt-date">最新</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Schedules() {
   const toast = useToast();
   const [rows, setRows] = useState([]);
@@ -142,6 +197,11 @@ export default function Schedules() {
   const [printSchedule, setPrintSchedule] = useState(null); // 打印课表 { title, gridRows }
   const [focusClass, setFocusClass] = useState(''); // 下钻的单班 id（空=总览缩略图）
   const [makeupTab, setMakeupTab] = useState(null); // 补课课表当前套号（null=未选，选第一个）
+  const [asOf, setAsOf] = useState(''); // 课表快照日期（空=最新）
+  const [compareMode, setCompareMode] = useState(false); // 对比模式开关
+  const [compareBase, setCompareBase] = useState(''); // 对比基准日期 A（对比目标=asOf）
+  const [versions, setVersions] = useState([]); // 版本切换点（时间轴）
+  const [baseRows, setBaseRows] = useState(null); // 对比基准日期 A 的课表（null=未拉取）
 
   const load = async () => {
     try {
@@ -199,16 +259,68 @@ export default function Schedules() {
       if (classId) params.class_id = classId;
       if (grade) params.grade = grade;
       if (term) params.term = term;
+      if (asOf) params.as_of = asOf;
       setRows((await api.get('/schedules', { params })).data.data);
     } catch (e) { setError(errMsg(e)); }
   };
-  useEffect(() => { loadSchedules(); }, [classId, grade, term]);
+  useEffect(() => { loadSchedules(); }, [classId, grade, term, asOf]);
+
+  // 拉取版本切换点（时间轴），并自动定位到「当前最新」所在的最新版本
+  const loadVersions = async () => {
+    try {
+      const data = (await api.get('/schedules/versions')).data.data || [];
+      setVersions(data);
+    } catch (e) { /* 时间轴失败不影响主课表 */ }
+  };
+  useEffect(() => { loadVersions(); }, []);
+
+  // 拉取对比基准日期 A 的课表
+  const loadBaseRows = async () => {
+    if (!compareMode || !compareBase || !asOf) { setBaseRows(null); return; }
+    try {
+      const params = {};
+      if (classId) params.class_id = classId;
+      if (grade) params.grade = grade;
+      if (term) params.term = term;
+      params.as_of = compareBase;
+      setBaseRows((await api.get('/schedules', { params })).data.data);
+    } catch (e) { setBaseRows(null); }
+  };
+  useEffect(() => { loadBaseRows(); }, [compareMode, compareBase, asOf, classId, grade, term]);
 
   const grades = [...new Set(classes.map((c) => c.grade).filter(Boolean))].sort();
   const classById = new Map(classes.map((c) => [c.id, c]));
 
-  // 一条课表记录映射到的「行政班」集合：
-  //   行政班自身 -> 自己；分层 -> 其父行政班；走班/走班分层 -> 其合班的各个行政班
+  // 对比模式是否有效（基准与目标都选了且不同）
+  const comparing = compareMode && compareBase && asOf && compareBase !== asOf;
+
+  // 业务槽位键（与后端差异判定一致）
+  const slotKey = (r) => `${r.class_id}|${r.day_of_week}|${r.period_no}|${r.period_type}|${r.term}|${r.makeup_set ?? ''}`;
+
+  // 对比差异表：当前课表（B=asOf）每条记录 → diff 类型（新增/变更/无变化）；
+  // baseOnlyKeys 收集「基准 A 有、B 无」的已删槽位，供幽灵块占位。
+  const diffInfo = (() => {
+    if (!comparing || !baseRows) return { byId: new Map(), baseOnly: new Map() };
+    const baseByKey = new Map();
+    for (const r of baseRows) {
+      const k = slotKey(r);
+      if (!baseByKey.has(k) || (r.effective_from ?? '') > (baseByKey.get(k).effective_from ?? '')) baseByKey.set(k, r);
+    }
+    const byId = new Map();
+    for (const r of rows) {
+      const k = slotKey(r);
+      const b = baseByKey.get(k);
+      if (!b) byId.set(r.id, '新增');
+      else if (b.subject !== r.subject || b.teacher_id !== r.teacher_id) byId.set(r.id, '变更');
+    }
+    const baseOnly = new Map();
+    const curKeys = new Set(rows.map(slotKey));
+    for (const [k, b] of baseByKey) if (!curKeys.has(k)) baseOnly.set(k, b);
+    return { byId, baseOnly };
+  })();
+
+  // 历史快照 / 对比模式下是否只读（禁止拖拽调课、代课、停课等写入操作）
+  const readOnly = compareMode || (asOf && asOf !== '');
   const adminIdsOf = (r) => {
     const cls = classById.get(r.class_id);
     if (!cls) return [];
@@ -332,7 +444,7 @@ export default function Schedules() {
 
   // 走班课块（简称色块）
   const renderWalk = (s) => (
-    <span key={s.id} className="abbr-chip" title={`${s.class_name} · ${s.subject} · ${s.teacher_name}`}>
+    <span key={s.id} className={`abbr-chip ${comparing ? `diff-${diffInfo.byId.get(s.id) || 'same'}` : ''}`} title={`${s.class_name} · ${s.subject} · ${s.teacher_name}`}>
       {cellLabel(s)}
     </span>
   );
@@ -341,11 +453,11 @@ export default function Schedules() {
   const renderRegular = (s, stacked) => (
     <div
       key={s.id}
-      className={`sch pt-${s.period_type}`}
-      draggable
-      onDragStart={() => setDrag(s.id)}
+      className={`sch pt-${s.period_type} ${comparing ? `diff-${diffInfo.byId.get(s.id) || 'same'}` : ''}`}
+      draggable={!readOnly}
+      onDragStart={() => { if (!readOnly) setDrag(s.id); }}
       onDragOver={(e) => e.preventDefault()}
-      onDrop={() => onDrop(s.id)}
+      onDrop={() => { if (!readOnly) onDrop(s.id); }}
       title={`${s.class_name} · ${s.subject} · ${s.teacher_name}${s.term && s.term !== '常规' ? ' · ' + s.term : ''}`}
       style={drag === s.id ? { opacity: 0.5 } : undefined}
     >
@@ -355,9 +467,17 @@ export default function Schedules() {
     </div>
   );
 
+  // 已删课的幽灵块（对比模式下，基准日期有、目标日期无的课）
+  const renderGhost = (s) => (
+    <div key={`ghost-${s.id}`} className="sch ghost" title={`${s.class_name} · ${s.subject} · ${s.teacher_name}（已删）`}>
+      <span className="sub">{cellLabel(s)}</span>
+      <span className="ghost-tag">已删</span>
+    </div>
+  );
+
   // 某个 (day, period) 格子的内容
   const isWalk = (r) => r.form === '走班' || r.form === '走班分层';
-  const renderCell = (cellRows) => {
+  const renderCell = (cellRows, ghostRows) => {
     const walk = cellRows.filter(isWalk);
     const regular = cellRows.filter((r) => !isWalk(r));
     return (
@@ -368,6 +488,7 @@ export default function Schedules() {
             ? <div className="sch-stack">{regular.map((r) => renderRegular(r, true))}</div>
             : null}
         {walk.length > 0 && <div className="abbr-chips">{walk.map(renderWalk)}</div>}
+        {ghostRows && ghostRows.length > 0 && <div className="ghost-chips">{ghostRows.map(renderGhost)}</div>}
       </React.Fragment>
     );
   };
@@ -379,10 +500,21 @@ export default function Schedules() {
   };
 
   // 渲染一张完整网格
-  const renderGrid = (gridRows, title, readonly = false) => {
+  const renderGrid = (gridRows, title, adminClassId = null) => {
     const maxPeriod = Math.max(1, ...gridRows.map((r) => r.period_no));
     const periods = Array.from({ length: maxPeriod }, (_, i) => i + 1);
     const days = activeDays(gridRows);
+    // 对比模式下，找出属于该行政班、且已被删（基准有、目标无）的课，用于幽灵块占位
+    const ghostByCell = new Map();
+    if (comparing && adminClassId != null) {
+      for (const b of diffInfo.baseOnly.values()) {
+        if (adminIdsOf(b).includes(adminClassId)) {
+          const k = `${b.day_of_week}|${b.period_no}`;
+          if (!ghostByCell.has(k)) ghostByCell.set(k, []);
+          ghostByCell.get(k).push(b);
+        }
+      }
+    }
     return (
       <div>
         <div className="grid-title">{title}</div>
@@ -394,11 +526,12 @@ export default function Schedules() {
               <div className="cell head">第{p}节</div>
               {days.map((d) => {
                 const cellRows = gridRows.filter((r) => r.period_no === p && r.day_of_week === d);
-                if (!cellRows.length) return <div key={d} className="cell"><span className="muted">空</span></div>;
+                const ghosts = ghostByCell.get(`${d}|${p}`) || [];
+                if (!cellRows.length && !ghosts.length) return <div key={d} className="cell"><span className="muted">空</span></div>;
                 return (
-                  <div key={d} className={`cell ${readonly ? '' : 'clickable'}`}
-                    onClick={() => !readonly && setDetail({ title, day: d - 1, period: p, rows: cellRows })}>
-                    {renderCell(cellRows)}
+                  <div key={d} className={`cell ${readOnly ? '' : 'clickable'}`}
+                    onClick={() => !readOnly && setDetail({ title, day: d - 1, period: p, rows: cellRows })}>
+                    {renderCell(cellRows, ghosts)}
                   </div>
                 );
               })}
@@ -426,14 +559,21 @@ export default function Schedules() {
             <div className="thumb-period">{p}</div>
             {days.map((d) => {
               const cell = gridRows.filter((r) => r.period_no === p && r.day_of_week === d);
-              if (!cell.length) return <div key={d} className="thumb-cell empty" />;
+              const ghostCount = comparing ? [...diffInfo.baseOnly.values()].filter((b) => adminIdsOf(b).includes(ac.id) && b.day_of_week === d && b.period_no === p).length : 0;
+              if (!cell.length && !ghostCount) return <div key={d} className="thumb-cell empty" />;
               return (
                 <div key={d} className="thumb-cell">
-                  {cell.slice(0, 2).map((s) => (
-                    <span key={s.id} className="thumb-chip" style={{ background: subjectColor(s.subject) }} title={`${s.subject} · ${s.teacher_name}`}>
-                      {abbr(baseSubject(s.subject))}
-                    </span>
-                  ))}
+                  {cell.slice(0, 2).map((s) => {
+                    const diff = diffInfo.byId.get(s.id);
+                    const bg = comparing && diff ? (diff === '新增' ? '#d8f0d8' : diff === '变更' ? '#f8e9bd' : subjectColor(s.subject)) : subjectColor(s.subject);
+                    const color = comparing && diff ? '#333' : '#fff';
+                    return (
+                      <span key={s.id} className="thumb-chip" style={{ background: bg, color }} title={`${s.subject} · ${s.teacher_name}${comparing && diff ? ' · ' + diff : ''}`}>
+                        {abbr(baseSubject(s.subject))}
+                      </span>
+                    );
+                  })}
+                  {ghostCount > 0 && <span className="thumb-chip thumb-ghost" title="已删">{ghostCount > 1 ? `-${ghostCount}` : '—'}</span>}
                   {cell.length > 2 && <span className="thumb-more">+{cell.length - 2}</span>}
                 </div>
               );
@@ -496,11 +636,11 @@ export default function Schedules() {
         </div>
         <div className="focus-main">
           <div className="toolbar" style={{ marginBottom: 8 }}>
-            <span className="hint">{ac.name} · 点击格子看详情 · 拖拽调课</span>
+            <span className="hint">{ac.name} · {readOnly ? '历史/对比只读' : '点击格子看详情 · 拖拽调课'}</span>
             <span className="spacer" />
-            <button className="btn sm" onClick={() => setPrintSchedule({ title: `${ac.name}${ac.grade ? ' · ' + ac.grade : ''}`, gridRows })}>打印课表</button>
+            <button className="btn sm" onClick={() => setPrintSchedule({ title: `${ac.name}${ac.grade ? ' · ' + ac.grade : ''}${asOf ? ' · ' + asOf : ''}`, gridRows })}>打印课表</button>
           </div>
-          {renderGrid(gridRows, `${ac.name}${ac.grade ? ' · ' + ac.grade : ''}`)}
+          {renderGrid(gridRows, `${ac.name}${ac.grade ? ' · ' + ac.grade : ''}`, ac.id)}
         </div>
       </div>
     );
@@ -690,10 +830,43 @@ export default function Schedules() {
                 <option value="">全部时段</option>
                 {TERMS.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
-              {focusClass && <span className="hint">{classById.get(Number(focusClass))?.name} · 点击格子看详情 · 拖拽调课</span>}
-              {!focusClass && <span className="hint">点击班级缩略图查看完整课表</span>}
+              <span className="spacer" />
+              {/* 日期控件组 */}
+              <button className={`btn sm ${!asOf && !compareMode ? 'primary' : ''}`} onClick={() => { setAsOf(''); setCompareMode(false); setCompareBase(''); }} title="显示当前最新课表">最新</button>
+              <button className={`btn sm ${asOf === todayStr() && !compareMode ? 'primary' : ''}`} onClick={() => { setCompareMode(false); setAsOf(todayStr()); }}>今天</button>
+              <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} title="课表快照日期（留空=最新）" />
+              <button className={`btn sm ${compareMode ? 'primary' : ''}`} onClick={() => setCompareMode(!compareMode)} title="对比两个日期的课表差异">对比</button>
             </div>
-            {rows.length === 0 ? <p className="muted">暂无课表数据，请先导入。</p> : (focusClass ? renderFocus() : renderOverview())}
+
+            {compareMode && (
+              <div className="toolbar" style={{ marginTop: 6 }}>
+                <span className="hint">对比基准（A）</span>
+                <input type="date" value={compareBase} onChange={(e) => setCompareBase(e.target.value)} />
+                <span className="hint">对比目标（B = 上方所选日期）</span>
+                {compareBase && asOf && compareBase === asOf && <span className="hint warn">基准与目标日期相同</span>}
+                {compareBase && asOf && compareBase > asOf && <span className="hint warn">A 晚于 B，差异方向为「B 相对 A」</span>}
+                <span className="spacer" />
+                {comparing && (
+                  <span className="hint">
+                    图例：
+                    <span className="legend-chip diff-新增">新增</span>
+                    <span className="legend-chip diff-变更">变更</span>
+                    <span className="legend-chip diff-已删">已删</span>
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* 版本时间轴 */}
+            <VersionTimeline versions={versions} current={asOf} onJump={(d) => { setCompareMode(false); setAsOf(d); }} />
+
+            {readOnly && !compareMode && (
+              <p className="muted" style={{ margin: '6px 0 0', fontSize: 12.5 }}>当前为历史快照（{asOf}），只读；回到「最新」才能调整。</p>
+            )}
+            {focusClass && <span className="hint" style={{ display: 'block', marginTop: 6 }}>{classById.get(Number(focusClass))?.name} · {readOnly ? '历史/对比只读' : '点击格子看详情 · 拖拽调课'}</span>}
+            {!focusClass && <span className="hint" style={{ display: 'block', marginTop: 6 }}>点击班级缩略图查看完整课表</span>}
+
+            {rows.length === 0 && !baseRows ? <p className="muted">该日期无生效课表。</p> : (focusClass ? renderFocus() : renderOverview())}
           </>
         )}
 
@@ -794,24 +967,28 @@ export default function Schedules() {
                       {r.term && r.term !== '常规' && <span className="period-tag period-晚自习" style={{ marginLeft: 3 }}>{r.term}</span>}
                     </td>
                     <td>
-                      <div className="toolbar" style={{ marginBottom: 0, alignItems: 'center' }}>
-                        <select id={`sub-${r.id}`} defaultValue="">
-                          <option value="" disabled>代课教师</option>
-                          {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                        </select>
-                        <input type="date" id={`sub-from-${r.id}`} title="开始日期（留空=立即起）" style={{ width: 140 }} />
-                        <input type="date" id={`sub-to-${r.id}`} title="结束日期（留空=长期；填了则到该日自动换回）" style={{ width: 140 }} />
-                        <button className="btn sm primary" onClick={() => {
-                          const sel = document.getElementById(`sub-${r.id}`).value;
-                          if (!sel) return setError('请选择代课教师');
-                          const from = document.getElementById(`sub-from-${r.id}`).value;
-                          const to = document.getElementById(`sub-to-${r.id}`).value;
-                          // 结束日 → 左闭右开「次日」；未填结束=长期
-                          const toDate = to ? addDay(to) : null;
-                          substitute(r.id, Number(sel), from || null, toDate);
-                        }}>代课</button>
-                        <button className="btn sm danger" onClick={() => stopClass(r.id)}>停课</button>
-                      </div>
+                      {readOnly ? (
+                        <span className="muted">历史快照只读</span>
+                      ) : (
+                        <div className="toolbar" style={{ marginBottom: 0, alignItems: 'center' }}>
+                          <select id={`sub-${r.id}`} defaultValue="">
+                            <option value="" disabled>代课教师</option>
+                            {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                          </select>
+                          <input type="date" id={`sub-from-${r.id}`} title="开始日期（留空=立即起）" style={{ width: 140 }} />
+                          <input type="date" id={`sub-to-${r.id}`} title="结束日期（留空=长期；填了则到该日自动换回）" style={{ width: 140 }} />
+                          <button className="btn sm primary" onClick={() => {
+                            const sel = document.getElementById(`sub-${r.id}`).value;
+                            if (!sel) return setError('请选择代课教师');
+                            const from = document.getElementById(`sub-from-${r.id}`).value;
+                            const to = document.getElementById(`sub-to-${r.id}`).value;
+                            // 结束日 → 左闭右开「次日」；未填结束=长期
+                            const toDate = to ? addDay(to) : null;
+                            substitute(r.id, Number(sel), from || null, toDate);
+                          }}>代课</button>
+                          <button className="btn sm danger" onClick={() => stopClass(r.id)}>停课</button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}

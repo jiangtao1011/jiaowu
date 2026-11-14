@@ -95,10 +95,45 @@ router.get('/', (req, res) => {
   sql += ' ORDER BY s.day_of_week, s.period_no, s.class_id';
   const rows = db.prepare(sql).all(...params);
   const ctx = loadContext();
+  // 追加导入（带生效日期）会让同一业务槽位留下多个生效版本（旧版本 effective_to 未关闭）。
+  // 展示「当前课表」时只保留 effective_from 最新的版本，避免同一节课在格子里重复出现。
+  // 补课课表浏览走 include_inactive 分支，各套号（makeup_set）需共存，不做此去重。
+  let deduped = rows;
+  if (!(include_inactive === '1' || include_inactive === 'true')) {
+    const latest = new Map();
+    for (const r of rows) {
+      const key = `${r.class_id}|${r.day_of_week}|${r.period_no}|${r.period_type}|${r.term}|${r.makeup_set ?? ''}`;
+      const prev = latest.get(key);
+      if (!prev || (r.effective_from ?? '') > (prev.effective_from ?? '')) latest.set(key, r);
+    }
+    const keep = new Set([...latest.values()].map((r) => r.id));
+    deduped = rows.filter((r) => keep.has(r.id));
+  }
   return res.json({
     ok: true,
-    data: rows.map((r) => ({ ...r, form: ctx.formOf(ctx.classMap.get(r.class_id)) })),
+    data: deduped.map((r) => ({ ...r, form: ctx.formOf(ctx.classMap.get(r.class_id)) })),
   });
+});
+
+// 课表版本切换点：按 effective_from 聚合，供前端版本时间轴使用。
+// 返回 [{ effective_from, count, grades: { 年级: 记录数 } }]，按日期升序。
+// 代课/调课的临时段与换表大版本区分由前端按 count 阈值决定，这里只给原始聚合。
+router.get('/versions', (req, res) => {
+  const rows = db.prepare(`
+    SELECT s.effective_from AS effective_from, COUNT(*) AS count, c.grade AS grade
+    FROM schedules s
+    JOIN classes c ON c.id = s.class_id
+    WHERE s.effective_from IS NOT NULL
+    GROUP BY s.effective_from, c.grade
+    ORDER BY s.effective_from ASC`).all();
+  const map = new Map();
+  for (const r of rows) {
+    if (!map.has(r.effective_from)) map.set(r.effective_from, { effective_from: r.effective_from, count: 0, grades: {} });
+    const e = map.get(r.effective_from);
+    e.count += r.count;
+    if (r.grade) e.grades[r.grade] = (e.grades[r.grade] || 0) + r.count;
+  }
+  return res.json({ ok: true, data: [...map.values()] });
 });
 
 // 下载课表导入模板
@@ -168,9 +203,32 @@ function parseImportOptions(body) {
   return { effectiveFrom, effectiveTo, scope, scopeGrade, scopeTerm, makeupSet };
 }
 
-// 计算「替换模式将关闭旧课表 N 条」（只读，不执行 UPDATE）
-function countCloseSchedules(opts) {
-  if (opts.scope === 'append' || !opts.effectiveFrom) return 0;
+// 一个业务槽位（同一节课）的标识：班级+星期+节次+类型+时段+补课套号。
+// 追加导入（带生效日期）时，新课表从生效日起接管这些槽位，需关闭同槽位的旧版本。
+const slotKeyOf = (record, makeupSet) =>
+  `${record.class_id}|${record.day_of_week}|${record.period_no}|${record.period_type}|${record.term}|${makeupSet ?? ''}`;
+
+// 追加带生效日期时，找出本次导入涉及的同槽位、当前仍生效（effective_to IS NULL）的旧版本 id
+function findAppendOldIds(slotKeys) {
+  if (!slotKeys || !slotKeys.size) return [];
+  const sel = db.prepare(`SELECT id FROM schedules WHERE effective_to IS NULL
+    AND class_id = ? AND day_of_week = ? AND period_no = ? AND period_type = ? AND term = ?
+    AND IFNULL(makeup_set, -1) = ?`);
+  const ids = [];
+  for (const k of slotKeys) {
+    const [class_id, day_of_week, period_no, period_type, term, makeup_set] = k.split('|');
+    for (const r of sel.all(Number(class_id), Number(day_of_week), Number(period_no), period_type, term, makeup_set === '' ? -1 : Number(makeup_set))) {
+      ids.push(r.id);
+    }
+  }
+  return ids;
+}
+
+// 计算「将关闭旧课表 N 条」（只读，不执行 UPDATE）。
+// 替换模式：关闭范围内全部旧记录；追加带生效日期：只关闭同槽位旧版本。
+function countCloseSchedules(opts, slotKeys) {
+  if (!opts.effectiveFrom) return 0;
+  if (opts.scope === 'append') return findAppendOldIds(slotKeys).length;
   let sql = 'SELECT COUNT(*) AS n FROM schedules WHERE effective_to IS NULL';
   const params = [opts.effectiveFrom];
   if (opts.scope === 'grade' && opts.scopeGrade) {
@@ -226,9 +284,18 @@ function persistSchedule(record, opts) {
     .run(record.class_id, record.teacher_id, record.subject, record.day_of_week, record.period_no, record.period_type, record.term, opts.effectiveFrom, opts.effectiveTo, opts.makeupSet);
 }
 
-// 关闭旧表（替换模式，confirm 阶段执行）
-function closeOldSchedules(opts) {
-  if (opts.scope === 'append' || !opts.effectiveFrom) return 0;
+// 关闭旧表（confirm 阶段执行）：
+//   替换模式（scope≠append）：关闭范围内的全部旧记录；
+//   追加带生效日期（scope=append + effectiveFrom）：只关闭本次导入涉及的同槽位旧版本，实现「按时间节点换表」。
+function closeOldSchedules(opts, slotKeys) {
+  if (!opts.effectiveFrom) return 0;
+  if (opts.scope === 'append') {
+    const ids = findAppendOldIds(slotKeys);
+    if (!ids.length) return 0;
+    const upd = db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?');
+    for (const id of ids) upd.run(opts.effectiveFrom, id);
+    return ids.length;
+  }
   let sql = 'UPDATE schedules SET effective_to = ? WHERE effective_to IS NULL';
   const params = [opts.effectiveFrom];
   if (opts.scope === 'grade' && opts.scopeGrade) {
@@ -281,22 +348,28 @@ router.post('/import/preview', roleRequired(...CLERK_ROLES), upload.single('file
 
   const columns = ['班级', '星期', '节次', '类型', '时段', '课程名称', '教师'];
   const draftRows = [];
-  const summary = { total: rows.length, ok: 0, duplicate: 0, error: 0, close_count: countCloseSchedules(opts) };
 
   for (let i = 0; i < rows.length; i++) {
     const r = buildScheduleRecord(rows[i], ctx);
     const cells = columns.map((c) => String(keyOf(rows[i], c) ?? ''));
     if (r.ok) {
-      summary.ok++;
       draftRows.push({ row_id: i, line: i + 2, cells, status: 'ok', reason: null, record: r.record });
     } else if (r.duplicate) {
-      summary.duplicate++;
       draftRows.push({ row_id: i, line: i + 2, cells, status: 'duplicate', reason: r.reason, record: null });
     } else {
-      summary.error++;
       draftRows.push({ row_id: i, line: i + 2, cells, status: 'error', reason: r.reason, record: null });
     }
   }
+
+  // 追加带生效日期时，收集本次涉及的业务槽位，用于计算将关闭的同槽位旧版本数
+  const slotKeys = new Set(draftRows.filter((r) => r.status === 'ok').map((r) => slotKeyOf(r.record, opts.makeupSet)));
+  const summary = {
+    total: rows.length,
+    ok: draftRows.filter((r) => r.status === 'ok').length,
+    duplicate: draftRows.filter((r) => r.status === 'duplicate').length,
+    error: draftRows.filter((r) => r.status === 'error').length,
+    close_count: countCloseSchedules(opts, slotKeys),
+  };
 
   const token = createDraft('schedules', req.user.id, { rows: draftRows, options: opts });
   return res.json({ ok: true, data: { token, rows: draftRows.map(({ record, ...r }) => r), summary } });
@@ -312,8 +385,9 @@ router.post('/import/confirm', roleRequired(...CLERK_ROLES), (req, res) => {
   const selected = new Set(Array.isArray(row_ids) ? row_ids.map(Number) : []);
   const targets = draft.payload.rows.filter((r) => r.status === 'ok' && selected.has(r.row_id));
 
-  // 先执行「关旧表」（替换模式）
-  const closed = closeOldSchedules(opts);
+  // 先执行「关旧表」（替换模式关全部；追加带生效日期关同槽位旧版本）
+  const slotKeys = new Set(targets.map((r) => slotKeyOf(r.record, opts.makeupSet)));
+  const closed = closeOldSchedules(opts, slotKeys);
 
   let inserted = 0;
   const errors = [];
@@ -329,7 +403,9 @@ router.post('/import/confirm', roleRequired(...CLERK_ROLES), (req, res) => {
   }
 
   deleteDraft(token);
-  const modeDesc = opts.scope === 'append' ? '（追加）' : `（${opts.effectiveFrom} 起生效，范围 ${opts.scope}，关闭旧表 ${closed} 条）`;
+  const modeDesc = opts.scope === 'append'
+    ? (opts.effectiveFrom ? `（追加，${opts.effectiveFrom} 起接管同槽位，关闭旧版本 ${closed} 条）` : '（追加）')
+    : `（${opts.effectiveFrom} 起生效，范围 ${opts.scope}，关闭旧表 ${closed} 条）`;
   logAudit(req.user.id, 'import_schedules', 'schedules', `导入课表 ${inserted} 条${modeDesc}`);
   return res.json({ ok: true, data: { inserted, errors, closed } });
 });
