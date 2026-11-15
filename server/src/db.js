@@ -455,6 +455,8 @@ ensureColumn('qna_lessons', 'grade_reviewed_by', 'INTEGER REFERENCES users(id)')
 ensureColumn('qna_lessons', 'grade_reviewed_at', 'TEXT');
 // 迁移：schedules 增加 makeup_set（补课课表套号，用于多套补课课表轮换；NULL=普通课表或旧补课课表）
 ensureColumn('schedules', 'makeup_set', 'INTEGER');
+// 迁移：schedule_changes 增加 to_subject（调课时换成的科目；代课/停课为 NULL）
+ensureColumn('schedule_changes', 'to_subject', 'TEXT');
 // 迁移：school_calendar 增加 make_up_set（补课日指定用第几套补课课表）
 ensureColumn('school_calendar', 'make_up_set', 'INTEGER');
 

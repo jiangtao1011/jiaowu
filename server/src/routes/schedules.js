@@ -536,7 +536,7 @@ router.delete('/makeup', roleRequired(...CLERK_ROLES), (req, res) => {
 // 供管理员直接 adjust 与代课申请审核通过共用。
 // 临时（to_date 非空）：三段式——原教师 [旧起, from_date) + 代课教师 [from_date, to_date) + 原教师 [to_date, 起) 自动恢复。
 // 长期（to_date 空）：原教师 [旧起, from_date) + 代课教师 [from_date, 永久)，不恢复。
-function applyAdjust({ schedule_id, change_type, to_teacher_id, from_date, to_date, reason, operator_id }) {
+function applyAdjust({ schedule_id, change_type, to_teacher_id, to_subject, from_date, to_date, reason, operator_id }) {
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(Number(schedule_id));
   if (!schedule) return { error: '课表条目不存在' };
 
@@ -552,16 +552,18 @@ function applyAdjust({ schedule_id, change_type, to_teacher_id, from_date, to_da
 
   if (change_type === '代课' || change_type === '调课') {
     if (!to_teacher_id) return { error: '请选择目标教师' };
+    // 代课：换教师、保留原科目（代课教师顶替原课）。调课：换教师且换科目（两节课整体互换，科目跟随教师走）。
+    const newSubject = change_type === '调课' ? (to_subject ?? schedule.subject) : schedule.subject;
     // 1. 关闭原教师记录：生效到 effectiveDate 为止
     db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?').run(effectiveDate, Number(schedule_id));
-    // 2. 插入代课教师记录：[effectiveDate, endDate)
+    // 2. 插入新教师（+新科目）记录：[effectiveDate, endDate)
     const r2 = db.prepare(`
       INSERT INTO schedules (class_id, teacher_id, subject, course_type, day_of_week, period_no, period_type, term, effective_from, effective_to, version)
       VALUES (?,?,?,?,?,?,?,?,?, ?, ?)`)
-      .run(schedule.class_id, Number(to_teacher_id), schedule.subject, schedule.course_type ?? '行政班', schedule.day_of_week,
+      .run(schedule.class_id, Number(to_teacher_id), newSubject, schedule.course_type ?? '行政班', schedule.day_of_week,
         schedule.period_no, schedule.period_type, schedule.term ?? '常规', effectiveDate, endDate, schedule.version + 1);
     insertedIds.push(Number(r2.lastInsertRowid));
-    // 3. 临时代课：再插入原教师「恢复段」记录 [endDate, 起)，版本再 +1
+    // 3. 临时调整：再插入原教师「恢复段」记录 [endDate, 起)，版本再 +1（恢复原教师 + 原科目）
     if (endDate && endDate > effectiveDate) {
       const r3 = db.prepare(`
         INSERT INTO schedules (class_id, teacher_id, subject, course_type, day_of_week, period_no, period_type, term, effective_from, effective_to, version)
@@ -576,10 +578,11 @@ function applyAdjust({ schedule_id, change_type, to_teacher_id, from_date, to_da
 
   const info = db
     .prepare(`INSERT INTO schedule_changes
-      (schedule_id, change_type, from_teacher_id, to_teacher_id, from_date, to_date, reason, operator_id, inserted_schedule_ids, prev_effective_to)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      (schedule_id, change_type, from_teacher_id, to_teacher_id, from_date, to_date, reason, operator_id, inserted_schedule_ids, prev_effective_to, to_subject)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
     .run(Number(schedule_id), change_type, schedule.teacher_id, to_teacher_id ?? null, effectiveDate, endDate,
-      reason ?? null, operator_id, insertedIds.length ? JSON.stringify(insertedIds) : null, prevEffectiveTo ?? null);
+      reason ?? null, operator_id, insertedIds.length ? JSON.stringify(insertedIds) : null, prevEffectiveTo ?? null,
+      change_type === '调课' ? (to_subject ?? schedule.subject) : null);
   logAudit(operator_id, 'adjust_schedule', `schedules:${schedule_id}`, `${change_type}：${schedule.teacher_id} -> ${to_teacher_id ?? null}（${effectiveDate}${endDate ? '~' + endDate : ' 起'}）`);
 
   // 定向通知相关教师（失败不影响调整本身）
@@ -640,14 +643,14 @@ function notifyAdjust({ schedule, change_type, to_teacher_id, effectiveDate, end
 
 // 调课/代课/停课 —— 快照模式：关闭旧记录 + 插入新记录，变化前统计不受影响
 router.post('/adjust', roleRequired(...CLERK_ROLES), (req, res) => {
-  const { schedule_id, change_type, from_teacher_id, to_teacher_id, from_date, to_date, reason } = req.body || {};
+  const { schedule_id, change_type, from_teacher_id, to_teacher_id, to_subject, from_date, to_date, reason } = req.body || {};
   if (!schedule_id || !change_type) {
     return res.status(400).json({ ok: false, error: '缺少 schedule_id 或 change_type' });
   }
   if (!['调课', '代课', '停课'].includes(change_type)) {
     return res.status(400).json({ ok: false, error: '无效的调整类型' });
   }
-  const result = applyAdjust({ schedule_id, change_type, to_teacher_id, from_date, to_date, reason, operator_id: req.user.id });
+  const result = applyAdjust({ schedule_id, change_type, to_teacher_id, to_subject, from_date, to_date, reason, operator_id: req.user.id });
   if (result.error) return res.status(400).json({ ok: false, error: result.error });
   return res.json({ ok: true, data: { change_id: result.change_id } });
 });
@@ -958,8 +961,8 @@ router.get('/changes', (req, res) => {
   // A) 课表级调整
   const scheduleRows = db.prepare(`
     SELECT sc.id, 'schedule' AS source, sc.change_type, sc.reverted,
-           c.name AS class_name, c.grade AS class_grade, s.subject,
-           sc.from_date AS date, s.day_of_week, s.period_no,
+           c.name AS class_name, c.grade AS class_grade, s.subject, sc.to_subject,
+           sc.from_date AS date, sc.to_date, s.day_of_week, s.period_no,
            ft.name AS from_teacher_name, tt.name AS to_teacher_name,
            sc.reason, u.name AS operator_name, sc.created_at
     FROM schedule_changes sc

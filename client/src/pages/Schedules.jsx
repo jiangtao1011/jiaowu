@@ -14,6 +14,14 @@ function todayStr() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
+// 日期字符串 +1 天（把结束日转成左闭右开区间的「次日」）
+function addDayLocal(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 // 科目简称对照表（格子内容过多时用简称）
 const ABBR = {
   政治: '政', 生物: '生', 通用技术: '通', 通用: '通', 技术: '技', 地理: '地', 历史: '史',
@@ -170,6 +178,78 @@ function VersionTimeline({ versions, current, onJump }) {
   );
 }
 
+// 拖拽调课确认弹窗：显示互换双方（老师+科目），选长期/某天/时间段。
+function SwapConfirmModal({ swapDraft, onConfirm, onClose }) {
+  const [mode, setMode] = useState('long'); // long | once | range
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+
+  const { src, dst } = swapDraft || {};
+  if (!src || !dst) return null;
+
+  const cell = (r) => `${r.subject || '未命名'} · ${r.teacher_name}`;
+  const submit = () => {
+    if (mode === 'once') {
+      if (!fromDate) return;
+      onConfirm('once', fromDate, addDayLocal(fromDate));
+    } else if (mode === 'range') {
+      if (!fromDate || !toDate || fromDate > toDate) return;
+      onConfirm('range', fromDate, addDayLocal(toDate));
+    } else {
+      onConfirm('long', null, null);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h3>确认调课</h3>
+          <button className="btn ghost" onClick={onClose}>关闭</button>
+        </div>
+        <div className="swap-summary">
+          <div className="swap-line">
+            <span className="swap-cell">{cell(src)}</span>
+            <span className="swap-arrow">⇄</span>
+            <span className="swap-cell">{cell(dst)}</span>
+          </div>
+          <p className="muted" style={{ margin: '8px 0 0', fontSize: 12.5 }}>
+            将互换两节课的教师与科目（{src.class_name} 周{['一','二','三','四','五','六','日'][src.day_of_week - 1]}第{src.period_no}节 ⇄ {dst.class_name} 周{['一','二','三','四','五','六','日'][dst.day_of_week - 1]}第{dst.period_no}节）。
+          </p>
+        </div>
+
+        <div className="swap-modes">
+          <label className="swap-mode">
+            <input type="radio" name="swap-mode" checked={mode === 'long'} onChange={() => setMode('long')} />
+            <span>长期调课（永久生效）</span>
+          </label>
+          <label className="swap-mode">
+            <input type="radio" name="swap-mode" checked={mode === 'once'} onChange={() => setMode('once')} />
+            <span>短期调课 · 某一天</span>
+            {mode === 'once' && <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />}
+          </label>
+          <label className="swap-mode">
+            <input type="radio" name="swap-mode" checked={mode === 'range'} onChange={() => setMode('range')} />
+            <span>短期调课 · 时间段</span>
+            {mode === 'range' && (
+              <span className="swap-range">
+                <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+                <span>~</span>
+                <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+              </span>
+            )}
+          </label>
+        </div>
+
+        <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, marginBottom: 0 }}>
+          <button className="btn" onClick={onClose}>取消</button>
+          <button className="btn primary" onClick={submit}>确认调课</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Schedules() {
   const toast = useToast();
   const [rows, setRows] = useState([]);
@@ -202,6 +282,7 @@ export default function Schedules() {
   const [compareBase, setCompareBase] = useState(''); // 对比基准日期 A（对比目标=asOf）
   const [versions, setVersions] = useState([]); // 版本切换点（时间轴）
   const [baseRows, setBaseRows] = useState(null); // 对比基准日期 A 的课表（null=未拉取）
+  const [swapDraft, setSwapDraft] = useState(null); // 拖拽调课待确认：{ src, dst }
 
   const load = async () => {
     try {
@@ -376,16 +457,36 @@ export default function Schedules() {
 
   const onDrop = async (targetScheduleId) => {
     if (drag == null || drag === targetScheduleId) { setDrag(null); return; }
+    const src = rows.find((r) => r.id === drag);
+    const dst = rows.find((r) => r.id === targetScheduleId);
+    setDrag(null);
+    if (!src || !dst) return;
+    // 弹出确认框，选长期/短期（拖拽不再直接调接口）
+    setSwapDraft({ src, dst });
+  };
+
+  // 确认执行拖拽调课。mode: 'long'=长期 | 'once'=某一天 | 'range'=时间段
+  const confirmSwap = async (mode, fromDate, toDate) => {
+    const { src, dst } = swapDraft || {};
+    if (!src || !dst) return;
     try {
-      const src = rows.find((r) => r.id === drag);
-      const dst = rows.find((r) => r.id === targetScheduleId);
-      if (!src || !dst) { setDrag(null); return; }
-      await api.post('/schedules/adjust', { schedule_id: drag, change_type: '调课', from_teacher_id: src.teacher_id, to_teacher_id: dst.teacher_id, reason: '拖拽调课' });
-      await api.post('/schedules/adjust', { schedule_id: targetScheduleId, change_type: '调课', from_teacher_id: dst.teacher_id, to_teacher_id: src.teacher_id, reason: '拖拽调课' });
-      toast.success('调课成功');
-      setDrag(null);
+      // 互换 = 双向调课：A 换成 B 的老师+科目，B 换成 A 的老师+科目
+      const payloadA = {
+        schedule_id: src.id, change_type: '调课',
+        to_teacher_id: dst.teacher_id, to_subject: dst.subject, reason: '拖拽调课',
+      };
+      const payloadB = {
+        schedule_id: dst.id, change_type: '调课',
+        to_teacher_id: src.teacher_id, to_subject: src.subject, reason: '拖拽调课',
+      };
+      if (mode === 'once') { payloadA.from_date = fromDate; payloadA.to_date = toDate; payloadB.from_date = fromDate; payloadB.to_date = toDate; }
+      else if (mode === 'range') { payloadA.from_date = fromDate; payloadA.to_date = toDate; payloadB.from_date = fromDate; payloadB.to_date = toDate; }
+      await api.post('/schedules/adjust', payloadA);
+      await api.post('/schedules/adjust', payloadB);
+      toast.success(mode === 'long' ? '调课成功（长期）' : '调课成功（临时）');
+      setSwapDraft(null);
       loadSchedules();
-    } catch (e) { toast.error(errMsg(e)); setDrag(null); }
+    } catch (e) { toast.error(errMsg(e)); setSwapDraft(null); }
   };
 
   const substitute = async (scheduleId, teacherId, fromDate, toDate) => {
@@ -882,32 +983,42 @@ export default function Schedules() {
             <div className="table-wrap">
               <table>
                 <thead>
-                  <tr><th>类型</th><th>年级</th><th>班级</th><th>课程</th><th>日期/星期</th><th>节次</th><th>原教师</th><th>新教师</th><th>原因</th><th>操作人</th><th>时间</th><th>操作</th></tr>
+                  <tr><th>类型</th><th>年级</th><th>班级</th><th>课程</th><th>生效</th><th>节次</th><th>原教师</th><th>新教师</th><th>原因</th><th>操作人</th><th>时间</th><th>操作</th></tr>
                 </thead>
                 <tbody>
-                  {changes.map((c) => (
-                    <tr key={`${c.source}-${c.id}`}>
-                      <td><span className={`badge ${c.change_type === '代课' ? 'warn' : c.change_type === '停课' ? 'danger' : 'info'}`}>{c.change_type}{c.reverted ? '·已撤回' : ''}</span></td>
-                      <td>{c.class_grade || '-'}</td>
-                      <td>{c.class_name || '-'}</td>
-                      <td>{c.subject || '-'}</td>
-                      <td>{c.source === 'instance' ? (c.date || '-') : (c.day_of_week ? `周${'一二三四五六日'[c.day_of_week - 1]}` : '-')}</td>
-                      <td>{c.period_no ? `第${c.period_no}节` : '-'}</td>
-                      <td>{c.from_teacher_name || '-'}</td>
-                      <td>{c.to_teacher_name || '-'}</td>
-                      <td>{c.reason || '-'}</td>
-                      <td>{c.operator_name || '-'}</td>
-                      <td>{String(c.created_at || '').replace('T', ' ').slice(0, 16)}</td>
-                      <td>
-                        <div className="toolbar" style={{ marginBottom: 0, gap: 6 }}>
-                          <button className="btn sm" onClick={() => setPrintChange(c)}>打印通知单</button>
-                          {c.source === 'schedule' && !c.reverted && (
-                            <button className="btn sm" onClick={() => revertChange(c)}>撤回</button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                  {changes.map((c) => {
+                    // 调课：课程列显示「原科目 → 新科目」；代课/停课只显示原科目
+                    const subjectCell = c.change_type === '调课' && c.to_subject && c.to_subject !== c.subject
+                      ? `${c.subject || '-'} → ${c.to_subject}`
+                      : (c.subject || '-');
+                    // 生效：课表级显示日期段（长期=某日起；临时=某日~某日）；按日级显示具体日期
+                    const rangeCell = c.source === 'instance'
+                      ? (c.date || '-')
+                      : (c.date ? (c.to_date ? `${c.date} ~ ${dayBefore(c.to_date)}` : `${c.date} 起`) : '-');
+                    return (
+                      <tr key={`${c.source}-${c.id}`}>
+                        <td><span className={`badge ${c.change_type === '代课' ? 'warn' : c.change_type === '停课' ? 'danger' : 'info'}`}>{c.change_type}{c.reverted ? '·已撤回' : ''}</span></td>
+                        <td>{c.class_grade || '-'}</td>
+                        <td>{c.class_name || '-'}</td>
+                        <td>{subjectCell}</td>
+                        <td>{rangeCell}</td>
+                        <td>{c.period_no ? `第${c.period_no}节` : '-'}</td>
+                        <td>{c.from_teacher_name || '-'}</td>
+                        <td>{c.to_teacher_name || '-'}</td>
+                        <td>{c.reason || '-'}</td>
+                        <td>{c.operator_name || '-'}</td>
+                        <td>{String(c.created_at || '').replace('T', ' ').slice(0, 16)}</td>
+                        <td>
+                          <div className="toolbar" style={{ marginBottom: 0, gap: 6 }}>
+                            <button className="btn sm" onClick={() => setPrintChange(c)}>打印通知单</button>
+                            {c.source === 'schedule' && !c.reverted && (
+                              <button className="btn sm" onClick={() => revertChange(c)}>撤回</button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                   {changes.length === 0 && <tr><td colSpan={12} className="muted">暂无课务调整记录</td></tr>}
                 </tbody>
               </table>
@@ -944,6 +1055,14 @@ export default function Schedules() {
             <PrintScheduleSheet title={printSchedule.title} gridRows={printSchedule.gridRows} />
           </div>
         </div>
+      )}
+
+      {swapDraft && (
+        <SwapConfirmModal
+          swapDraft={swapDraft}
+          onConfirm={confirmSwap}
+          onClose={() => setSwapDraft(null)}
+        />
       )}
 
       {detail && (
