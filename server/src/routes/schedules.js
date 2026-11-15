@@ -90,7 +90,9 @@ router.get('/', (req, res) => {
   if (include_inactive === '1' || include_inactive === 'true') {
     // 不做生效过滤
   } else {
-    sql += ` AND ${activeClause('s', as_of, params)}`;
+    // 「最新」视图（无 as_of）默认看「今天生效」的课表，而非只看永久记录（effective_to IS NULL）。
+    // 否则短期调课/代课的三段式里的「对调段」（带 effective_to）会被漏掉，课表看不到对调结果。
+    sql += ` AND ${activeClause('s', as_of || localDate(), params)}`;
   }
   sql += ' ORDER BY s.day_of_week, s.period_no, s.class_id';
   const rows = db.prepare(sql).all(...params);
@@ -656,23 +658,51 @@ router.post('/adjust', roleRequired(...CLERK_ROLES), (req, res) => {
 });
 
 // 撤回一条课务调整（撤销误操作）：恢复原课表的 effective_to，删除本次插入的代课/恢复段记录。
+// 外键清理：一条课表可能被连续多次调整，后续调课的 schedule_changes（子调课）会以 schedule_id
+// 指向本次插入的记录，直接删会触发 FK 约束。因此先清理指向「待删除记录」的从属数据：
+//   - schedule_changes 里 schedule_id 命中待删除记录、且已撤回的 → 直接删除（死元数据）；
+//   - 未撤回的子调课 → 拒绝撤回，提示按时间倒序先撤回后续调整；
+//   - lesson_instances / substitute_requests 引用待删除记录的 → 一并删除（随课表还原后由校历重新展开）。
 router.post('/changes/:id/revert', roleRequired(...CLERK_ROLES), (req, res) => {
   const id = Number(req.params.id);
   const ch = db.prepare('SELECT * FROM schedule_changes WHERE id = ?').get(id);
   if (!ch) return res.status(404).json({ ok: false, error: '调整记录不存在' });
   if (ch.reverted) return res.status(400).json({ ok: false, error: '该调整已撤回，不能重复撤回' });
 
+  // 本次要删除的课表记录 id 集合
+  const toDelete = new Set();
+  if (ch.inserted_schedule_ids) {
+    try { for (const sid of JSON.parse(ch.inserted_schedule_ids)) toDelete.add(Number(sid)); }
+    catch { /* 忽略解析错误 */ }
+  }
+
   const t = db.prepare('BEGIN'); t.run();
   try {
-    // 1. 恢复原课表记录（把 effective_to 改回调整前的值）
-    db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?').run(ch.prev_effective_to ?? null, Number(ch.schedule_id));
-    // 2. 删除本次插入的段记录（代课段 + 恢复段）
-    if (ch.inserted_schedule_ids) {
-      const ids = JSON.parse(ch.inserted_schedule_ids);
-      const del = db.prepare('DELETE FROM schedules WHERE id = ?');
-      for (const sid of ids) del.run(Number(sid));
+    if (toDelete.size) {
+      const ph = [...toDelete].map(() => '?').join(',');
+      // 1) 若存在「未撤回」的子调课仍指向这些记录，说明后续调整尚未撤销，需按倒序先撤回
+      const liveChild = db.prepare(
+        `SELECT id FROM schedule_changes WHERE schedule_id IN (${ph}) AND reverted = 0 AND id != ? LIMIT 1`
+      ).get(...toDelete, id);
+      if (liveChild) {
+        db.prepare('ROLLBACK').run();
+        return res.status(409).json({ ok: false, error: `该调整之上还有未撤回的后续调整（记录 #${liveChild.id}），请先撤回后续调整` });
+      }
+      // 2) 删除已撤回的子调课元数据（死元数据，解除 FK 引用）
+      db.prepare(`DELETE FROM schedule_changes WHERE schedule_id IN (${ph}) AND reverted = 1`).run(...toDelete);
+      // 3) 删除展开的上课记录与代课申请引用
+      db.prepare(`DELETE FROM lesson_instances WHERE schedule_id IN (${ph})`).run(...toDelete);
+      db.prepare(`DELETE FROM substitute_requests WHERE schedule_id IN (${ph})`).run(...toDelete);
     }
-    // 3. 标记已撤回
+
+    // 4. 恢复原课表记录（把 effective_to 改回调整前的值）
+    db.prepare('UPDATE schedules SET effective_to = ? WHERE id = ?').run(ch.prev_effective_to ?? null, Number(ch.schedule_id));
+    // 5. 删除本次插入的段记录（代课段 + 恢复段），此时 FK 引用已解除
+    if (toDelete.size) {
+      const del = db.prepare('DELETE FROM schedules WHERE id = ?');
+      for (const sid of toDelete) del.run(sid);
+    }
+    // 6. 标记已撤回
     db.prepare('UPDATE schedule_changes SET reverted = 1 WHERE id = ?').run(id);
     db.prepare('COMMIT').run();
     logAudit(req.user.id, 'revert_schedule_change', `schedule_changes:${id}`, `撤回${ch.change_type}（原课 ${ch.schedule_id}）`);
