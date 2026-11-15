@@ -642,16 +642,30 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .version-timeline .vt-node.latest .vt-dot { background: #f0a020; }
 
 /* 拖拽调课确认弹窗 */
-.swap-summary { padding: 12px; background: var(--bg); border-radius: 8px; }
-.swap-line { display: flex; align-items: center; justify-content: center; gap: 14px; }
-.swap-cell { font-weight: 600; padding: 6px 12px; background: #fff; border: 1px solid var(--border); border-radius: 6px; }
-.swap-arrow { color: var(--primary); font-size: 18px; font-weight: 700; }
-.swap-modes { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
-.swap-mode { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.swap-mode input[type="radio"] { margin: 0; }
-.swap-mode > span { font-size: 13.5px; }
-.swap-mode input[type="date"] { width: 150px; }
-.swap-range { display: inline-flex; align-items: center; gap: 6px; }
+.swap-modal { max-width: 520px; }
+.swap-cards { display: flex; align-items: stretch; justify-content: center; gap: 12px; }
+.swap-card {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 14px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.swap-card-time { font-size: 11px; color: var(--muted); }
+.swap-card-subject { font-size: 16px; font-weight: 700; color: var(--text); }
+.swap-card-teacher { font-size: 13px; color: var(--text-soft); }
+.swap-card-class { font-size: 11px; color: var(--muted); }
+.swap-cards-arrow { display: flex; align-items: center; color: var(--primary); font-size: 22px; font-weight: 700; }
+.swap-note { margin: 10px 0 0; font-size: 12.5px; color: var(--muted); text-align: center; }
+
+.swap-duration { margin-top: 16px; }
+.swap-duration-label { font-size: 12.5px; color: var(--text-soft); margin-bottom: 6px; }
+.swap-seg { display: flex; background: var(--bg); border-radius: 8px; padding: 3px; gap: 3px; }
+.swap-seg-btn {
+  flex: 1; border: none; background: transparent; padding: 8px 0; border-radius: 6px;
+  font-size: 13.5px; color: var(--text-soft); cursor: pointer; font: inherit; transition: all 0.12s;
+}
+.swap-seg-btn.on { background: #fff; color: var(--primary); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+.swap-dates { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.swap-dates input[type="date"] { flex: 1; }
+.swap-dates-sep { color: var(--muted); font-size: 13px; }
 
 /* 弹窗 */
 .modal-overlay {

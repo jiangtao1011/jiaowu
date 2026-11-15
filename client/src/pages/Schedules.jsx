@@ -178,7 +178,7 @@ function VersionTimeline({ versions, current, onJump }) {
   );
 }
 
-// 拖拽调课确认弹窗：显示互换双方（老师+科目），选长期/某天/时间段。
+// 拖拽调课确认弹窗：明确展示「互换上课时间」双方，选长期/某天/时间段。
 function SwapConfirmModal({ swapDraft, onConfirm, onClose }) {
   const [mode, setMode] = useState('long'); // long | once | range
   const [fromDate, setFromDate] = useState('');
@@ -187,7 +187,9 @@ function SwapConfirmModal({ swapDraft, onConfirm, onClose }) {
   const { src, dst } = swapDraft || {};
   if (!src || !dst) return null;
 
-  const cell = (r) => `${r.subject || '未命名'} · ${r.teacher_name}`;
+  const DAY = ['一', '二', '三', '四', '五', '六', '日'];
+  const timeLabel = (r) => `周${DAY[r.day_of_week - 1]} 第${r.period_no}节`;
+
   const submit = () => {
     if (mode === 'once') {
       if (!fromDate) return;
@@ -200,50 +202,58 @@ function SwapConfirmModal({ swapDraft, onConfirm, onClose }) {
     }
   };
 
+  const invalid = mode === 'once' ? !fromDate : mode === 'range' ? (!fromDate || !toDate || fromDate > toDate) : false;
+
+  const card = (r) => (
+    <div className="swap-card">
+      <div className="swap-card-time">{timeLabel(r)}</div>
+      <div className="swap-card-subject">{r.subject || '未命名'}</div>
+      <div className="swap-card-teacher">{r.teacher_name}</div>
+      <div className="swap-card-class">{r.class_name}</div>
+    </div>
+  );
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+      <div className="modal swap-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <h3>确认调课</h3>
+          <h3>调课确认</h3>
           <button className="btn ghost" onClick={onClose}>关闭</button>
         </div>
-        <div className="swap-summary">
-          <div className="swap-line">
-            <span className="swap-cell">{cell(src)}</span>
-            <span className="swap-arrow">⇄</span>
-            <span className="swap-cell">{cell(dst)}</span>
-          </div>
-          <p className="muted" style={{ margin: '8px 0 0', fontSize: 12.5 }}>
-            将互换两节课的教师与科目（{src.class_name} 周{['一','二','三','四','五','六','日'][src.day_of_week - 1]}第{src.period_no}节 ⇄ {dst.class_name} 周{['一','二','三','四','五','六','日'][dst.day_of_week - 1]}第{dst.period_no}节）。
-          </p>
-        </div>
 
-        <div className="swap-modes">
-          <label className="swap-mode">
-            <input type="radio" name="swap-mode" checked={mode === 'long'} onChange={() => setMode('long')} />
-            <span>长期调课（永久生效）</span>
-          </label>
-          <label className="swap-mode">
-            <input type="radio" name="swap-mode" checked={mode === 'once'} onChange={() => setMode('once')} />
-            <span>短期调课 · 某一天</span>
-            {mode === 'once' && <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />}
-          </label>
-          <label className="swap-mode">
-            <input type="radio" name="swap-mode" checked={mode === 'range'} onChange={() => setMode('range')} />
-            <span>短期调课 · 时间段</span>
-            {mode === 'range' && (
-              <span className="swap-range">
-                <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-                <span>~</span>
-                <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-              </span>
-            )}
-          </label>
+        <div className="swap-cards">
+          {card(src)}
+          <div className="swap-cards-arrow">⇄</div>
+          {card(dst)}
+        </div>
+        <p className="swap-note">
+          两节课互换上课时间：{src.class_name} {timeLabel(src)} ⇄ {dst.class_name} {timeLabel(dst)}，科目与教师一起对调。
+        </p>
+
+        <div className="swap-duration">
+          <div className="swap-duration-label">生效时长</div>
+          <div className="swap-seg">
+            <button type="button" className={`swap-seg-btn ${mode === 'long' ? 'on' : ''}`} onClick={() => setMode('long')}>长期</button>
+            <button type="button" className={`swap-seg-btn ${mode === 'once' ? 'on' : ''}`} onClick={() => setMode('once')}>某一天</button>
+            <button type="button" className={`swap-seg-btn ${mode === 'range' ? 'on' : ''}`} onClick={() => setMode('range')}>时间段</button>
+          </div>
+          {mode === 'once' && (
+            <div className="swap-dates">
+              <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+            </div>
+          )}
+          {mode === 'range' && (
+            <div className="swap-dates">
+              <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+              <span className="swap-dates-sep">至</span>
+              <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+            </div>
+          )}
         </div>
 
         <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, marginBottom: 0 }}>
           <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" onClick={submit}>确认调课</button>
+          <button className="btn primary" onClick={submit} disabled={invalid}>确认调课</button>
         </div>
       </div>
     </div>
