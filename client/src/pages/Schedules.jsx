@@ -293,6 +293,11 @@ export default function Schedules() {
   const [versions, setVersions] = useState([]); // 版本切换点（时间轴）
   const [baseRows, setBaseRows] = useState(null); // 对比基准日期 A 的课表（null=未拉取）
   const [swapDraft, setSwapDraft] = useState(null); // 拖拽调课待确认：{ src, dst }
+  const [swapPeriods, setSwapPeriods] = useState(false); // 整节对调弹窗开关
+  const [spGrade, setSpGrade] = useState('');   // 整节对调：年级
+  const [spDay, setSpDay] = useState('');       // 整节对调：星期
+  const [spA, setSpA] = useState('');           // 整节对调：节次 A
+  const [spB, setSpB] = useState('');           // 整节对调：节次 B
 
   const load = async () => {
     try {
@@ -507,6 +512,21 @@ export default function Schedules() {
         from_date: fromDate || null, to_date: toDate || null, reason: '代课',
       });
       toast.success(toDate ? `代课成功（至 ${toDate}，之后自动换回）` : fromDate ? `代课成功（${fromDate} 起）` : '代课成功');
+      loadSchedules();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  // 提交整节对调
+  const confirmSwapPeriods = async () => {
+    if (!spGrade || !spDay || !spA || !spB) return toast.error('请完整选择年级、星期和两个节次');
+    if (spA === spB) return toast.error('两个节次不能相同');
+    if (!(await toast.confirm(`确定将 ${spGrade} 周${DAYS[Number(spDay) - 1]} 第${spA}节与第${spB}节的所有课整体互换（长期生效）？`, { danger: true }))) return;
+    try {
+      const r = await api.post('/schedules/swap-periods', {
+        grade: spGrade, day_of_week: Number(spDay), period_a: Number(spA), period_b: Number(spB), reason: '整节对调',
+      });
+      toast.success(`已互换 ${r.data.data.swapped} 条课`);
+      setSwapPeriods(false);
       loadSchedules();
     } catch (e) { toast.error(errMsg(e)); }
   };
@@ -862,8 +882,53 @@ export default function Schedules() {
 
       <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h3 style={{ margin: 0 }}>课表</h3>
-        <button className="btn primary" onClick={() => setShowImport(true)}>导入课表</button>
+        <div className="toolbar" style={{ marginBottom: 0 }}>
+          <button className="btn" onClick={() => setSwapPeriods(true)}>整节对调</button>
+          <button className="btn primary" onClick={() => setShowImport(true)}>导入课表</button>
+        </div>
       </div>
+
+      {swapPeriods && (
+        <div className="modal-overlay" onClick={() => setSwapPeriods(false)}>
+          <div className="modal" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>整节对调</h3>
+              <button className="btn ghost" onClick={() => setSwapPeriods(false)}>关闭</button>
+            </div>
+            <p className="muted" style={{ marginTop: 0 }}>
+              把某年级某星期的两个节次的全部课（含走班课）整体互换节次，长期生效。
+            </p>
+            <div className="form-grid">
+              <div className="form-row">
+                <label>年级</label>
+                <select value={spGrade} onChange={(e) => setSpGrade(e.target.value)}>
+                  <option value="">选择年级</option>
+                  {grades.map((g) => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
+              <div className="form-row">
+                <label>星期</label>
+                <select value={spDay} onChange={(e) => setSpDay(e.target.value)}>
+                  <option value="">选择星期</option>
+                  {DAYS.map((d, i) => <option key={i + 1} value={i + 1}>{d}</option>)}
+                </select>
+              </div>
+              <div className="form-row">
+                <label>节次 A</label>
+                <input type="number" min="1" step="1" value={spA} onChange={(e) => setSpA(e.target.value)} placeholder="如 7" />
+              </div>
+              <div className="form-row">
+                <label>节次 B</label>
+                <input type="number" min="1" step="1" value={spB} onChange={(e) => setSpB(e.target.value)} placeholder="如 8" />
+              </div>
+            </div>
+            <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, marginBottom: 0 }}>
+              <button className="btn" onClick={() => setSwapPeriods(false)}>取消</button>
+              <button className="btn primary" onClick={confirmSwapPeriods}>确认对调</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showImport && (
         <div className="modal-overlay" onClick={() => setShowImport(false)}>

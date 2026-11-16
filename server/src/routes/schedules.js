@@ -657,6 +657,53 @@ router.post('/adjust', roleRequired(...CLERK_ROLES), (req, res) => {
   return res.json({ ok: true, data: { change_id: result.change_id } });
 });
 
+// 整节对调：把某年级某星期两个节次的全部课整体互换节次（长期生效，含走班课）。
+// 走班/分层课也一并按 class 定位，无需单独处理。
+// 只移动「当前或未来仍生效」的记录（effective_to IS NULL 或 > 今天），已关闭的历史段保持不动，
+// 保证过去统计不受影响。用临时哨兵值分三步更新，避免两个节次互换时主键/槽位碰撞。
+router.post('/swap-periods', roleRequired(...CLERK_ROLES), (req, res) => {
+  const { grade, day_of_week, period_a, period_b, reason } = req.body || {};
+  const dow = Number(day_of_week);
+  const pa = Number(period_a);
+  const pb = Number(period_b);
+  if (!grade || !Number.isInteger(dow) || dow < 1 || dow > 7) {
+    return res.status(400).json({ ok: false, error: '请指定年级与星期（1-7）' });
+  }
+  if (!Number.isInteger(pa) || pa < 1 || !Number.isInteger(pb) || pb < 1 || pa === pb) {
+    return res.status(400).json({ ok: false, error: '请指定两个不同的节次' });
+  }
+
+  const today = localDate();
+  // 命中范围：该年级该星期、两个节次中任一、且当前或未来仍生效（未完全关闭）的记录
+  const base = `
+    FROM schedules s JOIN classes c ON c.id = s.class_id
+    WHERE c.grade = ? AND s.day_of_week = ? AND s.period_no IN (?, ?)
+      AND (s.effective_to IS NULL OR s.effective_to > ?)`;
+  const aIds = db.prepare(`SELECT s.id ${base} AND s.period_no = ?`).all(grade, dow, pa, pb, today, pa).map((r) => r.id);
+  const bIds = db.prepare(`SELECT s.id ${base} AND s.period_no = ?`).all(grade, dow, pa, pb, today, pb).map((r) => r.id);
+  if (!aIds.length && !bIds.length) {
+    return res.status(404).json({ ok: false, error: '这两个节次在指定年级没有可对调的课' });
+  }
+
+  // 三步走：A→哨兵，B→A，哨兵→B。用负哨兵值避免节次互换时槽位碰撞。
+  const SENTINEL = -1;
+  const up = db.prepare('UPDATE schedules SET period_no = ? WHERE id = ?');
+
+  db.prepare('BEGIN').run();
+  try {
+    for (const id of aIds) up.run(SENTINEL, id);
+    for (const id of bIds) up.run(pa, id);
+    for (const id of aIds) up.run(pb, id);
+    db.prepare('COMMIT').run();
+  } catch (e) {
+    db.prepare('ROLLBACK').run();
+    return res.status(500).json({ ok: false, error: '整节对调失败：' + e.message });
+  }
+
+  logAudit(req.user.id, 'swap_periods', 'schedules', `整节对调 ${grade} 周${'一二三四五六日'[dow - 1]} 第${pa}节↔第${pb}节（${aIds.length + bIds.length} 条课）${reason ? '：' + reason : ''}`);
+  return res.json({ ok: true, data: { swapped: aIds.length + bIds.length } });
+});
+
 // 撤回一条课务调整（撤销误操作）：恢复原课表的 effective_to，删除本次插入的代课/恢复段记录。
 // 外键清理：一条课表可能被连续多次调整，后续调课的 schedule_changes（子调课）会以 schedule_id
 // 指向本次插入的记录，直接删会触发 FK 约束。因此先清理指向「待删除记录」的从属数据：
