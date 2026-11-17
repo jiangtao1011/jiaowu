@@ -992,6 +992,17 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .ps-sched .ps-course .teach { color: #333; margin-left: 4px; }
 .ps-sched td.ps-empty { background: #fafafa; }
 
+/* 总课表：多班连续打印，每班一块、每班另起一页 */
+.print-sheet-all { font-size: 12px; }
+.ps-class-block { margin-top: 18px; }
+.ps-class-title { font-size: 15px; font-weight: 700; margin: 0 0 8px; letter-spacing: 0.04em; }
+@media print {
+  .ps-class-block { page-break-after: always; break-after: page; }
+  .ps-class-block:last-child { page-break-after: auto; break-after: auto; }
+  .ps-class-title { page-break-after: avoid; break-after: avoid; }
+  .ps-class-block .ps-sched { page-break-inside: avoid; break-inside: avoid; }
+}
+
 /* 落款区 */
 .ps-foot { margin-top: 26px; display: flex; justify-content: space-between; align-items: flex-end; font-size: 13px; color: #333; }
 .ps-sign { text-align: center; min-width: 140px; }

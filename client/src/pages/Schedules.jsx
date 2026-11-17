@@ -77,55 +77,76 @@ function PrintSheet({ c, rangeLabel }) {
   );
 }
 
-// 课表打印版式（仅打印时可见）：完整科目 + 教师，按节次×星期表格
-function PrintScheduleSheet({ title, gridRows }) {
+// 课表网格表格（打印版式）：完整科目 + 教师，按节次×星期表格。供单班 / 总课表共用。
+function PrintGrid({ gridRows }) {
   const maxPeriod = Math.max(1, ...gridRows.map((r) => r.period_no));
   const periods = Array.from({ length: maxPeriod }, (_, i) => i + 1);
   const daysSet = new Set(gridRows.filter((r) => r.day_of_week >= 1 && r.day_of_week <= 7).map((r) => r.day_of_week));
   const days = [1, 2, 3, 4, 5, 6, 7].filter((d) => daysSet.has(d));
-  const printDate = (() => {
-    const d = new Date();
-    const p = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-  })();
+  return (
+    <table className="ps-table ps-sched">
+      <thead>
+        <tr>
+          <th style={{ width: 64 }}>节次</th>
+          {days.map((d) => <th key={d}>{DAYS[d - 1]}</th>)}
+        </tr>
+      </thead>
+      <tbody>
+        {periods.map((p) => (
+          <tr key={p}>
+            <th>第{p}节</th>
+            {days.map((d) => {
+              const cellRows = gridRows.filter((r) => r.period_no === p && r.day_of_week === d);
+              return (
+                <td key={d} className={cellRows.length === 0 ? 'ps-empty' : ''}>
+                  {cellRows.length === 0 ? null : cellRows.map((r) => {
+                    const layer = (r.form === '分层' || r.form === '走班分层') ? layerToken(r.class_name).replace('层', '') : '';
+                    return (
+                      <div key={r.id} className="ps-course">
+                        <span className="subj">{baseSubject(r.subject)}{layer}</span>
+                        <span className="teach">{r.teacher_name}</span>
+                      </div>
+                    );
+                  })}
+                </td>
+              );
+            })}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+// 单班课表打印版式（仅打印时可见）
+function PrintScheduleSheet({ title, gridRows }) {
   return (
     <div className="print-sheet">
       <div className="ps-head">
         <h1 className="ps-title">{title} 课表</h1>
         <div className="ps-sub">课程中心 · 教务管理</div>
       </div>
-      <div className="ps-meta">打印日期：{printDate}</div>
-      <table className="ps-table ps-sched">
-        <thead>
-          <tr>
-            <th style={{ width: 64 }}>节次</th>
-            {days.map((d) => <th key={d}>{DAYS[d - 1]}</th>)}
-          </tr>
-        </thead>
-        <tbody>
-          {periods.map((p) => (
-            <tr key={p}>
-              <th>第{p}节</th>
-              {days.map((d) => {
-                const cellRows = gridRows.filter((r) => r.period_no === p && r.day_of_week === d);
-                return (
-                  <td key={d} className={cellRows.length === 0 ? 'ps-empty' : ''}>
-                    {cellRows.length === 0 ? null : cellRows.map((r) => {
-                      const layer = (r.form === '分层' || r.form === '走班分层') ? layerToken(r.class_name).replace('层', '') : '';
-                      return (
-                        <div key={r.id} className="ps-course">
-                          <span className="subj">{baseSubject(r.subject)}{layer}</span>
-                          <span className="teach">{r.teacher_name}</span>
-                        </div>
-                      );
-                    })}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="ps-meta">打印日期：{todayStr()}</div>
+      <PrintGrid gridRows={gridRows} />
+    </div>
+  );
+}
+
+// 总课表打印版式：多班连续打印，每班一页。blocks = [{ classId, title, gridRows }]
+function PrintAllSchedulesSheet({ title, blocks }) {
+  return (
+    <div className="print-sheet print-sheet-all">
+      <div className="ps-head">
+        <h1 className="ps-title">{title}</h1>
+        <div className="ps-sub">课程中心 · 教务管理</div>
+      </div>
+      <div className="ps-meta">打印日期：{todayStr()} · 共 {blocks.length} 个班</div>
+      {blocks.map((b) => (
+        <div key={b.classId} className="ps-class-block">
+          <div className="ps-class-title">{b.title}</div>
+          <PrintGrid gridRows={b.gridRows} />
+        </div>
+      ))}
     </div>
   );
 }
@@ -285,6 +306,7 @@ export default function Schedules() {
   const [changes, setChanges] = useState([]); // 课务调整记录
   const [printChange, setPrintChange] = useState(null); // 打印通知单对象
   const [printSchedule, setPrintSchedule] = useState(null); // 打印课表 { title, gridRows }
+  const [printAllSchedules, setPrintAllSchedules] = useState(null); // 打印总课表 { title, blocks }
   const [focusClass, setFocusClass] = useState(''); // 下钻的单班 id（空=总览缩略图）
   const [makeupTab, setMakeupTab] = useState(null); // 补课课表当前套号（null=未选，选第一个）
   const [asOf, setAsOf] = useState(''); // 课表快照日期（空=最新）
@@ -745,6 +767,29 @@ export default function Schedules() {
     );
   };
 
+  // 打印总课表：忽略单班下钻（classId），按年级/时段/快照筛选重新拉取全量课表，每班一块连续打印。
+  const openPrintAllSchedules = async () => {
+    try {
+      const params = {};
+      if (grade) params.grade = grade;
+      if (term) params.term = term;
+      if (asOf) params.as_of = asOf;
+      const all = (await api.get('/schedules', { params })).data.data;
+      const adminClasses = classes
+        .filter((c) => c.type === '行政班' && (!grade || c.grade === grade))
+        .sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh', { numeric: true }));
+      if (adminClasses.length === 0) return toast.error('当前筛选下没有行政班可打印');
+      const blocks = adminClasses
+        .map((ac) => ({ classId: ac.id, title: `${ac.name}${ac.grade ? ' · ' + ac.grade : ''}`, gridRows: all.filter((r) => adminIdsOf(r).includes(ac.id)) }))
+        .filter((b) => b.gridRows.length > 0);
+      if (blocks.length === 0) return toast.error('当前筛选下没有可打印的课程');
+      const scope = [grade || '全部年级', term ? `时段·${term}` : '', asOf ? `快照·${asOf}` : ''].filter(Boolean).join(' · ');
+      setPrintAllSchedules({ title: `总课表${scope ? '（' + scope + '）' : ''}`, blocks });
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
   // 单班下钻：左侧年级导航 + 右侧完整课表
   const renderFocus = () => {
     const ac = classById.get(Number(focusClass));
@@ -884,6 +929,7 @@ export default function Schedules() {
         <h3 style={{ margin: 0 }}>课表</h3>
         <div className="toolbar" style={{ marginBottom: 0 }}>
           <button className="btn" onClick={() => setSwapPeriods(true)}>整节对调</button>
+          <button className="btn" onClick={openPrintAllSchedules}>打印总课表</button>
           <button className="btn primary" onClick={() => setShowImport(true)}>导入课表</button>
         </div>
       </div>
@@ -1128,6 +1174,21 @@ export default function Schedules() {
               </div>
             </div>
             <PrintScheduleSheet title={printSchedule.title} gridRows={printSchedule.gridRows} />
+          </div>
+        </div>
+      )}
+
+      {printAllSchedules && (
+        <div className="modal-overlay" onClick={() => setPrintAllSchedules(null)}>
+          <div className="modal" style={{ maxWidth: 900 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head no-print">
+              <h3>打印总课表</h3>
+              <div className="toolbar" style={{ marginBottom: 0, gap: 8 }}>
+                <button className="btn primary sm" onClick={() => window.print()}>打印</button>
+                <button className="btn ghost sm" onClick={() => setPrintAllSchedules(null)}>关闭</button>
+              </div>
+            </div>
+            <PrintAllSchedulesSheet title={printAllSchedules.title} blocks={printAllSchedules.blocks} />
           </div>
         </div>
       )}
