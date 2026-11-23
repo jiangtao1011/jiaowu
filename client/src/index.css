@@ -961,6 +961,19 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
   margin-bottom: 14px;
 }
 .apply-settings .apply-settings-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.apply-settings .apply-settings-head.collapsed { margin-bottom: 0; }
+
+/* 可折叠头部：整行可点击，去掉默认按钮样式 */
+.apply-settings-toggle {
+  width: 100%; background: none; border: none; padding: 0;
+  font-family: inherit; text-align: left; cursor: pointer; color: inherit;
+}
+.apply-settings-toggle-right { display: inline-flex; align-items: center; gap: 10px; }
+.apply-settings-arrow {
+  display: inline-block; font-size: 12px; color: var(--muted);
+  transition: transform 0.18s ease;
+}
+.apply-settings-arrow.open { transform: rotate(180deg); }
 
 .setting-row { display: flex; align-items: center; gap: 14px; }
 
@@ -978,6 +991,25 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .setting-state { font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; }
 .setting-state.on  { color: var(--ok-strong);  background: var(--ok-soft); }
 .setting-state.off { color: var(--muted);     background: var(--bg); }
+
+/* 批量申报类型勾选分组 */
+.batch-type-group { margin-top: 12px; }
+.batch-type-group:first-child { margin-top: 0; }
+.batch-type-group-label {
+  font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+
+/* 申报设置卡片的分区结构 */
+.setting-section { padding-top: 16px; }
+.setting-section + .setting-section {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.setting-section-title {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  font-size: 13.5px; font-weight: 600; color: var(--text); margin-bottom: 10px;
+}
 
 /* 开关：原生 checkbox 隐藏，轨道 + 滑块纯 CSS 呈现 */
 .switch { position: relative; flex: none; display: inline-block; cursor: pointer; }
@@ -1438,6 +1470,11 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
   transition: all 0.08s ease;
 }
 .mapply-chip.on { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+/* 类型分组小标签（按次计酬 / 按课时折算） */
+.mapply-chip-group-label {
+  font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: 0.04em;
+  margin: 12px 0 -2px;
+}
 
 .mapply-stepper { display: flex; align-items: center; gap: 18px; }
 .mapply-stepper button {

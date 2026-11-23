@@ -55,6 +55,10 @@ export default function Applications() {
   const [coursePreview, setCoursePreview] = useState(null); // { token, rows, summary }
   // 自主申报设置：是否显示节数（后台开关，仅教务主任/admin 可改）
   const [showPeriodCount, setShowPeriodCount] = useState(true);
+  // 批量申报类型勾选配置
+  const [batchTypes, setBatchTypes] = useState(null); // { typePays, typeCoefs, selected }
+  // 申报设置卡片折叠态（默认收起）
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const loadQna = async (filter = qnaFilter) => {
     try {
@@ -84,6 +88,27 @@ export default function Applications() {
       try { setShowPeriodCount((await api.get('/applications/apply-config')).data.data.show_period_count); } catch { /* 默认显示 */ }
     })();
   }, []);
+
+  // 拉取批量申报类型配置
+  const loadBatchTypes = async () => {
+    try { setBatchTypes((await api.get('/applications/batch-config')).data.data); } catch { /* 忽略 */ }
+  };
+  useEffect(() => { if (isAdmin) loadBatchTypes(); }, []);
+
+  const toggleBatchType = (name) => {
+    setBatchTypes((prev) => {
+      const selected = new Set(prev?.selected || []);
+      selected.has(name) ? selected.delete(name) : selected.add(name);
+      return { ...prev, selected: [...selected] };
+    });
+  };
+  const saveBatchTypes = async () => {
+    try {
+      await api.put('/applications/batch-config', { selected: batchTypes.selected });
+      toast.success('批量申报类型已保存');
+      loadBatchTypes();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const toggleShowPeriodCount = async () => {
     const next = !showPeriodCount;
@@ -419,24 +444,70 @@ export default function Applications() {
           </div>}
 
           {isAdmin && <div className="card apply-settings">
-            <div className="apply-settings-head">
+            <button className={`apply-settings-head apply-settings-toggle ${settingsOpen ? '' : 'collapsed'}`} onClick={() => setSettingsOpen((v) => !v)} type="button">
               <h3>申报设置</h3>
-              <span className="hint">控制教师手机端自主申报的表单显示</span>
-            </div>
-            <div className="setting-row">
-              <div className="setting-icon">节</div>
-              <div className="setting-info">
-                <div className="setting-title">
-                  显示节数
-                  <span className={`setting-state ${showPeriodCount ? 'on' : 'off'}`}>{showPeriodCount ? '已开启' : '已关闭'}</span>
+              <span className="apply-settings-toggle-right">
+                <span className="hint">控制教师手机端自主申报的表单与可选类型</span>
+                <span className={`apply-settings-arrow ${settingsOpen ? 'open' : ''}`}>▾</span>
+              </span>
+            </button>
+
+            {settingsOpen && (
+              <>
+                {/* 分区一：表单显示 */}
+                <div className="setting-section">
+                  <div className="setting-row">
+                    <div className="setting-icon">节</div>
+                    <div className="setting-info">
+                      <div className="setting-title">
+                        显示节数
+                        <span className={`setting-state ${showPeriodCount ? 'on' : 'off'}`}>{showPeriodCount ? '已开启' : '已关闭'}</span>
+                      </div>
+                      <div className="setting-desc">教师手机端申报（答疑 / 晚自习 / 早自习 / 批量）是否显示「节数」；关闭后默认按 1 节计。</div>
+                    </div>
+                    <label className="switch" title={showPeriodCount ? '点击关闭' : '点击开启'}>
+                      <input type="checkbox" checked={showPeriodCount} onChange={toggleShowPeriodCount} />
+                      <span className="switch-track"><span className="switch-thumb" /></span>
+                    </label>
+                  </div>
                 </div>
-                <div className="setting-desc">教师手机端申报（答疑 / 晚自习 / 早自习 / 批量）时是否显示「节数」输入；关闭后默认按 1 节计。</div>
-              </div>
-              <label className="switch" title={showPeriodCount ? '点击关闭' : '点击开启'}>
-                <input type="checkbox" checked={showPeriodCount} onChange={toggleShowPeriodCount} />
-                <span className="switch-track"><span className="switch-thumb" /></span>
-              </label>
-            </div>
+
+                {/* 分区二：批量申报类型 */}
+                <div className="setting-section">
+                  <div className="setting-section-title">
+                    批量申报类型
+                    <span className="hint">未勾选的类型不会出现在手机端「批量申报」里</span>
+                  </div>
+                  {!batchTypes ? <p className="muted" style={{ margin: 0 }}>加载中…</p> : (
+                    <>
+                      {batchTypes.typePays?.length > 0 && (
+                        <div className="batch-type-group">
+                          <div className="batch-type-group-label">按次计酬</div>
+                          <div className="checkbox-list">
+                            {batchTypes.typePays.map((n) => (
+                              <label key={n} className="checkbox"><input type="checkbox" checked={batchTypes.selected.includes(n)} onChange={() => toggleBatchType(n)} />{n}</label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {batchTypes.typeCoefs?.length > 0 && (
+                        <div className="batch-type-group">
+                          <div className="batch-type-group-label">按课时折算</div>
+                          <div className="checkbox-list">
+                            {batchTypes.typeCoefs.map((n) => (
+                              <label key={n} className="checkbox"><input type="checkbox" checked={batchTypes.selected.includes(n)} onChange={() => toggleBatchType(n)} />{n}</label>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div className="toolbar" style={{ marginTop: 14, marginBottom: 0 }}>
+                        <button className="btn primary sm" onClick={saveBatchTypes}>保存类型</button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
           </div>}
 
           <div className="card">

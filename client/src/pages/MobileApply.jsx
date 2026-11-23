@@ -173,7 +173,7 @@ export default function MobileApply() {
       const t = (batchCtx?.teachers || []).find((x) => String(x.id) === String(tid));
       return {
         grade: batchGrade, subject: t?.subject || '', teacher_id: tid,
-        class_id: batchClassId || null, date: batchDate,
+        class_id: isBatchCoefficient ? null : (batchClassId || null), date: batchDate,
         period_count: batchPeriodCount, period_type: batchType, content: batchContent,
       };
     });
@@ -199,6 +199,9 @@ export default function MobileApply() {
     if (batchGrade && Array.isArray(t.grades) && t.grades.length && !t.grades.includes(batchGrade)) return false;
     return true;
   });
+
+  // 当前批量类型是否为「按课时折算」类型（折算类型年级级、始终可填课时数、不选班）
+  const isBatchCoefficient = (batchCtx?.typeCoefs || []).some((t) => t.name === batchType);
 
   return (
     <div className={`mapply${embedded ? ' mapply-embedded' : ''}`}>
@@ -465,9 +468,19 @@ export default function MobileApply() {
             <label>类型</label>
             <div className="mapply-chips">
               {(batchCtx?.typePays || []).map((t) => (
-                <button key={t.id} type="button" className={`mapply-chip ${batchType === t.name ? 'on' : ''}`} onClick={() => setBatchType(t.name)}>{t.name}（{t.pay}元/节）</button>
+                <button key={t.id} type="button" className={`mapply-chip ${batchType === t.name ? 'on' : ''}`} onClick={() => { setBatchType(t.name); setBatchClassId(''); }}>{t.name}（{t.pay}元/节）</button>
               ))}
             </div>
+            {(batchCtx?.typeCoefs || []).length > 0 && (
+              <>
+                <div className="mapply-chip-group-label">按课时折算</div>
+                <div className="mapply-chips">
+                  {(batchCtx?.typeCoefs || []).map((t) => (
+                    <button key={t.id} type="button" className={`mapply-chip ${batchType === t.name ? 'on' : ''}`} onClick={() => { setBatchType(t.name); setBatchClassId(''); }}>{t.name}（×{t.coefficient}）</button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
 
           <div className="mapply-field">
@@ -475,24 +488,27 @@ export default function MobileApply() {
             <input type="date" value={batchDate} onChange={(e) => setBatchDate(e.target.value)} />
           </div>
 
-          {showPeriodCount && (
+          {(isBatchCoefficient || showPeriodCount) && (
             <div className="mapply-field">
-              <label>节数</label>
+              <label>{isBatchCoefficient ? '课时数' : '节数'}</label>
               <div className="mapply-stepper">
                 <button type="button" onClick={() => setBatchPeriodCount((n) => Math.max(1, n - 1))}>−</button>
                 <span>{batchPeriodCount}</span>
                 <button type="button" onClick={() => setBatchPeriodCount((n) => Math.min(12, n + 1))}>+</button>
               </div>
+              {isBatchCoefficient && <p className="mapply-form-hint">折算类型按「课时数 × 系数」计酬。</p>}
             </div>
           )}
 
-          <div className="mapply-field">
-            <label>班级（选填，晚自习等班级级类型填）</label>
-            <select className="mapply-select" value={batchClassId} onChange={(e) => setBatchClassId(e.target.value)}>
-              <option value="">不选（针对年级）</option>
-              {(batchCtx?.classes || []).filter((c) => !batchGrade || c.grade === batchGrade).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
+          {!isBatchCoefficient && (
+            <div className="mapply-field">
+              <label>班级（选填，晚自习等班级级类型填）</label>
+              <select className="mapply-select" value={batchClassId} onChange={(e) => setBatchClassId(e.target.value)}>
+                <option value="">不选（针对年级）</option>
+                {(batchCtx?.classes || []).filter((c) => !batchGrade || c.grade === batchGrade).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
 
           <div className="mapply-field">
             <label>选择教师（可多选）</label>

@@ -40,16 +40,22 @@ const BATCH_ROLES = [...CLERK_ROLES, '年级组长'];
 // 可审核申报的角色：admin + 教务主任（主任专审）+ 年级组长（年级组长限本年级，一审）
 const REVIEW_ROLES = ['admin', '教务主任', '年级组长'];
 
-// 校验 period_type 是否合法：早自习为折算型固定类型（不在按次计酬字典里），其余看字典，否则回退「答疑」
+// 校验 period_type 是否合法：命中「按次计酬字典」或「折算字典」即保留；否则回退「答疑」。
+// 早自习本就在折算字典里，无需特判。正课不进入申报。
 function validPeriodType(t) {
   const name = String(t || '').trim();
   if (!name) return '答疑';
-  if (name === '早自习') return '早自习';
-  const hit = db.prepare('SELECT 1 FROM period_type_pays WHERE name = ?').get(name);
-  return hit ? name : '答疑';
+  if (db.prepare('SELECT 1 FROM period_type_pays WHERE name = ?').get(name)) return name;
+  if (db.prepare('SELECT 1 FROM period_type_coefficients WHERE name = ?').get(name)) return name;
+  return '答疑';
 }
 
-// 年级级类型（早自习）未指定班级时，回填该年级虚班 id，保证审核通过能生成上课记录。
+// 是否「按课时折算」类型（命中折算字典）
+function isCoefficientType(name) {
+  return !!db.prepare('SELECT 1 FROM period_type_coefficients WHERE name = ?').get(String(name || '').trim());
+}
+
+// 年级级类型（折算型 + 答疑等未挂班级的按次计酬）未指定班级时，回填该年级虚班 id，保证审核通过能生成上课记录。
 function virtualClassIdForGrade(grade) {
   if (!grade) return null;
   return db.prepare('SELECT id FROM classes WHERE is_virtual = 1 AND grade = ?').get(grade)?.id ?? null;
@@ -78,6 +84,45 @@ router.put('/apply-config', authRequired, roleRequired(...DIRECTOR_ROLES), (req,
   return res.json({ ok: true, data: { show_period_count: val === '1' } });
 });
 
+// ===== 批量申报类型设置（app_settings key=batch_apply_types，JSON 数组） =====
+// 默认勾选常用类型（按次：答疑/晚自习/晚练/晚晚练 + 折算：早自习）
+const DEFAULT_BATCH_TYPES = ['答疑', '晚自习', '晚练', '晚晚练', '早自习'];
+
+// 读取已勾选的批量申报类型名集合；无配置时返回默认常用集合。
+function batchApplyTypes() {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'batch_apply_types'").get();
+  if (!row?.value) return new Set(DEFAULT_BATCH_TYPES);
+  try {
+    const arr = JSON.parse(row.value);
+    return Array.isArray(arr) ? new Set(arr) : new Set(DEFAULT_BATCH_TYPES);
+  } catch { return new Set(DEFAULT_BATCH_TYPES); }
+}
+
+// 批量申报类型配置：返回「全部候选类型（按次 + 折算）」+「已勾选集合」。
+// 登录即可读；手机端 batch-context 也据此过滤。
+router.get('/batch-config', authRequired, (req, res) => {
+  const typePays = db.prepare('SELECT name FROM period_type_pays ORDER BY id').all().map((r) => r.name);
+  const typeCoefs = db.prepare('SELECT name FROM period_type_coefficients ORDER BY id').all().map((r) => r.name);
+  const selected = [...batchApplyTypes()].filter((n) => typePays.includes(n) || typeCoefs.includes(n));
+  return res.json({ ok: true, data: { typePays, typeCoefs, selected } });
+});
+
+// 保存批量申报类型勾选（教务主任/admin）
+router.put('/batch-config', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
+  const { selected = [] } = req.body || {};
+  if (!Array.isArray(selected)) return res.status(400).json({ ok: false, error: 'selected 需为数组' });
+  const validNames = new Set([
+    ...db.prepare('SELECT name FROM period_type_pays').all().map((r) => r.name),
+    ...db.prepare('SELECT name FROM period_type_coefficients').all().map((r) => r.name),
+  ]);
+  const cleaned = selected.map((s) => String(s).trim()).filter((n) => n && validNames.has(n));
+  db.prepare(`INSERT INTO app_settings (key, value) VALUES ('batch_apply_types', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')`)
+    .run(JSON.stringify(cleaned));
+  logAudit(req.user.id, 'update_batch_config', 'app_settings', `批量申报类型=${cleaned.join('、') || '（空）'}`);
+  return res.json({ ok: true, data: { selected: cleaned } });
+});
+
 // 查找「活跃」（待审核/已通过）的重复申报，返回命中记录或 null。
 // 重复口径：同一教师 + 同一类型 + 同一时间维度 + 同一目标。
 //  - 临时（有 date）：teacher + type + date + 目标
@@ -91,12 +136,12 @@ function findDuplicate({ teacher_id, period_type, date, day_of_week, period_no, 
   const params = [teacher_id, period_type];
   if (date) {
     conds.push('date = ?'); params.push(date);
-    if (period_type === '答疑' || period_type === '早自习') { conds.push('grade = ?'); params.push(grade); }
+    if (period_type === '答疑' || period_type === '早自习' || isCoefficientType(period_type)) { conds.push('grade = ?'); params.push(grade); }
     else if (period_type === '晚自习') { conds.push('class_id = ?'); params.push(class_id); }
     else { conds.push('grade = ?'); params.push(grade); conds.push('class_id = ?'); params.push(class_id); }
   } else if (day_of_week != null) {
     conds.push('day_of_week = ?'); params.push(day_of_week);
-    if (period_type === '答疑' || period_type === '早自习') { conds.push('grade = ?'); params.push(grade); }
+    if (period_type === '答疑' || period_type === '早自习' || isCoefficientType(period_type)) { conds.push('grade = ?'); params.push(grade); }
     else if (period_type === '晚自习') { conds.push('class_id = ?'); params.push(class_id); }
     else { conds.push('grade = ?'); params.push(grade); conds.push('class_id = ?'); params.push(class_id); }
   } else {
@@ -117,9 +162,9 @@ function insertQnaPending(opts, filledBy, gradeRange) {
   if (gradeRange && grade !== gradeRange) throw new Error(`仅可申报负责年级「${gradeRange}」的课时`);
   const pt = validPeriodType(period_type);
 
-  // 早自习为年级级，未指定班级时回填该年级虚班，保证审核通过能生成上课记录
+  // 折算类型（早自习/竞赛/培优/监考等）为年级级：忽略传入的班级，统一挂该年级虚班，保证审核通过能生成上课记录。
   let resolvedClassId = class_id ? Number(class_id) : null;
-  if (pt === '早自习' && !resolvedClassId) {
+  if (isCoefficientType(pt)) {
     resolvedClassId = virtualClassIdForGrade(grade);
     if (!resolvedClassId) throw new Error(`年级「${grade}」暂无虚拟班，请先在班级管理里生成年级虚班`);
   }
@@ -306,8 +351,8 @@ function buildQnaRecord(row, ctx) {
   if (teacherName && !teacherId) return { ok: false, reason: `教师「${teacherName}」不存在` };
   let classId = className ? classByName[className] : null;
   if (className && !classId) return { ok: false, reason: `班级「${className}」不存在` };
-  // 早自习为年级级，未指定班级时回填该年级虚班
-  if (periodType === '早自习' && !classId) {
+  // 折算类型为年级级，未指定班级时回填该年级虚班
+  if (isCoefficientType(periodType) && !classId) {
     classId = virtualClassIdForGrade(grade);
     if (!classId) return { ok: false, reason: `年级「${grade}」暂无虚拟班` };
   }
@@ -444,7 +489,9 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
 // 教务员/教务主任/admin 可选全部年级；年级组长锁定其负责年级（managed_grade），
 // 班级列表也限定为该年级（含年级虚班）。
 router.get('/batch-context', authRequired, (req, res) => {
-  const typePays = db.prepare('SELECT id, name, pay FROM period_type_pays ORDER BY id').all();
+  const enabled = batchApplyTypes(); // 已勾选的批量申报类型
+  const typePays = db.prepare('SELECT id, name, pay FROM period_type_pays ORDER BY id').all().filter((t) => enabled.has(t.name));
+  const typeCoefs = db.prepare('SELECT id, name, coefficient FROM period_type_coefficients ORDER BY id').all().filter((t) => enabled.has(t.name));
   // 教师 + 任教年级（从课表推导，任课关系在 schedules 里，不依赖 teacher_classes）
   const teachers = db.prepare('SELECT id, name, subject FROM teachers ORDER BY name').all();
   const gradeByTeacher = {};
@@ -458,7 +505,7 @@ router.get('/batch-context', authRequired, (req, res) => {
 
   if (ADMIN_ROLES.includes(req.user.role)) {
     const classes = db.prepare('SELECT id, name, grade, type, is_virtual FROM classes ORDER BY grade, name').all();
-    return res.json({ ok: true, data: { role: req.user.role, grades: allGrades, teachers, classes, typePays } });
+    return res.json({ ok: true, data: { role: req.user.role, grades: allGrades, teachers, classes, typePays, typeCoefs } });
   }
 
   // 年级组长：限定负责年级
@@ -467,7 +514,7 @@ router.get('/batch-context', authRequired, (req, res) => {
   const classes = managed_grade
     ? db.prepare('SELECT id, name, grade, type, is_virtual FROM classes WHERE grade = ? ORDER BY name').all(managed_grade)
     : db.prepare('SELECT id, name, grade, type, is_virtual FROM classes ORDER BY grade, name').all();
-  return res.json({ ok: true, data: { role: req.user.role, managed_grade, grades, teachers, classes, typePays } });
+  return res.json({ ok: true, data: { role: req.user.role, managed_grade, grades, teachers, classes, typePays, typeCoefs } });
 });
 
 // 批量申报（教务员/教务主任/admin/年级组长）：一次提交多条课时申报，统一待审核。
@@ -617,8 +664,8 @@ router.patch('/:id', authRequired, (req, res) => {
   const newType = period_type !== undefined ? validPeriodType(period_type) : q.period_type;
   const newGrade = grade ?? q.grade;
   let newClassId = class_id !== undefined ? (class_id ? Number(class_id) : null) : q.class_id;
-  // 早自习为年级级，未指定班级时回填该年级虚班
-  if (newType === '早自习' && !newClassId) {
+  // 折算类型为年级级，未指定班级时回填该年级虚班
+  if (isCoefficientType(newType) && !newClassId) {
     newClassId = virtualClassIdForGrade(newGrade);
     if (!newClassId) return res.status(400).json({ ok: false, error: `年级「${newGrade}」暂无虚拟班，请先在班级管理里生成年级虚班` });
   }
