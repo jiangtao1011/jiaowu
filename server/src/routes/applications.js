@@ -133,12 +133,12 @@ function onceDurationMinutes() {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_ONCE_DURATION;
 }
 
-// 按次计酬的「时长 → 次数」按比例折算：次数 = 时长 ÷ 一次时长，保留 2 位小数（最小 0.01）。
+// 按次计酬的「时长 → 次数」按比例折算：次数 = 时长 ÷ 一次时长，保留 1 位小数（最小 0.1）。
 function durationToUnits(durationMin, perUnitMin) {
   const d = Number(durationMin);
   if (!Number.isFinite(d) || d <= 0) return 1;
   const p = Number.isFinite(perUnitMin) && perUnitMin > 0 ? perUnitMin : DEFAULT_ONCE_DURATION;
-  return Math.max(0.01, Math.round((d / p) * 100) / 100);
+  return Math.max(0.1, Math.round((d / p) * 10) / 10);
 }
 
 // 读取一次时长配置（登录即可，手机端估算提示用）

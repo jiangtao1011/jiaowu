@@ -126,12 +126,12 @@ export default function CourseApply() {
   if (loading) return <div className="mapply"><div className="mapply-loading">加载中…</div></div>;
   if (error && !course) return <div className="mapply"><div className="alert error">{error}</div></div>;
 
-  // 一对一：按比例估算次数（时长 ÷ 一次时长，保留 2 位小数）
+  // 一对一：按比例估算次数（时长 ÷ 一次时长，保留 1 位小数）
   const estCount = (() => {
     const d = Number(duration);
     if (!Number.isFinite(d) || d <= 0) return null;
     const p = Number.isFinite(onceDuration) && onceDuration > 0 ? onceDuration : 90;
-    return Math.round((d / p) * 100) / 100;
+    return Math.round((d / p) * 10) / 10;
   })();
 
   return (
