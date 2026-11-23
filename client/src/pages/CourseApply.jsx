@@ -3,6 +3,10 @@ import { useParams } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
 
+// 课程申报（课程中心终审）状态：pending 待审 → approved/rejected；审核人可撤回为 withdrawn
+const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
+const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '', withdrawn: 'info' };
+
 // 手机端课程填报页（分享链接 /course/:token 打开，需登录）。
 // 按课程的计酬方式渲染三个固定场景：
 //   - 正课折算（心理课）：时间、班级、节次 → 每次固定 1 课时
@@ -33,6 +37,8 @@ export default function CourseApply() {
   const [files, setFiles] = useState([]);              // 辅导资料附件
   // 固定折算（监考/竞赛等）
   const [periodCount, setPeriodCount] = useState(1);   // 自填课时数
+  // 我的申报记录
+  const [myRecords, setMyRecords] = useState([]);
 
   useEffect(() => {
     (async () => {
@@ -45,6 +51,12 @@ export default function CourseApply() {
       setLoading(false);
     })();
   }, [token]);
+
+  // 拉取我的课程申报记录（本人全部课程申报）
+  const loadMyRecords = async () => {
+    try { setMyRecords((await api.get('/applications/my-course-applications')).data.data); } catch { /* 忽略 */ }
+  };
+  useEffect(() => { loadMyRecords(); }, []);
 
   // 心理课：拉班级列表（按课程年级过滤）
   useEffect(() => {
@@ -98,6 +110,7 @@ export default function CourseApply() {
       await api.post(`/applications/tasks/${course.id}/apply`, fd);
       toast.success('申报已提交，待教务主任审核');
       setStudentName(''); setValues({}); setClassId(''); setPeriodNo(''); setSubject(''); setDuration(''); setFiles([]); setPeriodCount(1);
+      loadMyRecords();
     } catch (e) { toast.error(errMsg(e)); }
   };
 
@@ -220,6 +233,31 @@ export default function CourseApply() {
           )}
 
           <button className="mapply-submit" onClick={submit}>提交申报</button>
+        </div>
+      )}
+
+      {course && (
+        <div className="mapply-records" style={{ marginTop: 16 }}>
+          <div className="mapply-records-head">
+            <h3>我的申报记录</h3>
+            <span className="mapply-count">{myRecords.length} 条</span>
+          </div>
+          {myRecords.length === 0 && <p className="mapply-empty">还没有申报记录</p>}
+          {myRecords.map((r) => (
+            <div key={r.id} className={`mapply-record st-${r.status}`}>
+              <div className="mapply-record-body">
+                <div className="mapply-record-line1">
+                  <span className="mapply-record-title">{r.task_title || '课程申报'}</span>
+                </div>
+                <div className="mapply-record-line2">
+                  {r.date || '-'}{r.period_count ? ` · ${r.period_count}节` : ''}{r.class_name ? ` · ${r.class_name}` : ''}{r.subject ? ` · ${r.subject}` : ''}
+                </div>
+              </div>
+              <div className="mapply-record-side">
+                <span className={`badge ${STATUS_CLS[r.status]}`}>{STATUS[r.status]}</span>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>

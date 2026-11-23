@@ -55,6 +55,29 @@ function virtualClassIdForGrade(grade) {
   return db.prepare('SELECT id FROM classes WHERE is_virtual = 1 AND grade = ?').get(grade)?.id ?? null;
 }
 
+// ===== 自主申报设置（app_settings） =====
+// 读取「自主申报是否显示节数」开关：value 为 '0' 表示隐藏（默认 1 节），否则显示。
+function applyShowPeriodCount() {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'apply_show_period_count'").get();
+  return row?.value !== '0'; // 默认 true（显示）
+}
+
+// 读取申报设置（登录即可，教师端也要据此隐藏/显示节数）
+router.get('/apply-config', authRequired, (req, res) => {
+  res.json({ ok: true, data: { show_period_count: applyShowPeriodCount() } });
+});
+
+// 更新申报设置（教务主任/admin）
+router.put('/apply-config', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
+  const { show_period_count } = req.body || {};
+  const val = show_period_count === false ? '0' : '1';
+  db.prepare(`INSERT INTO app_settings (key, value) VALUES ('apply_show_period_count', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')`)
+    .run(val);
+  logAudit(req.user.id, 'update_apply_config', 'app_settings', `自主申报节数显示=${val === '1' ? '显示' : '隐藏'}`);
+  return res.json({ ok: true, data: { show_period_count: val === '1' } });
+});
+
 // 查找「活跃」（待审核/已通过）的重复申报，返回命中记录或 null。
 // 重复口径：同一教师 + 同一类型 + 同一时间维度 + 同一目标。
 //  - 临时（有 date）：teacher + type + date + 目标
@@ -1031,6 +1054,24 @@ router.post('/tasks/:taskId/import/confirm', authRequired, roleRequired(...DIREC
   deleteDraft(token);
   logAudit(req.user.id, 'import_course_applications', `applications:${taskId}`, `批量导入课程填报 ${inserted} 条`);
   return res.json({ ok: true, data: { inserted, errors } });
+});
+
+// 我的课程申报记录：当前登录教师（按 teacher_id）的全部课程申报，含课程标题/计酬方式/状态/附件数。
+// 供手机端课程申报页底部「我的申报记录」查询。
+router.get('/my-course-applications', authRequired, (req, res) => {
+  const tid = req.user.teacher_id ?? null;
+  if (!tid) return res.json({ ok: true, data: [] });
+  const rows = db.prepare(`
+    SELECT a.*, t.title AS task_title, t.pay_mode, t.period_type AS task_period_type, t.subject AS task_subject,
+           c.name AS class_name, ru.name AS reviewed_by_name,
+           (SELECT COUNT(*) FROM application_attachments att WHERE att.application_id = a.id) AS attach_count
+    FROM applications a
+    JOIN application_tasks t ON t.id = a.task_id
+    LEFT JOIN classes c ON c.id = a.class_id
+    LEFT JOIN users ru ON ru.id = a.reviewed_by
+    WHERE a.teacher_id = ?
+    ORDER BY a.id DESC`).all(tid);
+  return res.json({ ok: true, data: rows.map((a) => ({ ...a, form_data: parseJSON(a.form_data, {}) })) });
 });
 
 // 某课程下的填报记录

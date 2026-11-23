@@ -18,6 +18,7 @@ export default function MobileApply() {
   const toast = useToast();
   const [mode, setMode] = useState(null); // '答疑' | '晚自习' | '早自习' | '批量' | '审核' | null(首页)
   const [loading, setLoading] = useState(true);
+  const [showPeriodCount, setShowPeriodCount] = useState(true); // 后台开关：是否显示节数
 
   const user = JSON.parse(localStorage.getItem('edu_user') || '{}');
   const isAdmin = CLERK_ROLES.includes(user.role); // 批量申报：admin/教务主任/教务员
@@ -86,6 +87,13 @@ export default function MobileApply() {
     try { setBatchCtx((await api.get('/applications/batch-context')).data.data); } catch (e) { setError(errMsg(e)); }
   };
   useEffect(() => { load(); if (canBatch) loadBatchCtx(); }, []);
+
+  // 拉取自主申报设置（是否显示节数），失败时默认显示
+  useEffect(() => {
+    (async () => {
+      try { setShowPeriodCount((await api.get('/applications/apply-config')).data.data.show_period_count); } catch { /* 默认显示 */ }
+    })();
+  }, []);
 
   const today = () => {
     const d = new Date();
@@ -327,14 +335,16 @@ export default function MobileApply() {
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </div>
 
-          <div className="mapply-field">
-            <label>节数</label>
-            <div className="mapply-stepper">
-              <button type="button" onClick={() => setPeriodCount((n) => Math.max(1, n - 1))}>−</button>
-              <span>{periodCount}</span>
-              <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+          {showPeriodCount && (
+            <div className="mapply-field">
+              <label>节数</label>
+              <div className="mapply-stepper">
+                <button type="button" onClick={() => setPeriodCount((n) => Math.max(1, n - 1))}>−</button>
+                <span>{periodCount}</span>
+                <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="mapply-field">
             <label>内容说明（选填）</label>
@@ -367,14 +377,16 @@ export default function MobileApply() {
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </div>
 
-          <div className="mapply-field">
-            <label>节数</label>
-            <div className="mapply-stepper">
-              <button type="button" onClick={() => setPeriodCount((n) => Math.max(1, n - 1))}>−</button>
-              <span>{periodCount}</span>
-              <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+          {showPeriodCount && (
+            <div className="mapply-field">
+              <label>节数</label>
+              <div className="mapply-stepper">
+                <button type="button" onClick={() => setPeriodCount((n) => Math.max(1, n - 1))}>−</button>
+                <span>{periodCount}</span>
+                <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="mapply-field">
             <label>内容说明（选填）</label>
@@ -407,14 +419,16 @@ export default function MobileApply() {
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </div>
 
-          <div className="mapply-field">
-            <label>课时数</label>
-            <div className="mapply-stepper">
-              <button type="button" onClick={() => setPeriodCount((n) => Math.max(1, n - 1))}>−</button>
-              <span>{periodCount}</span>
-              <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+          {showPeriodCount && (
+            <div className="mapply-field">
+              <label>课时数</label>
+              <div className="mapply-stepper">
+                <button type="button" onClick={() => setPeriodCount((n) => Math.max(1, n - 1))}>−</button>
+                <span>{periodCount}</span>
+                <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="mapply-field">
             <label>内容说明（选填）</label>
@@ -461,14 +475,16 @@ export default function MobileApply() {
             <input type="date" value={batchDate} onChange={(e) => setBatchDate(e.target.value)} />
           </div>
 
-          <div className="mapply-field">
-            <label>节数</label>
-            <div className="mapply-stepper">
-              <button type="button" onClick={() => setBatchPeriodCount((n) => Math.max(1, n - 1))}>−</button>
-              <span>{batchPeriodCount}</span>
-              <button type="button" onClick={() => setBatchPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+          {showPeriodCount && (
+            <div className="mapply-field">
+              <label>节数</label>
+              <div className="mapply-stepper">
+                <button type="button" onClick={() => setBatchPeriodCount((n) => Math.max(1, n - 1))}>−</button>
+                <span>{batchPeriodCount}</span>
+                <button type="button" onClick={() => setBatchPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="mapply-field">
             <label>班级（选填，晚自习等班级级类型填）</label>

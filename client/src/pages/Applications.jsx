@@ -53,6 +53,8 @@ export default function Applications() {
   // 课程填报批量导入
   const [courseImport, setCourseImport] = useState(null); // { task, file }
   const [coursePreview, setCoursePreview] = useState(null); // { token, rows, summary }
+  // 自主申报设置：是否显示节数（后台开关，仅教务主任/admin 可改）
+  const [showPeriodCount, setShowPeriodCount] = useState(true);
 
   const loadQna = async (filter = qnaFilter) => {
     try {
@@ -75,6 +77,22 @@ export default function Applications() {
     } catch (e) { setError(errMsg(e)); }
   };
   useEffect(() => { if (canReview) { loadQna(); loadTasks(); } }, []);
+
+  // 拉取申报设置开关
+  useEffect(() => {
+    (async () => {
+      try { setShowPeriodCount((await api.get('/applications/apply-config')).data.data.show_period_count); } catch { /* 默认显示 */ }
+    })();
+  }, []);
+
+  const toggleShowPeriodCount = async () => {
+    const next = !showPeriodCount;
+    try {
+      await api.put('/applications/apply-config', { show_period_count: next });
+      setShowPeriodCount(next);
+      toast.success(next ? '已开启节数显示（教师端显示节数，默认 1 节）' : '已关闭节数显示（教师端隐藏节数，默认按 1 节计）');
+    } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const submitQna = async (e) => {
     e.preventDefault();
@@ -398,6 +416,27 @@ export default function Applications() {
               <button className="btn" onClick={downloadTemplate}>下载导入模板</button>
             </div>
             <p className="muted" style={{ margin: 0 }}>表头：年级、学科、类型、教师、班级、发生日期、节数、星期、节次、内容。导入后统一待审核。</p>
+          </div>}
+
+          {isAdmin && <div className="card apply-settings">
+            <div className="apply-settings-head">
+              <h3>申报设置</h3>
+              <span className="hint">控制教师手机端自主申报的表单显示</span>
+            </div>
+            <div className="setting-row">
+              <div className="setting-icon">节</div>
+              <div className="setting-info">
+                <div className="setting-title">
+                  显示节数
+                  <span className={`setting-state ${showPeriodCount ? 'on' : 'off'}`}>{showPeriodCount ? '已开启' : '已关闭'}</span>
+                </div>
+                <div className="setting-desc">教师手机端申报（答疑 / 晚自习 / 早自习 / 批量）时是否显示「节数」输入；关闭后默认按 1 节计。</div>
+              </div>
+              <label className="switch" title={showPeriodCount ? '点击关闭' : '点击开启'}>
+                <input type="checkbox" checked={showPeriodCount} onChange={toggleShowPeriodCount} />
+                <span className="switch-track"><span className="switch-thumb" /></span>
+              </label>
+            </div>
           </div>}
 
           <div className="card">
