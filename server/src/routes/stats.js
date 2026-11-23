@@ -10,6 +10,11 @@ router.use(authRequired);
 
 const CAL_TYPES = ['上课', '放假', '停课', '补课', '调课'];
 
+// 四舍五入到 1 位小数（次数/节数累加用，避免 0.6+0.7=1.2999999999999998 浮点尾数）
+const round1 = (v) => Math.round((Number(v) || 0) * 10) / 10;
+// 四舍五入到 2 位小数（金额/折算课时用）
+const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+
 // 本地日期 YYYY-MM-DD
 function localDate() {
   const d = new Date();
@@ -438,35 +443,35 @@ function buildFinancial(rows, ctx) {
     const { weighted, pay } = computePay(ctx, { ...r, count: unit });
     if (!teachers.has(r.teacher_id)) teachers.set(r.teacher_id, mkEntry(r.teacher_id, r.teacher_name));
     const e = teachers.get(r.teacher_id);
-    e.weighted_total += weighted;
-    e.pay_total += pay;
+    e.weighted_total = round2(e.weighted_total + weighted);
+    e.pay_total = round2(e.pay_total + pay);
 
     if (ctx.periodTypeCoefs.has(r.period_type)) {
-      e.coefCounts[r.period_type] = (e.coefCounts[r.period_type] || 0) + unit;
-      e.coefWeighted[r.period_type] = (e.coefWeighted[r.period_type] || 0) + weighted;
+      e.coefCounts[r.period_type] = round1((e.coefCounts[r.period_type] || 0) + unit);
+      e.coefWeighted[r.period_type] = round2((e.coefWeighted[r.period_type] || 0) + weighted);
     } else if (ctx.periodTypePays.has(r.period_type)) {
-      e.typeCounts[r.period_type] = (e.typeCounts[r.period_type] || 0) + unit;
-      e.typePays[r.period_type] = (e.typePays[r.period_type] || 0) + pay;
+      e.typeCounts[r.period_type] = round1((e.typeCounts[r.period_type] || 0) + unit);
+      e.typePays[r.period_type] = round2((e.typePays[r.period_type] || 0) + pay);
     } else if (r.term !== '常规') {
-      e.termCounts[r.term] = (e.termCounts[r.term] || 0) + unit;
-      e.termPays[r.term] = (e.termPays[r.term] || 0) + pay;
+      e.termCounts[r.term] = round1((e.termCounts[r.term] || 0) + unit);
+      e.termPays[r.term] = round2((e.termPays[r.term] || 0) + pay);
     } else {
-      e.core_count += unit; e.core_weighted += weighted;
+      e.core_count = round1(e.core_count + unit); e.core_weighted = round2(e.core_weighted + weighted);
     }
   }
 
   const list = [...teachers.values()].sort((a, b) => a.teacher_name.localeCompare(b.teacher_name, 'zh'));
   const sum = (fn) => list.reduce((s, e) => s + (fn(e) || 0), 0);
   const totals = {
-    core_count: sum((e) => e.core_count), core_weighted: sum((e) => e.core_weighted),
-    coefCounts: Object.fromEntries(coefColumns.map((t) => [t, sum((e) => e.coefCounts[t])])),
-    coefWeighted: Object.fromEntries(coefColumns.map((t) => [t, sum((e) => e.coefWeighted[t])])),
-    typeCounts: Object.fromEntries(typeColumns.map((t) => [t, sum((e) => e.typeCounts[t])])),
-    typePays: Object.fromEntries(typeColumns.map((t) => [t, sum((e) => e.typePays[t])])),
-    termCounts: Object.fromEntries(termColumns.map((t) => [t, sum((e) => e.termCounts[t])])),
-    termPays: Object.fromEntries(termColumns.map((t) => [t, sum((e) => e.termPays[t])])),
-    weighted_total: sum((e) => e.weighted_total),
-    pay_total: sum((e) => e.pay_total),
+    core_count: round1(sum((e) => e.core_count)), core_weighted: round2(sum((e) => e.core_weighted)),
+    coefCounts: Object.fromEntries(coefColumns.map((t) => [t, round1(sum((e) => e.coefCounts[t]))])),
+    coefWeighted: Object.fromEntries(coefColumns.map((t) => [t, round2(sum((e) => e.coefWeighted[t]))])),
+    typeCounts: Object.fromEntries(typeColumns.map((t) => [t, round1(sum((e) => e.typeCounts[t]))])),
+    typePays: Object.fromEntries(typeColumns.map((t) => [t, round2(sum((e) => e.typePays[t]))])),
+    termCounts: Object.fromEntries(termColumns.map((t) => [t, round1(sum((e) => e.termCounts[t]))])),
+    termPays: Object.fromEntries(termColumns.map((t) => [t, round2(sum((e) => e.termPays[t]))])),
+    weighted_total: round2(sum((e) => e.weighted_total)),
+    pay_total: round2(sum((e) => e.pay_total)),
   };
   return { teachers: list, coefColumns, typeColumns, termColumns, totals };
 }
@@ -497,19 +502,19 @@ router.get('/summary', (req, res) => {
     const e = map.get(r.teacher_id);
     // 节假补课正课单独成列（按课酬标准计酬），与周一至周五正课（按系数折算）分开展示
     const col = r.term === '节假补课' ? '节假补课' : r.period_type;
-    e[col] = (e[col] || 0) + unit;
-    e.total += unit;
+    e[col] = round1((e[col] || 0) + unit);
+    e.total = round1(e.total + unit);
     e.weighted_total += weighted;
     e.pay_total += pay;
     if (!e.terms[r.term]) e.terms[r.term] = { count: 0, weighted: 0 };
-    e.terms[r.term].count += unit;
+    e.terms[r.term].count = round1(e.terms[r.term].count + unit);
     e.terms[r.term].weighted += weighted;
   }
 
   const data = [...map.values()].map((e) => ({
     ...e,
-    weighted_total: Math.round(e.weighted_total * 100) / 100,
-    pay_total: Math.round(e.pay_total * 100) / 100,
+    weighted_total: round2(e.weighted_total),
+    pay_total: round2(e.pay_total),
   }));
   // 汇总表列：折算类型字典 + 正课 + 节假补课 + 按次计酬类型字典
   const types = [...ctx.periodTypeCoefs.keys(), '正课', '节假补课', ...ctx.periodTypePays.keys()];
