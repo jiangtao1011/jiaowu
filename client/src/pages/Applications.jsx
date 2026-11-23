@@ -59,6 +59,8 @@ export default function Applications() {
   const [batchTypes, setBatchTypes] = useState(null); // { typePays, typeCoefs, selected }
   // 申报设置卡片折叠态（默认收起）
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 一次时长（分钟），按次计酬按比例折算用
+  const [onceDuration, setOnceDuration] = useState(90);
 
   const loadQna = async (filter = qnaFilter) => {
     try {
@@ -94,6 +96,22 @@ export default function Applications() {
     try { setBatchTypes((await api.get('/applications/batch-config')).data.data); } catch { /* 忽略 */ }
   };
   useEffect(() => { if (isAdmin) loadBatchTypes(); }, []);
+
+  // 拉取一次时长配置
+  const loadOnceDuration = async () => {
+    try { setOnceDuration((await api.get('/applications/apply-duration-config')).data.data.once_duration_minutes); } catch { /* 默认 90 */ }
+  };
+  useEffect(() => { if (isAdmin) loadOnceDuration(); }, []);
+
+  const saveOnceDuration = async () => {
+    const n = Number(onceDuration);
+    if (!Number.isFinite(n) || n <= 0) return toast.error('一次时长需为正数（分钟）');
+    try {
+      await api.put('/applications/apply-duration-config', { once_duration_minutes: n });
+      toast.success('一次时长已保存');
+      loadOnceDuration();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const toggleBatchType = (name) => {
     setBatchTypes((prev) => {
@@ -470,6 +488,24 @@ export default function Applications() {
                       <span className="switch-track"><span className="switch-thumb" /></span>
                     </label>
                   </div>
+
+                  <div className="setting-row" style={{ marginTop: 16 }}>
+                    <div className="setting-icon">时</div>
+                    <div className="setting-info">
+                      <div className="setting-title">一次时长</div>
+                      <div className="setting-desc">一对一等按次计酬课程，「一次」的时长标准（分钟）。上报时长按「时长 ÷ 一次时长」折算次数。</div>
+                    </div>
+                    <div className="setting-input-wrap">
+                      <input
+                        className="setting-input"
+                        type="number" min="1" step="1"
+                        value={onceDuration}
+                        onChange={(e) => setOnceDuration(e.target.value)}
+                      />
+                      <span className="setting-unit">分钟</span>
+                      <button className="btn primary sm" onClick={saveOnceDuration}>保存</button>
+                    </div>
+                  </div>
                 </div>
 
                 {/* 分区二：批量申报类型 */}
@@ -649,7 +685,7 @@ export default function Applications() {
                     <tr key={a.id}>
                       <td>{a.teacher_name || '-'}</td>
                       <td>{a.date || '-'}</td>
-                      <td>{a.period_count || 1} 节</td>
+                      <td>{openTask.pay_mode === '按次计酬' ? `${a.unit_count ?? a.period_count ?? 1} 次` : `${a.period_count || 1} 节`}</td>
                       <td>{(() => {
                         try { return Object.values(a.form_data || {}).join(' / '); } catch { return '-'; }
                       })()}</td>

@@ -992,6 +992,14 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .setting-state.on  { color: var(--ok-strong);  background: var(--ok-soft); }
 .setting-state.off { color: var(--muted);     background: var(--bg); }
 
+/* 一次时长输入 */
+.setting-input-wrap { flex: none; display: flex; align-items: center; gap: 8px; }
+.setting-input {
+  width: 84px; border: 1px solid var(--border-strong); border-radius: 8px;
+  padding: 7px 10px; font-size: 14px; font-family: inherit; color: var(--text); background: var(--card);
+}
+.setting-unit { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+
 /* 批量申报类型勾选分组 */
 .batch-type-group { margin-top: 12px; }
 .batch-type-group:first-child { margin-top: 0; }

@@ -39,6 +39,8 @@ export default function CourseApply() {
   const [periodCount, setPeriodCount] = useState(1);   // 自填课时数
   // 我的申报记录
   const [myRecords, setMyRecords] = useState([]);
+  // 一次时长（分钟），一对一按比例折算用
+  const [onceDuration, setOnceDuration] = useState(90);
 
   useEffect(() => {
     (async () => {
@@ -57,6 +59,13 @@ export default function CourseApply() {
     try { setMyRecords((await api.get('/applications/my-course-applications')).data.data); } catch { /* 忽略 */ }
   };
   useEffect(() => { loadMyRecords(); }, []);
+
+  // 拉取一次时长配置（一对一按比例折算用），失败默认 90
+  useEffect(() => {
+    (async () => {
+      try { setOnceDuration((await api.get('/applications/apply-duration-config')).data.data.once_duration_minutes); } catch { /* 默认 90 */ }
+    })();
+  }, []);
 
   // 心理课：拉班级列表（按课程年级过滤）
   useEffect(() => {
@@ -117,11 +126,12 @@ export default function CourseApply() {
   if (loading) return <div className="mapply"><div className="mapply-loading">加载中…</div></div>;
   if (error && !course) return <div className="mapply"><div className="alert error">{error}</div></div>;
 
-  // 一对一：估算节数提示
+  // 一对一：按比例估算次数（时长 ÷ 一次时长，保留 2 位小数）
   const estCount = (() => {
     const d = Number(duration);
     if (!Number.isFinite(d) || d <= 0) return null;
-    return Math.max(1, Math.ceil(d / 90));
+    const p = Number.isFinite(onceDuration) && onceDuration > 0 ? onceDuration : 90;
+    return Math.round((d / p) * 100) / 100;
   })();
 
   return (
@@ -185,7 +195,7 @@ export default function CourseApply() {
               <div className="mapply-field">
                 <label>辅导时长（分钟）*</label>
                 <input type="number" min="1" value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="如 90" />
-                {estCount != null && <p className="mapply-form-hint">按 1 节 = 90 分钟，本次计 {estCount} 节</p>}
+                {estCount != null && <p className="mapply-form-hint">按 1 次 = {onceDuration} 分钟，本次计 {estCount} 次</p>}
               </div>
               <div className="mapply-field">
                 <label>辅导学生姓名 *</label>
@@ -250,7 +260,9 @@ export default function CourseApply() {
                   <span className="mapply-record-title">{r.task_title || '课程申报'}</span>
                 </div>
                 <div className="mapply-record-line2">
-                  {r.date || '-'}{r.period_count ? ` · ${r.period_count}节` : ''}{r.class_name ? ` · ${r.class_name}` : ''}{r.subject ? ` · ${r.subject}` : ''}
+                  {r.date || '-'}{r.pay_mode === '按次计酬'
+                    ? (r.unit_count ? ` · ${r.unit_count}次` : '')
+                    : (r.period_count ? ` · ${r.period_count}节` : '')}{r.class_name ? ` · ${r.class_name}` : ''}{r.subject ? ` · ${r.subject}` : ''}
                 </div>
               </div>
               <div className="mapply-record-side">

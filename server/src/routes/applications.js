@@ -123,6 +123,41 @@ router.put('/batch-config', authRequired, roleRequired(...DIRECTOR_ROLES), (req,
   return res.json({ ok: true, data: { selected: cleaned } });
 });
 
+// ===== 一次时长设置（按次计酬：一次 = 多少分钟，按比例折算次数） =====
+const DEFAULT_ONCE_DURATION = 90;
+
+// 读取「一次时长」分钟数；无效/未配置回退 90。
+function onceDurationMinutes() {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'once_duration_minutes'").get();
+  const n = Number(row?.value);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_ONCE_DURATION;
+}
+
+// 按次计酬的「时长 → 次数」按比例折算：次数 = 时长 ÷ 一次时长，保留 2 位小数（最小 0.01）。
+function durationToUnits(durationMin, perUnitMin) {
+  const d = Number(durationMin);
+  if (!Number.isFinite(d) || d <= 0) return 1;
+  const p = Number.isFinite(perUnitMin) && perUnitMin > 0 ? perUnitMin : DEFAULT_ONCE_DURATION;
+  return Math.max(0.01, Math.round((d / p) * 100) / 100);
+}
+
+// 读取一次时长配置（登录即可，手机端估算提示用）
+router.get('/apply-duration-config', authRequired, (req, res) => {
+  res.json({ ok: true, data: { once_duration_minutes: onceDurationMinutes() } });
+});
+
+// 更新一次时长配置（教务主任/admin）
+router.put('/apply-duration-config', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
+  const { once_duration_minutes } = req.body || {};
+  const n = Number(once_duration_minutes);
+  if (!Number.isFinite(n) || n <= 0) return res.status(400).json({ ok: false, error: '一次时长需为正数（分钟）' });
+  db.prepare(`INSERT INTO app_settings (key, value) VALUES ('once_duration_minutes', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')`)
+    .run(String(n));
+  logAudit(req.user.id, 'update_apply_duration', 'app_settings', `一次时长=${n} 分钟`);
+  return res.json({ ok: true, data: { once_duration_minutes: n } });
+});
+
 // 查找「活跃」（待审核/已通过）的重复申报，返回命中记录或 null。
 // 重复口径：同一教师 + 同一类型 + 同一时间维度 + 同一目标。
 //  - 临时（有 date）：teacher + type + date + 目标
@@ -886,10 +921,11 @@ router.post('/tasks/:taskId/apply', authRequired, uploadAttachment.array('attach
 
   // ===== 场景化「量」计算 =====
   let count = 1;
+  let unitCount = 1; // 按比例折算次数（按次计酬为小数；其余恒为 1）
   if (task.pay_mode === '按次计酬') {
-    // 一对一：⌈时长(分钟)/90⌉ 节，最小 1 节
+    // 一对一/一对二：次数 = 时长 ÷ 一次时长，按比例折算（可小数）。
     const durationMin = Number(fd.duration ?? fd.时长 ?? 0);
-    count = Number.isFinite(durationMin) && durationMin > 0 ? Math.max(1, Math.ceil(durationMin / 90)) : 1;
+    unitCount = durationToUnits(durationMin, onceDurationMinutes());
   } else if (task.pay_mode === '正课折算') {
     // 心理课：每次固定 1 课时
     count = 1;
@@ -897,6 +933,7 @@ router.post('/tasks/:taskId/apply', authRequired, uploadAttachment.array('attach
     // 固定折算（竞赛）：老师自填课时数（period_count 优先，其次 form_data 里的课时数）
     const pc = Number(period_count) || Number(fd.period_count ?? fd.课时数) || 1;
     count = Math.max(1, pc);
+    unitCount = count;
   }
 
   // 正课折算：必须选具体班级（班额系数依赖班级）
@@ -936,10 +973,10 @@ router.post('/tasks/:taskId/apply', authRequired, uploadAttachment.array('attach
   }
 
   const info = db.prepare(`
-    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, class_id, period_no, subject, status, filled_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, class_id, period_no, subject, status, filled_by, unit_count)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
     .run(taskId, teacherId, JSON.stringify(fd), count, date, resolvedClassId,
-      period_no ? Number(period_no) : null, resolvedSubject, 'pending', req.user.id);
+      period_no ? Number(period_no) : null, resolvedSubject, 'pending', req.user.id, unitCount);
 
   // 附件落盘
   const attId = Number(info.lastInsertRowid);
@@ -966,13 +1003,13 @@ function buildCourseImportRecord(row, ctx, task) {
   if (!date) return { ok: false, reason: '上课日期格式应为 YYYY-MM-DD' };
 
   if (task.pay_mode === '按次计酬') {
-    // 一对一：学生姓名 + 时长（分钟）→ 节数 = ⌈时长/90⌉
+    // 一对一/一对二：学生姓名 + 时长（分钟），次数按比例折算（时长 ÷ 一次时长）。
     const student = String(keyOf(row, '学生姓名', '学生', 'student_name') ?? '').trim();
     const durationMin = Number(keyOf(row, '时长(分钟)', '时长', 'duration') ?? '');
     if (!student) return { ok: false, reason: '缺少学生姓名' };
     if (!Number.isFinite(durationMin) || durationMin <= 0) return { ok: false, reason: '时长(分钟)需为正数' };
     const fd = { student_name: student, duration: durationMin };
-    return { ok: true, record: { teacher_id: teacherId, form_data: fd, period_count: Math.max(1, Math.ceil(durationMin / 90)), date, class_id: null, period_no: null, subject: null } };
+    return { ok: true, record: { teacher_id: teacherId, form_data: fd, period_count: 1, unit_count: durationToUnits(durationMin, onceDurationMinutes()), date, class_id: null, period_no: null, subject: null } };
   }
 
   if (task.pay_mode === '正课折算') {
@@ -1081,8 +1118,8 @@ router.post('/tasks/:taskId/import/confirm', authRequired, roleRequired(...DIREC
 
   const selected = new Set(Array.isArray(row_ids) ? row_ids.map(Number) : []);
   const ins = db.prepare(`
-    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, class_id, period_no, subject, status, filled_by)
-    VALUES (?,?,?,?,?,?,?,?, 'pending', ?)`);
+    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, class_id, period_no, subject, status, filled_by, unit_count)
+    VALUES (?,?,?,?,?,?,?,?, 'pending', ?, ?)`);
   let inserted = 0;
   const errors = [];
 
@@ -1091,7 +1128,7 @@ router.post('/tasks/:taskId/import/confirm', authRequired, roleRequired(...DIREC
     const rec = r.record;
     try {
       ins.run(taskId, rec.teacher_id, JSON.stringify(rec.form_data || {}), rec.period_count, rec.date,
-        rec.class_id ?? null, rec.period_no ?? null, rec.subject ?? null, req.user.id);
+        rec.class_id ?? null, rec.period_no ?? null, rec.subject ?? null, req.user.id, rec.unit_count ?? 1);
       inserted++;
     } catch (e) {
       errors.push(`第 ${r.line} 行：${e.message}`);
@@ -1192,17 +1229,29 @@ router.patch('/applications/:id/review', authRequired, roleRequired(...REVIEW_RO
         insert.run(classId, a.teacher_id, a.subject ?? null, a.date, pno + i, a.id, a.course_name ?? null);
       }
       created = count;
+    } else if (a.pay_mode === '按次计酬') {
+      // 一对一等按次计酬：次数 = 时长 ÷ 一次时长（提交时已算好存 applications.unit_count），插 1 行带 unit_count。
+      let classId = a.task_grade ? virtualClassIdForGrade(a.task_grade) : null;
+      if (!classId) classId = universalVirtualClassId();
+      if (!classId) {
+        return res.status(400).json({ ok: false, error: '缺少计酬挂靠的虚班，请联系管理员初始化' });
+      }
+      const unit = Number(a.unit_count) > 0 ? Number(a.unit_count) : 1;
+      db.prepare(`
+        INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note, unit_count)
+        VALUES (?,?,?,?,0,?, '常规', 'course', ?, ?, ?)`)
+        .run(classId, a.teacher_id, a.task_subject ?? null, a.date, payType, a.id, a.course_name ?? null, unit);
+      created = 1;
     } else {
-      // 按次计酬 / 固定折算：挂虚班占位（不读班级的计酬，仅满足 class_id NOT NULL）。
-      // 课程设了年级则挂年级虚班（保留分年级覆盖价能力）；否则挂通用虚班（个人课）。
+      // 固定折算：按填报课时数生成整数条上课记录（每条 unit_count=1）。
       let classId = a.task_grade ? virtualClassIdForGrade(a.task_grade) : null;
       if (!classId) classId = universalVirtualClassId();
       if (!classId) {
         return res.status(400).json({ ok: false, error: '缺少计酬挂靠的虚班，请联系管理员初始化' });
       }
       const insert = db.prepare(`
-        INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note)
-        VALUES (?,?,?,?,0,?, '常规', 'course', ?, ?)`);
+        INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note, unit_count)
+        VALUES (?,?,?,?,0,?, '常规', 'course', ?, ?, 1)`);
       for (let i = 0; i < count; i++) {
         insert.run(classId, a.teacher_id, a.task_subject ?? null, a.date, payType, a.id, a.course_name ?? null);
       }

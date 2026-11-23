@@ -502,6 +502,14 @@ ensureColumn('applications', 'class_id', 'INTEGER REFERENCES classes(id)'); // �
 ensureColumn('applications', 'period_no', 'INTEGER');              // 节次（心理课记录第几节，不参与量）
 ensureColumn('applications', 'subject', 'TEXT');                   // 正课折算学科快照（任务未预设时由老师填报选）
 
+// 课程申报按比例折算：unit_count = 折算次数（可小数，如一对一 45 分钟÷90 = 0.5 次）。
+// 按次计酬在提交时算好存此；固定折算/正课折算恒为 1。前端「我的记录/申报列表」按次计酬显示此列。
+ensureColumn('applications', 'unit_count', 'REAL NOT NULL DEFAULT 1');
+
+// 上课记录按比例折算：unit_count = 折算次数/节数（可为小数，如一对一 100 分钟÷90 = 1.11 次）。
+// 常规/折算/正课等按整数节生成时 unit_count=1；按次计酬按「时长÷一次时长」写入小数次数。
+ensureColumn('lesson_instances', 'unit_count', 'REAL NOT NULL DEFAULT 1');
+
 // 迁移：school_calendar 支持「年级级停课」——加 grade 列，并把唯一约束从 date 改为 (date, grade)。
 // 旧表是 date UNIQUE，需重建（该表本次会话刚建、生产无真实数据，重建安全）。
 if (!db.prepare(`PRAGMA table_info(school_calendar)`).all().some((c) => c.name === 'grade')) {

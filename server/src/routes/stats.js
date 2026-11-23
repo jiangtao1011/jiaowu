@@ -434,23 +434,24 @@ function buildFinancial(rows, ctx) {
 
   for (const r of rows) {
     if (r.cancelled) continue; // 停课不计酬
-    const { weighted, pay } = computePay(ctx, { ...r, count: 1 });
+    const unit = r.unit_count ?? 1;
+    const { weighted, pay } = computePay(ctx, { ...r, count: unit });
     if (!teachers.has(r.teacher_id)) teachers.set(r.teacher_id, mkEntry(r.teacher_id, r.teacher_name));
     const e = teachers.get(r.teacher_id);
     e.weighted_total += weighted;
     e.pay_total += pay;
 
     if (ctx.periodTypeCoefs.has(r.period_type)) {
-      e.coefCounts[r.period_type] = (e.coefCounts[r.period_type] || 0) + 1;
+      e.coefCounts[r.period_type] = (e.coefCounts[r.period_type] || 0) + unit;
       e.coefWeighted[r.period_type] = (e.coefWeighted[r.period_type] || 0) + weighted;
     } else if (ctx.periodTypePays.has(r.period_type)) {
-      e.typeCounts[r.period_type] = (e.typeCounts[r.period_type] || 0) + 1;
+      e.typeCounts[r.period_type] = (e.typeCounts[r.period_type] || 0) + unit;
       e.typePays[r.period_type] = (e.typePays[r.period_type] || 0) + pay;
     } else if (r.term !== '常规') {
-      e.termCounts[r.term] = (e.termCounts[r.term] || 0) + 1;
+      e.termCounts[r.term] = (e.termCounts[r.term] || 0) + unit;
       e.termPays[r.term] = (e.termPays[r.term] || 0) + pay;
     } else {
-      e.core_count += 1; e.core_weighted += weighted;
+      e.core_count += unit; e.core_weighted += weighted;
     }
   }
 
@@ -483,7 +484,8 @@ router.get('/summary', (req, res) => {
 
   const map = new Map();
   for (const r of scoped) {
-    const { weighted, pay } = computePay(ctx, { ...r, count: 1 });
+    const unit = r.unit_count ?? 1;
+    const { weighted, pay } = computePay(ctx, { ...r, count: unit });
 
     if (!map.has(r.teacher_id)) {
       map.set(r.teacher_id, {
@@ -495,12 +497,12 @@ router.get('/summary', (req, res) => {
     const e = map.get(r.teacher_id);
     // 节假补课正课单独成列（按课酬标准计酬），与周一至周五正课（按系数折算）分开展示
     const col = r.term === '节假补课' ? '节假补课' : r.period_type;
-    e[col] = (e[col] || 0) + 1;
-    e.total += 1;
+    e[col] = (e[col] || 0) + unit;
+    e.total += unit;
     e.weighted_total += weighted;
     e.pay_total += pay;
     if (!e.terms[r.term]) e.terms[r.term] = { count: 0, weighted: 0 };
-    e.terms[r.term].count += 1;
+    e.terms[r.term].count += unit;
     e.terms[r.term].weighted += weighted;
   }
 
@@ -676,7 +678,7 @@ router.get('/export', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
   const aoa = [headers];
   for (const r of rows) {
     // 停课不计酬，但仍保留行（标「已停课」），财务才能对全貌
-    const { weighted, pay } = r.cancelled ? { weighted: 0, pay: 0 } : computePay(ctx, { ...r, count: 1 });
+    const { weighted, pay } = r.cancelled ? { weighted: 0, pay: 0 } : computePay(ctx, { ...r, count: (r.unit_count ?? 1) });
     aoa.push([
       r.date,
       r.teacher_name,
@@ -815,7 +817,7 @@ router.get('/financial-check', roleRequired(...RESULT_VIEW_ROLES), (req, res) =>
   let detailPay = 0;
   for (const r of rows) {
     if (r.cancelled) continue;
-    detailPay += computePay(ctx, { ...r, count: 1 }).pay;
+    detailPay += computePay(ctx, { ...r, count: (r.unit_count ?? 1) }).pay;
   }
   detailPay = round2(detailPay);
 
@@ -884,7 +886,7 @@ router.get('/financial-check', roleRequired(...RESULT_VIEW_ROLES), (req, res) =>
   const bySubject = {};
   for (const r of rows) {
     if (r.cancelled) continue;
-    const { pay } = computePay(ctx, { ...r, count: 1 });
+    const { pay } = computePay(ctx, { ...r, count: (r.unit_count ?? 1) });
     if (!pay) continue;
     const g = r.class_grade || '未分年级';
     const s = r.subject || '未填学科';
@@ -1021,7 +1023,7 @@ router.get('/financial-pack', roleRequired(...RESULT_VIEW_ROLES), (req, res) => 
   const detailHeader = ['日期', '教师', '班级', '学科', '节次', '类型', '时段', '来源', '原教师', '状态', '折算课时', '课酬(元)'];
   const detailAoa = [detailHeader];
   for (const r of allRows) {
-    const { weighted, pay } = r.cancelled ? { weighted: 0, pay: 0 } : computePay(ctx, { ...r, count: 1 });
+    const { weighted, pay } = r.cancelled ? { weighted: 0, pay: 0 } : computePay(ctx, { ...r, count: (r.unit_count ?? 1) });
     detailAoa.push([
       r.date, r.teacher_name, r.class_name, r.subject ?? '', r.period_no > 0 ? r.period_no : '—', r.period_type, r.term,
       srcLabel[r.source] || r.source, (r.source === 'adjust' ? r.parent_teacher_name : '') || '',
@@ -1034,13 +1036,13 @@ router.get('/financial-pack', roleRequired(...RESULT_VIEW_ROLES), (req, res) => 
 
   // Sheet3 勾稽校验（金额勾稽 + 交叉汇总）
   let detailPay = 0;
-  for (const r of allRows) if (!r.cancelled) detailPay += computePay(ctx, { ...r, count: 1 }).pay;
+  for (const r of allRows) if (!r.cancelled) detailPay += computePay(ctx, { ...r, count: (r.unit_count ?? 1) }).pay;
   detailPay = round2(detailPay);
   const byGrade = {};
   const bySubject = {};
   for (const r of allRows) {
     if (r.cancelled) continue;
-    const { pay } = computePay(ctx, { ...r, count: 1 });
+    const { pay } = computePay(ctx, { ...r, count: (r.unit_count ?? 1) });
     if (!pay) continue;
     byGrade[r.class_grade || '未分年级'] = round2((byGrade[r.class_grade || '未分年级'] || 0) + pay);
     bySubject[r.subject || '未填学科'] = round2((bySubject[r.subject || '未填学科'] || 0) + pay);
