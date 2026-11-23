@@ -337,9 +337,12 @@ export default function Stats() {
     } catch (e) { toast.error(errMsg(e)); }
   };
 
-  const totalLessons = summary.reduce((s, r) => s + r.total, 0);
-  const totalWeighted = summary.reduce((s, r) => s + r.weighted_total, 0);
-  const totalPay = summary.reduce((s, r) => s + (r.pay_total || 0), 0);
+  const round1 = (v) => Math.round((v || 0) * 10) / 10;
+  const round2 = (v) => Math.round((v || 0) * 100) / 100;
+
+  const totalLessons = round1(summary.reduce((s, r) => s + (r.total || 0), 0));
+  const totalWeighted = round2(summary.reduce((s, r) => s + (r.weighted_total || 0), 0));
+  const totalPay = round2(summary.reduce((s, r) => s + (r.pay_total || 0), 0));
   const teacherCount = summary.length;
   const grades = [...new Set(classes.map((c) => c.grade).filter(Boolean))].sort();
 
@@ -359,13 +362,12 @@ export default function Stats() {
   const moneyCols = new Set([...summaryTypes].filter((t) => t === '节假补课' || typePays.some((x) => x.name === t)));
   const weightCols = new Set([...summaryTypes].filter((t) => !moneyCols.has(t)));
   const summaryTotals = summary.reduce((acc, r) => {
-    acc.total += r.total || 0;
-    acc.weighted += r.weighted_total || 0;
-    acc.pay += r.pay_total || 0;
-    for (const t of summaryTypes) acc.byType[t] = (acc.byType[t] || 0) + (r[t] || 0);
+    acc.total = round1(acc.total + (r.total || 0));
+    acc.weighted = round2(acc.weighted + (r.weighted_total || 0));
+    acc.pay = round2(acc.pay + (r.pay_total || 0));
+    for (const t of summaryTypes) acc.byType[t] = round1((acc.byType[t] || 0) + (r[t] || 0));
     return acc;
   }, { total: 0, weighted: 0, pay: 0, byType: {} });
-  const round2 = (v) => Math.round((v || 0) * 100) / 100;
 
   return (
     <div>
@@ -420,8 +422,8 @@ export default function Stats() {
 
           <div className="stat-row">
             <div className="stat-card"><div className="v">{totalLessons}</div><div className="l">原始课时</div></div>
-            <div className="stat-card"><div className="v">{Math.round(totalWeighted * 100) / 100}</div><div className="l">折算课时</div></div>
-            <div className="stat-card"><div className="v">{Math.round(totalPay * 100) / 100}</div><div className="l">课酬合计(元)</div></div>
+            <div className="stat-card"><div className="v">{totalWeighted}</div><div className="l">折算课时</div></div>
+            <div className="stat-card"><div className="v">{totalPay}</div><div className="l">课酬合计(元)</div></div>
             <div className="stat-card"><div className="v">{teacherCount}</div><div className="l">有课教师</div></div>
           </div>
 
