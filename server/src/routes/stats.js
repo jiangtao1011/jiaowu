@@ -426,6 +426,8 @@ function buildFinancial(rows, ctx) {
   const coefColumns = [...ctx.periodTypeCoefs.keys()]; // 折算类型（早自习等）
   const typeColumns = [...ctx.periodTypePays.keys()];  // 按次计酬类型
   const termColumns = NON_REGULAR_TERMS;
+  // 手工课酬类型（manual_pay 非空 的记录按 period_type 分组）
+  const manualColumns = [...new Set(rows.filter((r) => r.manual_pay != null && r.manual_pay !== '').map((r) => r.period_type))];
 
   const mkEntry = (tid, name) => ({
     teacher_id: tid, teacher_name: name,
@@ -433,6 +435,7 @@ function buildFinancial(rows, ctx) {
     coefCounts: {}, coefWeighted: {},      // 折算类型：节数 / 折算课时
     typeCounts: {}, typePays: {},          // 按次计酬类型：节数 / 金额
     termCounts: {}, termPays: {},          // 非规时段：节数 / 金额
+    manualCounts: {}, manualPays: {},      // 手工课酬：节数 / 金额
     weighted_total: 0, pay_total: 0,
   });
   const teachers = new Map();
@@ -446,7 +449,11 @@ function buildFinancial(rows, ctx) {
     e.weighted_total = round2(e.weighted_total + weighted);
     e.pay_total = round2(e.pay_total + pay);
 
-    if (ctx.periodTypeCoefs.has(r.period_type)) {
+    if (r.manual_pay != null && r.manual_pay !== '') {
+      // 手工课酬：单独分组，不计折算
+      e.manualCounts[r.period_type] = round1((e.manualCounts[r.period_type] || 0) + unit);
+      e.manualPays[r.period_type] = round2((e.manualPays[r.period_type] || 0) + pay);
+    } else if (ctx.periodTypeCoefs.has(r.period_type)) {
       e.coefCounts[r.period_type] = round1((e.coefCounts[r.period_type] || 0) + unit);
       e.coefWeighted[r.period_type] = round2((e.coefWeighted[r.period_type] || 0) + weighted);
     } else if (ctx.periodTypePays.has(r.period_type)) {
@@ -470,10 +477,12 @@ function buildFinancial(rows, ctx) {
     typePays: Object.fromEntries(typeColumns.map((t) => [t, round2(sum((e) => e.typePays[t]))])),
     termCounts: Object.fromEntries(termColumns.map((t) => [t, round1(sum((e) => e.termCounts[t]))])),
     termPays: Object.fromEntries(termColumns.map((t) => [t, round2(sum((e) => e.termPays[t]))])),
+    manualCounts: Object.fromEntries(manualColumns.map((t) => [t, round1(sum((e) => e.manualCounts[t]))])),
+    manualPays: Object.fromEntries(manualColumns.map((t) => [t, round2(sum((e) => e.manualPays[t]))])),
     weighted_total: round2(sum((e) => e.weighted_total)),
     pay_total: round2(sum((e) => e.pay_total)),
   };
-  return { teachers: list, coefColumns, typeColumns, termColumns, totals };
+  return { teachers: list, coefColumns, typeColumns, termColumns, manualColumns, totals };
 }
 
 router.get('/summary', (req, res) => {
@@ -718,7 +727,7 @@ router.get('/financial-report', roleRequired(...RESULT_VIEW_ROLES), (req, res) =
   if (!from_date || !to_date) return res.status(400).json({ ok: false, error: '请提供 from_date 与 to_date' });
   const ctx = loadContext();
   const rows = queryRows(from_date, to_date, term, teacher_id);
-  const { teachers, coefColumns, typeColumns, termColumns, totals } = buildFinancial(rows, ctx);
+  const { teachers, coefColumns, typeColumns, termColumns, manualColumns, totals } = buildFinancial(rows, ctx);
 
   const round2 = (v) => Math.round((v || 0) * 100) / 100;
 
@@ -728,6 +737,7 @@ router.get('/financial-report', roleRequired(...RESULT_VIEW_ROLES), (req, res) =
     ...coefColumns.flatMap((t) => [`${t}节数`, `${t}折算课时(不计钱)`]),
     ...typeColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
     ...termColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
+    ...manualColumns.flatMap((t) => [`${t}手工课酬(元)`]),
     '折算课时合计', '课酬合计(元)', '备注',
   ];
   const aoa = [header];
@@ -738,6 +748,7 @@ router.get('/financial-report', roleRequired(...RESULT_VIEW_ROLES), (req, res) =
       ...coefColumns.flatMap((t) => [e.coefCounts[t] || 0, round2(e.coefWeighted[t])]),
       ...typeColumns.flatMap((t) => [e.typeCounts[t] || 0, round2(e.typePays[t])]),
       ...termColumns.flatMap((t) => [e.termCounts[t] || 0, round2(e.termPays[t])]),
+      ...manualColumns.flatMap((t) => [round2(e.manualPays[t])]),
       round2(e.weighted_total), round2(e.pay_total), '',
     ]);
   });
@@ -749,6 +760,7 @@ router.get('/financial-report', roleRequired(...RESULT_VIEW_ROLES), (req, res) =
     ...coefColumns.flatMap((t) => [totals.coefCounts[t] || 0, round2(totals.coefWeighted[t])]),
     ...typeColumns.flatMap((t) => [totals.typeCounts[t] || 0, round2(totals.typePays[t])]),
     ...termColumns.flatMap((t) => [totals.termCounts[t] || 0, round2(totals.termPays[t])]),
+    ...manualColumns.flatMap((t) => [round2(totals.manualPays[t])]),
     round2(totals.weighted_total), round2(totals.pay_total), '',
   ]);
 
@@ -998,6 +1010,7 @@ router.get('/financial-pack', roleRequired(...RESULT_VIEW_ROLES), (req, res) => 
     ...fin.coefColumns.flatMap((t) => [`${t}节数`, `${t}折算课时(不计钱)`]),
     ...fin.typeColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
     ...fin.termColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
+    ...fin.manualColumns.flatMap((t) => [`${t}手工课酬(元)`]),
     '折算课时合计', '课酬合计(元)', '备注',
   ];
   const aoa = [header];
@@ -1008,6 +1021,7 @@ router.get('/financial-pack', roleRequired(...RESULT_VIEW_ROLES), (req, res) => 
       ...fin.coefColumns.flatMap((t) => [e.coefCounts[t] || 0, round2(e.coefWeighted[t])]),
       ...fin.typeColumns.flatMap((t) => [e.typeCounts[t] || 0, round2(e.typePays[t])]),
       ...fin.termColumns.flatMap((t) => [e.termCounts[t] || 0, round2(e.termPays[t])]),
+      ...fin.manualColumns.flatMap((t) => [round2(e.manualPays[t])]),
       round2(e.weighted_total), round2(e.pay_total), '',
     ]);
   });
@@ -1017,6 +1031,7 @@ router.get('/financial-pack', roleRequired(...RESULT_VIEW_ROLES), (req, res) => 
     ...fin.coefColumns.flatMap((t) => [fin.totals.coefCounts[t] || 0, round2(fin.totals.coefWeighted[t])]),
     ...fin.typeColumns.flatMap((t) => [fin.totals.typeCounts[t] || 0, round2(fin.totals.typePays[t])]),
     ...fin.termColumns.flatMap((t) => [fin.totals.termCounts[t] || 0, round2(fin.totals.termPays[t])]),
+    ...fin.manualColumns.flatMap((t) => [round2(fin.totals.manualPays[t])]),
     round2(fin.totals.weighted_total), round2(fin.totals.pay_total), '',
   ]);
   const ws1 = XLSX.utils.aoa_to_sheet(aoa);

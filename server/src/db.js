@@ -496,12 +496,16 @@ ensureColumn('application_tasks', 'period_type', 'TEXT');          // 计酬类�
 ensureColumn('application_tasks', 'subject', 'TEXT');              // 学科
 ensureColumn('application_tasks', 'grade', 'TEXT');                // 年级（计酬挂年级虚班 + 统计归类）
 ensureColumn('application_tasks', 'share_token', 'TEXT');          // 分享 token
+ensureColumn('application_tasks', 'chargeable', 'INTEGER NOT NULL DEFAULT 0'); // 是否支持收费（竞赛课勾上，填报时可选收费/不收费）
 ensureColumn('applications', 'form_data', 'TEXT');                 // JSON 教师填报值
 ensureColumn('applications', 'period_count', 'INTEGER NOT NULL DEFAULT 1'); // 课时数
 ensureColumn('applications', 'date', 'TEXT');                      // 上课日期（计酬必需）
 ensureColumn('applications', 'class_id', 'INTEGER REFERENCES classes(id)'); // 正课折算挂班（心理/音乐等非周期课）
 ensureColumn('applications', 'period_no', 'INTEGER');              // 节次（心理课记录第几节，不参与量）
 ensureColumn('applications', 'subject', 'TEXT');                   // 正课折算学科快照（任务未预设时由老师填报选）
+ensureColumn('applications', 'is_charge', 'INTEGER NOT NULL DEFAULT 0'); // 本次填报是否收费（1=收费，需填学生名单）
+ensureColumn('applications', 'charge_amount', 'REAL');             // 学生缴费金额（审核时人工输入）
+ensureColumn('applications', 'teacher_pay', 'REAL');              // 老师课酬金额（审核时人工输入，与缴费分离）
 
 // 课程申报按比例折算：unit_count = 折算次数（可小数，如一对一 45 分钟÷90 = 0.5 次）。
 // 按次计酬在提交时算好存此；固定折算/正课折算恒为 1。前端「我的记录/申报列表」按次计酬显示此列。
@@ -510,6 +514,9 @@ ensureColumn('applications', 'unit_count', 'REAL NOT NULL DEFAULT 1');
 // 上课记录按比例折算：unit_count = 折算次数/节数（可为小数，如一对一 100 分钟÷90 = 1.11 次）。
 // 常规/折算/正课等按整数节生成时 unit_count=1；按次计酬按「时长÷一次时长」写入小数次数。
 ensureColumn('lesson_instances', 'unit_count', 'REAL NOT NULL DEFAULT 1');
+
+// 手工课酬金额：收费竞赛课等由教务主任审核时人工输入，优先于一切折算/单价计算。
+ensureColumn('lesson_instances', 'manual_pay', 'REAL');
 
 // 学科系数「不计班额」标记：音乐/美术/体育/中医等学科只按学科系数折算，不叠加班额系数。
 ensureColumn('subject_coefficients', 'no_size', 'INTEGER NOT NULL DEFAULT 0');

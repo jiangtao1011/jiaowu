@@ -37,6 +37,9 @@ export default function CourseApply() {
   const [files, setFiles] = useState([]);              // 辅导资料附件
   // 固定折算（监考/竞赛等）
   const [periodCount, setPeriodCount] = useState(1);   // 自填课时数
+  // 竞赛课收费：是否收费 + 学生名单
+  const [charging, setCharging] = useState(false);
+  const [students, setStudents] = useState('');        // 学生名单（每行一个姓名）
   // 我的申报记录
   const [myRecords, setMyRecords] = useState([]);
   // 一次时长（分钟），一对一按比例折算用
@@ -83,6 +86,7 @@ export default function CourseApply() {
   const isPsych = course?.pay_mode === '正课折算';      // 心理课
   const isOneToOne = course?.pay_mode === '按次计酬';    // 一对一
   const isCompetition = course?.pay_mode === '固定折算' || course?.pay_mode === '折算'; // 固定折算（监考/竞赛等）
+  const chargeable = !!course?.chargeable;               // 本课程是否支持收费（竞赛课）
   const schema = course?.form_schema || [];
 
   const setVal = (key, v) => setValues((prev) => ({ ...prev, [key]: v }));
@@ -104,6 +108,17 @@ export default function CourseApply() {
       if (!studentName.trim()) return toast.error('请填写学生姓名');
       fd.append('form_data', JSON.stringify({ duration: Number(duration), student_name: studentName.trim() }));
       for (const f of files) fd.append('attachments', f);
+    } else if (chargeable) {
+      // 收费竞赛课：收费则填学生名单，不收费则填课时数
+      if (charging) {
+        const studentList = students.split(/[\n,，、]/).map((s) => s.trim()).filter(Boolean);
+        if (!studentList.length) return toast.error('请填写学生名单（每行一个姓名）');
+        fd.append('is_charge', 'true');
+        fd.append('form_data', JSON.stringify({ students: studentList }));
+      } else {
+        fd.append('period_count', String(periodCount));
+        fd.append('form_data', JSON.stringify(values));
+      }
     } else {
       // 固定折算（监考/竞赛等）：字段由 form_schema 自定义驱动，必填校验
       for (const f of schema) {
@@ -118,7 +133,7 @@ export default function CourseApply() {
     try {
       await api.post(`/applications/tasks/${course.id}/apply`, fd);
       toast.success('申报已提交，待教务主任审核');
-      setStudentName(''); setValues({}); setClassId(''); setPeriodNo(''); setSubject(''); setDuration(''); setFiles([]); setPeriodCount(1);
+      setStudentName(''); setValues({}); setClassId(''); setPeriodNo(''); setSubject(''); setDuration(''); setFiles([]); setPeriodCount(1); setCharging(false); setStudents('');
       loadMyRecords();
     } catch (e) { toast.error(errMsg(e)); }
   };
@@ -210,7 +225,7 @@ export default function CourseApply() {
           )}
 
           {/* ===== 固定折算（监考/竞赛等，字段由课程自定义）===== */}
-          {isCompetition && (
+          {isCompetition && !chargeable && (
             <>
               {schema.map((f) => (
                 <div className="mapply-field" key={f.key}>
@@ -239,6 +254,36 @@ export default function CourseApply() {
                   <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
                 </div>
               </div>
+            </>
+          )}
+
+          {/* ===== 收费竞赛课：收费/不收费开关 + 学生名单 ===== */}
+          {isCompetition && chargeable && (
+            <>
+              <div className="mapply-field">
+                <label>收费类型</label>
+                <div className="mapply-chips">
+                  <button type="button" className={`mapply-chip ${!charging ? 'on' : ''}`} onClick={() => setCharging(false)}>不收费</button>
+                  <button type="button" className={`mapply-chip ${charging ? 'on' : ''}`} onClick={() => setCharging(true)}>收费</button>
+                </div>
+              </div>
+              {!charging ? (
+                <div className="mapply-field">
+                  <label>课时数</label>
+                  <div className="mapply-stepper">
+                    <button type="button" onClick={() => setPeriodCount((n) => Math.max(1, n - 1))}>−</button>
+                    <span>{periodCount}</span>
+                    <button type="button" onClick={() => setPeriodCount((n) => Math.min(12, n + 1))}>+</button>
+                  </div>
+                  <p className="mapply-form-hint">不收费：按课时数 × 竞赛系数折算，供教学业绩考核。</p>
+                </div>
+              ) : (
+                <div className="mapply-field">
+                  <label>学生名单（每行一个姓名）*</label>
+                  <textarea rows={5} value={students} onChange={(e) => setStudents(e.target.value)} placeholder={'张三\n李四\n王五'} />
+                  <p className="mapply-form-hint">收费：课酬金额由教务主任审核时确定，此处只登记学生名单。</p>
+                </div>
+              )}
             </>
           )}
 

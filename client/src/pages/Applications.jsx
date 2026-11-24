@@ -39,7 +39,7 @@ export default function Applications() {
   const [typeCoefs, setTypeCoefs] = useState([]); // 折算类型字典
   const [grades, setGrades] = useState([]);       // 年级枚举
   // 课程创建/编辑表单
-  const [taskForm, setTaskForm] = useState({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
+  const [taskForm, setTaskForm] = useState({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '', chargeable: false });
   const [fieldList, setFieldList] = useState([]); // 自定义字段 [{key,label,type,required,options}]
   const [editingTask, setEditingTask] = useState(null); // 正在编辑的课程；null=新建
   const [taskModal, setTaskModal] = useState(false); // 课程新建/编辑弹窗
@@ -50,6 +50,10 @@ export default function Applications() {
   const [copied, setCopied] = useState(false);
   // 固定折算课程审核时的档位覆盖（每笔待审记录 → 选中的折算档位名）
   const [appCoefMap, setAppCoefMap] = useState({});
+  // 收费申报审核弹窗：{ app } 记录 + 学生缴费/老师课酬金额
+  const [chargeReview, setChargeReview] = useState(null); // { app, fee, teacherPay }
+  const [chargeFee, setChargeFee] = useState('');
+  const [chargeTeacherPay, setChargeTeacherPay] = useState('');
   // 课程填报批量导入
   const [courseImport, setCourseImport] = useState(null); // { task, file }
   const [coursePreview, setCoursePreview] = useState(null); // { token, rows, summary }
@@ -246,11 +250,12 @@ export default function Applications() {
         period_type: task.period_type || '',
         subject: task.subject || '',
         grade: task.grade || '',
+        chargeable: !!task.chargeable,
       });
       setFieldList((task.form_schema || []).map((f) => ({ key: f.key, label: f.label || '', type: f.type || 'text', required: !!f.required, options: f.options || '' })));
     } else {
       setEditingTask(null);
-      setTaskForm({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
+      setTaskForm({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '', chargeable: false });
       setFieldList([]);
     }
     setTaskModal(true);
@@ -258,7 +263,7 @@ export default function Applications() {
   const closeTaskModal = () => {
     setTaskModal(false);
     setEditingTask(null);
-    setTaskForm({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '' });
+    setTaskForm({ title: '', deadline: '', filler_role: '教师', pay_mode: '按次计酬', period_type: '', subject: '', grade: '', chargeable: false });
     setFieldList([]);
   };
 
@@ -274,6 +279,7 @@ export default function Applications() {
           period_type: taskForm.period_type,
           subject: taskForm.subject || null,
           grade: taskForm.grade || null,
+          chargeable: taskForm.chargeable,
           form_schema: fieldList.filter((f) => f.label && f.key),
         });
         toast.success('课程已更新');
@@ -286,6 +292,7 @@ export default function Applications() {
           period_type: taskForm.period_type,
           subject: taskForm.subject || null,
           grade: taskForm.grade || null,
+          chargeable: taskForm.chargeable,
           form_schema: fieldList.filter((f) => f.label && f.key),
         });
         const created = res.data.data;
@@ -304,7 +311,30 @@ export default function Applications() {
   };
 
   const reviewApp = async (id, approved, periodType) => {
-    try { await api.patch(`/applications/applications/${id}/review`, { approved, period_type: periodType }); toast.success('已审核'); openApps(openTask); } catch (e) { toast.error(errMsg(e)); }
+    try {
+      await api.patch(`/applications/applications/${id}/review`, { approved, period_type: periodType });
+      toast.success('已审核');
+      openApps(openTask);
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  // 收费申报审核：弹窗填金额后提交
+  const openChargeReview = (app) => {
+    setChargeReview(app);
+    setChargeFee('');
+    setChargeTeacherPay('');
+  };
+  const submitChargeReview = async () => {
+    const fee = Number(chargeFee);
+    const tpay = Number(chargeTeacherPay);
+    if (!Number.isFinite(fee) || fee < 0) return toast.error('请填写学生缴费金额');
+    if (!Number.isFinite(tpay) || tpay < 0) return toast.error('请填写老师课酬金额');
+    try {
+      await api.patch(`/applications/applications/${chargeReview.id}/review`, { approved: true, charge_amount: fee, teacher_pay: tpay });
+      toast.success('已通过并录入缴费/课酬');
+      setChargeReview(null);
+      openApps(openTask);
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const withdrawApp = async (id) => {
@@ -692,7 +722,7 @@ export default function Applications() {
                       <td><span className={`badge ${STATUS_CLS[a.status]}`}>{STATUS[a.status]}</span></td>
                       <td>
                         <div className="toolbar" style={{ marginBottom: 0 }}>
-                          {isAdmin && a.status === 'pending' && (openTask.pay_mode === '固定折算' || openTask.pay_mode === '折算') && (
+                          {isAdmin && a.status === 'pending' && !a.is_charge && (openTask.pay_mode === '固定折算' || openTask.pay_mode === '折算') && (
                             <select
                               style={{ width: 140, padding: '4px 8px' }}
                               value={appCoefMap[a.id] || openTask.period_type || ''}
@@ -704,7 +734,11 @@ export default function Applications() {
                           )}
                           {isAdmin && a.status === 'pending' && (
                             <>
-                              <button className="btn sm primary" onClick={() => reviewApp(a.id, true, appCoefMap[a.id])}>通过</button>
+                              {a.is_charge ? (
+                                <button className="btn sm primary" onClick={() => openChargeReview(a)}>通过并录入</button>
+                              ) : (
+                                <button className="btn sm primary" onClick={() => reviewApp(a.id, true, appCoefMap[a.id])}>通过</button>
+                              )}
                               <button className="btn sm danger" onClick={() => reviewApp(a.id, false)}>驳回</button>
                             </>
                           )}
@@ -742,6 +776,7 @@ export default function Applications() {
             <p className="muted" style={{ margin: '12px 0 0' }}>
               {courseImport.task.pay_mode === '按次计酬' ? '表头：教师、上课日期、学生姓名、时长(分钟)。' :
                courseImport.task.pay_mode === '正课折算' ? '表头：教师、上课日期、班级、节次、学科。' :
+               courseImport.task.chargeable ? '表头：教师、上课日期、是否收费、学生名单、课时数。收费行填学生名单（逗号分隔），不收费行填课时数。' :
                '表头：教师、上课日期、学生姓名、上课内容、课时数。'}
               导入后统一待审核。
             </p>
@@ -752,7 +787,7 @@ export default function Applications() {
       {coursePreview && (
         <ImportPreview
           title={`批量导入「${courseImport.task.title}」填报`}
-          columns={['教师', '上课日期', '学生/班级', '时长/节次', '学科/内容']}
+          columns={courseImport.task.chargeable ? ['教师', '上课日期', '是否收费', '学生名单', '课时数'] : ['教师', '上课日期', '学生/班级', '时长/节次', '学科/内容']}
           rows={coursePreview.rows}
           summary={coursePreview.summary}
           onConfirm={confirmCourseImport}
@@ -796,6 +831,18 @@ export default function Applications() {
                     </select>
                   </div>
                 )}
+                {taskForm.pay_mode === '固定折算' && (
+                  <div className="switch-row" style={{ gridColumn: '1 / -1' }}>
+                    <div className="switch-info">
+                      <div className="switch-info-title">支持收费</div>
+                      <div className="switch-info-desc">开启后，教师填报时可选择「收费/不收费」；收费需填学生名单，金额由审核时人工输入</div>
+                    </div>
+                    <label className="switch" title={taskForm.chargeable ? '点击关闭' : '点击开启'}>
+                      <input type="checkbox" checked={taskForm.chargeable} onChange={(e) => setTaskForm({ ...taskForm, chargeable: e.target.checked })} />
+                      <span className="switch-track"><span className="switch-thumb" /></span>
+                    </label>
+                  </div>
+                )}
               </div>
 
               <div className="mt">
@@ -833,6 +880,58 @@ export default function Applications() {
                 <button type="submit" className="btn primary">{editingTask ? '保存修改' : '创建课程并生成分享'}</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* 收费申报审核录入弹窗 */}
+      {chargeReview && (
+        <div className="modal-overlay" onClick={() => setChargeReview(null)}>
+          <div className="modal" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>收费审核录入</h3>
+              <button className="btn ghost sm" onClick={() => setChargeReview(null)}>取消</button>
+            </div>
+
+            <div className="charge-review-meta">
+              <div className="charge-review-row"><span className="cr-label">教师</span><span>{chargeReview.teacher_name || '-'}</span></div>
+              <div className="charge-review-row"><span className="cr-label">日期</span><span>{chargeReview.date || '-'}</span></div>
+              <div className="charge-review-row">
+                <span className="cr-label">学生</span>
+                <span>
+                  {(chargeReview.form_data?.students || []).join('、') || '-'}
+                  {(chargeReview.form_data?.students || []).length > 0 && (
+                    <span className="cr-student-count">共 {(chargeReview.form_data.students).length} 人</span>
+                  )}
+                </span>
+              </div>
+            </div>
+
+            <div className="charge-review-form">
+              <div className="cr-field">
+                <label>学生缴费总额（元）</label>
+                <input type="number" min="0" step="1" autoFocus placeholder="如 800" value={chargeFee} onChange={(e) => setChargeFee(e.target.value)} />
+                {(() => {
+                  const n = (chargeReview.form_data?.students || []).length;
+                  const fee = Number(chargeFee);
+                  if (n > 0 && Number.isFinite(fee) && fee > 0) {
+                    const avg = Math.round((fee / n) * 100) / 100;
+                    return <span className="cr-hint">共 {n} 人，人均约 {avg} 元</span>;
+                  }
+                  return <span className="cr-hint">学生实际缴纳的总费用，用于缴费留档，不等于老师课酬</span>;
+                })()}
+              </div>
+              <div className="cr-field">
+                <label>老师课酬（元）</label>
+                <input type="number" min="0" step="1" placeholder="如 300" value={chargeTeacherPay} onChange={(e) => setChargeTeacherPay(e.target.value)} />
+                <span className="cr-hint">发放给老师的课酬金额，计入老师课酬统计</span>
+              </div>
+            </div>
+
+            <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, marginBottom: 0 }}>
+              <button className="btn" onClick={() => setChargeReview(null)}>取消</button>
+              <button className="btn primary" onClick={submitChargeReview}>确认通过</button>
+            </div>
           </div>
         </div>
       )}

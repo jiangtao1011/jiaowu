@@ -22,6 +22,11 @@ export function parsePayStandard(raw) {
 // 返回 { weighted, pay }，已含 count 乘数。供 stats.js（按日）与 schedules.js（课表）共用。
 export function computePay(ctx, r) {
   const count = r.count ?? 1;
+  // 手工课酬（收费竞赛课等）：优先于一切折算/单价计算，只计钱、不计折算课时。
+  // 老师课酬可能为 0（缴费但不发课酬），故用 != null 判断而非 > 0。
+  if (r.manual_pay != null && r.manual_pay !== '') {
+    return { weighted: 0, pay: Number(r.manual_pay) * count };
+  }
   const subj = baseSubject(r.subject);
   const size = ctx.effSize(r.class_id);
   const subjCoef = ctx.subjCoef.get(subj) ?? 1.0;

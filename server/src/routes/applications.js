@@ -828,7 +828,7 @@ router.get('/tasks', authRequired, (req, res) => {
 
 // 创建课程（教务主任：自定义字段 + 计酬配置 + 分享）
 router.post('/tasks', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
-  const { title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade } = req.body || {};
+  const { title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade, chargeable } = req.body || {};
   if (!title) return res.status(400).json({ ok: false, error: '课程标题必填' });
 
   // 归一化 pay_mode：旧「折算」→「固定折算」；未知/空→「按次计酬」
@@ -842,10 +842,11 @@ router.post('/tasks', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) 
   const share_token = crypto.randomBytes(12).toString('hex');
   const info = db.prepare(`
     INSERT INTO application_tasks
-      (title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade, share_token, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+      (title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade, share_token, chargeable, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
     .run(title, deadline ?? null, filler_role ?? '教师', JSON.stringify(schema),
-      mode, mode === '正课折算' ? '正课' : String(period_type || '').trim(), subject ?? null, grade ?? null, share_token, req.user.id);
+      mode, mode === '正课折算' ? '正课' : String(period_type || '').trim(), subject ?? null, grade ?? null, share_token,
+      chargeable ? 1 : 0, req.user.id);
 
   const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(info.lastInsertRowid);
   logAudit(req.user.id, 'create_application_task', `application_tasks:${info.lastInsertRowid}`, `创建课程 ${title}（${mode}·${mode === '正课折算' ? subject : period_type}）`);
@@ -866,7 +867,7 @@ router.patch('/tasks/:taskId', authRequired, roleRequired(...DIRECTOR_ROLES), (r
   const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(taskId);
   if (!task) return res.status(404).json({ ok: false, error: '课程不存在' });
 
-  const { title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade } = req.body || {};
+  const { title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade, chargeable } = req.body || {};
   const nextTitle = title !== undefined ? String(title).trim() : task.title;
   if (!nextTitle) return res.status(400).json({ ok: false, error: '课程标题必填' });
 
@@ -882,7 +883,7 @@ router.patch('/tasks/:taskId', authRequired, roleRequired(...DIRECTOR_ROLES), (r
   }
 
   db.prepare(`
-    UPDATE application_tasks SET title = ?, deadline = ?, filler_role = ?, form_schema = ?, pay_mode = ?, period_type = ?, subject = ?, grade = ?
+    UPDATE application_tasks SET title = ?, deadline = ?, filler_role = ?, form_schema = ?, pay_mode = ?, period_type = ?, subject = ?, grade = ?, chargeable = ?
     WHERE id = ?`)
     .run(nextTitle,
       deadline !== undefined ? (deadline || null) : task.deadline,
@@ -890,6 +891,7 @@ router.patch('/tasks/:taskId', authRequired, roleRequired(...DIRECTOR_ROLES), (r
       form_schema !== undefined ? JSON.stringify(Array.isArray(form_schema) ? form_schema : []) : task.form_schema,
       mode, nextPeriodType, nextSubject,
       grade !== undefined ? (grade || null) : task.grade,
+      chargeable !== undefined ? (chargeable ? 1 : 0) : (task.chargeable ?? 0),
       taskId);
   logAudit(req.user.id, 'update_application_task', `application_tasks:${taskId}`, `编辑课程 ${nextTitle}`);
   return res.json({ ok: true, data: { id: taskId } });
@@ -909,7 +911,7 @@ router.post('/tasks/:taskId/apply', authRequired, uploadAttachment.array('attach
   const task = db.prepare('SELECT * FROM application_tasks WHERE id = ?').get(taskId);
   if (!task) return res.status(404).json({ ok: false, error: '课程不存在' });
 
-  const { form_data, period_count, date, class_id, period_no } = req.body || {};
+  const { form_data, period_count, date, class_id, period_no, is_charge } = req.body || {};
   const teacherId = req.user.teacher_id ?? null;
   if (!teacherId) return res.status(400).json({ ok: false, error: '你的账号尚未绑定教师档案，无法申报，请联系教务员绑定' });
   if (!date) return res.status(400).json({ ok: false, error: '请填写上课日期' });
@@ -918,6 +920,15 @@ router.post('/tasks/:taskId/apply', authRequired, uploadAttachment.array('attach
   let fd = form_data;
   if (typeof fd === 'string') { try { fd = JSON.parse(fd); } catch { fd = {}; } }
   if (fd == null) fd = {};
+
+  // 是否收费：仅当课程支持收费时生效；收费需填学生名单。
+  // is_charge 可能来自 FormData（字符串 "true"/"1"）或 JSON（布尔 true），统一宽松判断。
+  const chargeable = !!task.chargeable;
+  const charging = chargeable && (is_charge === true || is_charge === 'true' || is_charge === 1 || is_charge === '1');
+  if (charging) {
+    const students = Array.isArray(fd.students) ? fd.students.map((s) => String(s).trim()).filter(Boolean) : [];
+    if (!students.length) return res.status(400).json({ ok: false, error: '收费竞赛课需填写学生名单' });
+  }
 
   // ===== 场景化「量」计算 =====
   let count = 1;
@@ -973,10 +984,10 @@ router.post('/tasks/:taskId/apply', authRequired, uploadAttachment.array('attach
   }
 
   const info = db.prepare(`
-    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, class_id, period_no, subject, status, filled_by, unit_count)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, class_id, period_no, subject, status, filled_by, unit_count, is_charge)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(taskId, teacherId, JSON.stringify(fd), count, date, resolvedClassId,
-      period_no ? Number(period_no) : null, resolvedSubject, 'pending', req.user.id, unitCount);
+      period_no ? Number(period_no) : null, resolvedSubject, 'pending', req.user.id, unitCount, charging ? 1 : 0);
 
   // 附件落盘
   const attId = Number(info.lastInsertRowid);
@@ -1031,7 +1042,8 @@ function buildCourseImportRecord(row, ctx, task) {
     return { ok: true, record: { teacher_id: teacherId, form_data: {}, period_count: 1, date, class_id: classId, period_no: periodNo, subject: resolvedSubject } };
   }
 
-  // 固定折算（监考/竞赛等）：字段由课程 form_schema 驱动，逐字段从行里取；课时数自填
+  // 固定折算（监考/竞赛等）：字段由课程 form_schema 驱动，逐字段从行里取；课时数自填。
+  // 收费课程（chargeable）：额外解析「是否收费」与「学生名单」两列。
   const schema = parseJSON(task.form_schema, []);
   const fd = {};
   for (const f of schema) {
@@ -1040,6 +1052,24 @@ function buildCourseImportRecord(row, ctx, task) {
     if (f.required && !v) return { ok: false, reason: `缺少「${f.label}」` };
     if (v) fd[f.key] = (f.type === 'number') ? Number(v) : v;
   }
+
+  if (task.chargeable) {
+    // 收费竞赛课：是否收费 + 学生名单
+    const chargeRaw = String(keyOf(row, '是否收费', '收费', 'is_charge') ?? '').trim();
+    const isCharge = /^(收费|是|1|true|y|yes)$/i.test(chargeRaw);
+    if (isCharge) {
+      const studentRaw = String(keyOf(row, '学生名单', '学生', 'students') ?? '').trim();
+      const students = studentRaw ? studentRaw.split(/[,，、\s]+/).map((s) => s.trim()).filter(Boolean) : [];
+      if (!students.length) return { ok: false, reason: '收费行需填写学生名单' };
+      fd.students = students;
+      return { ok: true, record: { teacher_id: teacherId, form_data: fd, period_count: 1, is_charge: 1, date, class_id: null, period_no: null, subject: null } };
+    }
+    // 不收费：课时数
+    const periodCount = Number(keyOf(row, '课时数', '节数', 'period_count') ?? '');
+    const count = Number.isFinite(periodCount) && periodCount > 0 ? periodCount : 1;
+    return { ok: true, record: { teacher_id: teacherId, form_data: fd, period_count: count, is_charge: 0, date, class_id: null, period_no: null, subject: null } };
+  }
+
   const periodCount = Number(keyOf(row, '课时数', '节数', 'period_count') ?? '');
   const count = Number.isFinite(periodCount) && periodCount > 0 ? periodCount : 1;
   return { ok: true, record: { teacher_id: teacherId, form_data: fd, period_count: count, date, class_id: null, period_no: null, subject: null } };
@@ -1061,11 +1091,26 @@ router.get('/tasks/:taskId/import-template', authRequired, roleRequired(...DIREC
     samples = [['张三', '2026-11-13', '1201班', '3', task.subject || '心理']];
     notes = [['心理/中医等课：每次固定 1 课时，按学科系数+班额系数折算。课程未预设学科时需填「学科」。']];
   } else {
-    // 固定折算（监考/竞赛等）：表头由 form_schema 自定义字段决定 + 课时数
+    // 固定折算（监考/竞赛等）：表头由 form_schema 自定义字段决定 + 课时数。
+    // 收费课程（chargeable）：额外加「是否收费」与「学生名单」列。
     const schema = parseJSON(task.form_schema, []);
-    headers = ['教师', '上课日期', ...schema.map((f) => f.label), '课时数'];
-    samples = [['张三', '2026-11-13', ...schema.map(() => '示例值'), '1']];
-    notes = [['固定折算课：课时数自填，按固定系数折算；审核时可按实际时长手工调整折算档位。']];
+    if (task.chargeable) {
+      headers = ['教师', '上课日期', '是否收费', '学生名单', '课时数'];
+      samples = [
+        ['张三', '2026-11-13', '收费', '李四,王五,赵六', ''],
+        ['李四', '2026-11-13', '不收费', '', '2'],
+      ];
+      notes = [
+        ['收费竞赛课导入说明：'],
+        ['· 是否收费：填「收费」或「不收费」。'],
+        ['· 收费行：填「学生名单」（多个姓名用逗号/顿号/空格分隔），课时数留空；学生缴费与老师课酬在审核时人工录入。'],
+        ['· 不收费行：填「课时数」，学生名单留空；按课时数 × 竞赛系数折算。'],
+      ];
+    } else {
+      headers = ['教师', '上课日期', ...schema.map((f) => f.label), '课时数'];
+      samples = [['张三', '2026-11-13', ...schema.map(() => '示例值'), '1']];
+      notes = [['固定折算课：课时数自填，按固定系数折算；审核时可按实际时长手工调整折算档位。']];
+    }
   }
   downloadTemplate(res, headers, samples, `课程填报导入模板_${task.title}.xlsx`, [{ name: '填写说明', rows: notes }]);
 });
@@ -1089,7 +1134,9 @@ router.post('/tasks/:taskId/import/preview', authRequired, roleRequired(...DIREC
     teacherByName: Object.fromEntries(teachers.map((t) => [t.name, t.id])),
     classByName: Object.fromEntries(classes.map((c) => [c.name, c.id])),
   };
-  const columns = ['教师', '上课日期', '学生姓名', '时长(分钟)/班级', '节次/课时数', '学科/内容'];
+  const columns = task.chargeable
+    ? ['教师', '上课日期', '是否收费', '学生名单', '课时数']
+    : ['教师', '上课日期', '学生姓名', '时长(分钟)/班级', '节次/课时数', '学科/内容'];
   const draftRows = [];
   const summary = { total: rows.length, ok: 0, duplicate: 0, error: 0 };
 
@@ -1118,8 +1165,8 @@ router.post('/tasks/:taskId/import/confirm', authRequired, roleRequired(...DIREC
 
   const selected = new Set(Array.isArray(row_ids) ? row_ids.map(Number) : []);
   const ins = db.prepare(`
-    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, class_id, period_no, subject, status, filled_by, unit_count)
-    VALUES (?,?,?,?,?,?,?,?, 'pending', ?, ?)`);
+    INSERT INTO applications (task_id, teacher_id, form_data, period_count, date, class_id, period_no, subject, status, filled_by, unit_count, is_charge)
+    VALUES (?,?,?,?,?,?,?,?, 'pending', ?, ?, ?)`);
   let inserted = 0;
   const errors = [];
 
@@ -1128,7 +1175,7 @@ router.post('/tasks/:taskId/import/confirm', authRequired, roleRequired(...DIREC
     const rec = r.record;
     try {
       ins.run(taskId, rec.teacher_id, JSON.stringify(rec.form_data || {}), rec.period_count, rec.date,
-        rec.class_id ?? null, rec.period_no ?? null, rec.subject ?? null, req.user.id, rec.unit_count ?? 1);
+        rec.class_id ?? null, rec.period_no ?? null, rec.subject ?? null, req.user.id, rec.unit_count ?? 1, rec.is_charge ?? 0);
       inserted++;
     } catch (e) {
       errors.push(`第 ${r.line} 行：${e.message}`);
@@ -1192,7 +1239,7 @@ router.patch('/applications/:id/review', authRequired, roleRequired(...REVIEW_RO
     FROM applications a JOIN application_tasks t ON t.id = a.task_id
     WHERE a.id = ?`).get(id);
   if (!a) return res.status(404).json({ ok: false, error: '申报记录不存在' });
-  const { approved, period_type } = req.body || {};
+  const { approved, period_type, charge_amount, teacher_pay } = req.body || {};
   const status = approved ? 'approved' : 'rejected';
 
   // 固定折算：审核时可覆盖折算档位（教务主任按实际监考时长手工选档）。仅固定折算且提供有效字典名时生效。
@@ -1204,8 +1251,17 @@ router.patch('/applications/:id/review', authRequired, roleRequired(...REVIEW_RO
     }
   }
 
-  db.prepare('UPDATE applications SET status = ?, reviewed_by = ?, reviewed_at = datetime(\'now\',\'localtime\') WHERE id = ?')
-    .run(status, req.user.id, id);
+  // 收费课：审核通过时人工输入「学生缴费」与「老师课酬」两个金额，二者相互独立。
+  const charging = !!a.is_charge;
+  if (approved && charging) {
+    const fee = Number(charge_amount);
+    const tpay = Number(teacher_pay);
+    if (!Number.isFinite(fee) || fee < 0) return res.status(400).json({ ok: false, error: '请填写学生缴费金额' });
+    if (!Number.isFinite(tpay) || tpay < 0) return res.status(400).json({ ok: false, error: '请填写老师课酬金额' });
+  }
+
+  db.prepare('UPDATE applications SET status = ?, reviewed_by = ?, reviewed_at = datetime(\'now\',\'localtime\'), charge_amount = ?, teacher_pay = ? WHERE id = ?')
+    .run(status, req.user.id, charging && approved ? Number(charge_amount) : null, charging && approved ? Number(teacher_pay) : null, id);
 
   // 审核通过：生成上课记录计酬
   let created = 0;
@@ -1243,19 +1299,27 @@ router.patch('/applications/:id/review', authRequired, roleRequired(...REVIEW_RO
         .run(classId, a.teacher_id, a.task_subject ?? null, a.date, payType, a.id, a.course_name ?? null, unit);
       created = 1;
     } else {
-      // 固定折算：按填报课时数生成整数条上课记录（每条 unit_count=1）。
+      // 固定折算：收费课插 1 行带 manual_pay（不计折算）；不收费课按课时数生成整数条记录（每条 unit_count=1）。
       let classId = a.task_grade ? virtualClassIdForGrade(a.task_grade) : null;
       if (!classId) classId = universalVirtualClassId();
       if (!classId) {
         return res.status(400).json({ ok: false, error: '缺少计酬挂靠的虚班，请联系管理员初始化' });
       }
-      const insert = db.prepare(`
-        INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note, unit_count)
-        VALUES (?,?,?,?,0,?, '常规', 'course', ?, ?, 1)`);
-      for (let i = 0; i < count; i++) {
-        insert.run(classId, a.teacher_id, a.task_subject ?? null, a.date, payType, a.id, a.course_name ?? null);
+      if (charging) {
+        db.prepare(`
+          INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note, unit_count, manual_pay)
+          VALUES (?,?,?,?,0,?, '常规', 'course', ?, ?, 1, ?)`)
+          .run(classId, a.teacher_id, a.task_subject ?? null, a.date, payType, a.id, a.course_name ?? null, Number(teacher_pay));
+        created = 1;
+      } else {
+        const insert = db.prepare(`
+          INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note, unit_count)
+          VALUES (?,?,?,?,0,?, '常规', 'course', ?, ?, 1)`);
+        for (let i = 0; i < count; i++) {
+          insert.run(classId, a.teacher_id, a.task_subject ?? null, a.date, payType, a.id, a.course_name ?? null);
+        }
+        created = count;
       }
-      created = count;
     }
   }
 
