@@ -4,6 +4,7 @@ import { db, logAudit } from '../db.js';
 import { authRequired, roleRequired, CLERK_ROLES, DIRECTOR_ROLES, RESULT_VIEW_ROLES } from '../auth.js';
 import { loadContext, computePay, parsePayStandard } from '../context.js';
 import { visibleTeacherIds } from '../scope.js';
+import { buildPayrollPack } from '../export/payroll-pack.js';
 
 const router = Router();
 router.use(authRequired);
@@ -990,140 +991,30 @@ router.post('/snapshots', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   return res.json({ ok: true, data: { id: Number(info.lastInsertRowid), pay_total: snapshot.totals.pay_total } });
 });
 
-// 导出「财务审核包」：单文件多 sheet（汇总 + 明细 + 勾稽校验 + 口径说明）。
+// 导出「财务审核包」：以官方模板《课酬课时统计_模板包.xlsx》为底稿，
+// 输出 16 张表（过程表 00~11 + 审核层 12~15），保留模板颜色/公式/合并单元格。
 // 供 MCP/WorkBuddy 一键出包，也供前端「导出财务审核包」按钮直接下载。
-router.get('/financial-pack', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
+router.get('/financial-pack', roleRequired(...RESULT_VIEW_ROLES), async (req, res) => {
   const { from_date, to_date, term, teacher_id } = req.query;
   if (!from_date || !to_date) return res.status(400).json({ ok: false, error: '请提供 from_date 与 to_date' });
   const ctx = loadContext();
   const rows = queryRows(from_date, to_date, term, teacher_id);
   const fin = buildFinancial(rows, ctx);
   const allRows = queryRows(from_date, to_date, term, teacher_id, true);
-  const round2 = (v) => Math.round((v || 0) * 100) / 100;
 
-  const wb = XLSX.utils.book_new();
-
-  // Sheet1 财务汇总表（复用 L1 结构）
-  const header = [
-    '序号', '教师姓名',
-    '正课节数', '正课折算课时(不计钱)',
-    ...fin.coefColumns.flatMap((t) => [`${t}节数`, `${t}折算课时(不计钱)`]),
-    ...fin.typeColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
-    ...fin.termColumns.flatMap((t) => [`${t}节数`, `${t}金额(元)`]),
-    ...fin.manualColumns.flatMap((t) => [`${t}手工课酬(元)`]),
-    '折算课时合计', '课酬合计(元)', '备注',
-  ];
-  const aoa = [header];
-  fin.teachers.forEach((e, i) => {
-    aoa.push([
-      i + 1, e.teacher_name,
-      e.core_count, round2(e.core_weighted),
-      ...fin.coefColumns.flatMap((t) => [e.coefCounts[t] || 0, round2(e.coefWeighted[t])]),
-      ...fin.typeColumns.flatMap((t) => [e.typeCounts[t] || 0, round2(e.typePays[t])]),
-      ...fin.termColumns.flatMap((t) => [e.termCounts[t] || 0, round2(e.termPays[t])]),
-      ...fin.manualColumns.flatMap((t) => [round2(e.manualPays[t])]),
-      round2(e.weighted_total), round2(e.pay_total), '',
-    ]);
-  });
-  aoa.push([
-    '合计', '',
-    fin.totals.core_count, round2(fin.totals.core_weighted),
-    ...fin.coefColumns.flatMap((t) => [fin.totals.coefCounts[t] || 0, round2(fin.totals.coefWeighted[t])]),
-    ...fin.typeColumns.flatMap((t) => [fin.totals.typeCounts[t] || 0, round2(fin.totals.typePays[t])]),
-    ...fin.termColumns.flatMap((t) => [fin.totals.termCounts[t] || 0, round2(fin.totals.termPays[t])]),
-    ...fin.manualColumns.flatMap((t) => [round2(fin.totals.manualPays[t])]),
-    round2(fin.totals.weighted_total), round2(fin.totals.pay_total), '',
-  ]);
-  const ws1 = XLSX.utils.aoa_to_sheet(aoa);
-  ws1['!cols'] = header.map((h) => ({ wch: Math.max(8, String(h).length * 2 + 2) }));
-  XLSX.utils.book_append_sheet(wb, ws1, '财务汇总表');
-
-  // Sheet2 课酬明细（每节一行，含停课/代课全貌）
-  const srcLabel = { schedule: '课表', adjust: '代课/调课', extra: '加课', qna: '申报' };
-  const detailHeader = ['日期', '教师', '班级', '学科', '节次', '类型', '时段', '来源', '原教师', '状态', '折算课时', '课酬(元)'];
-  const detailAoa = [detailHeader];
-  for (const r of allRows) {
-    const { weighted, pay } = r.cancelled ? { weighted: 0, pay: 0 } : computePay(ctx, { ...r, count: (r.unit_count ?? 1) });
-    detailAoa.push([
-      r.date, r.teacher_name, r.class_name, r.subject ?? '', r.period_no > 0 ? r.period_no : '—', r.period_type, r.term,
-      srcLabel[r.source] || r.source, (r.source === 'adjust' ? r.parent_teacher_name : '') || '',
-      r.cancelled ? '已停课' : '', round2(weighted), round2(pay),
-    ]);
+  try {
+    const buf = await buildPayrollPack({
+      rows, allRows, ctx, fin,
+      fromDate: from_date, toDate: to_date, term: term || null,
+      userName: req.user?.name || req.user?.username || '课程中心',
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`课酬课时统计_${from_date}_${to_date}.xlsx`)}`);
+    res.send(buf);
+  } catch (e) {
+    console.error('[financial-pack] 导出失败：', e);
+    return res.status(500).json({ ok: false, error: '导出财务审核包失败：' + (e?.message || e) });
   }
-  const ws2 = XLSX.utils.aoa_to_sheet(detailAoa);
-  ws2['!cols'] = detailHeader.map((h) => ({ wch: Math.max(8, String(h).length * 2 + 2) }));
-  XLSX.utils.book_append_sheet(wb, ws2, '课酬明细');
-
-  // Sheet3 勾稽校验（金额勾稽 + 交叉汇总）
-  let detailPay = 0;
-  for (const r of allRows) if (!r.cancelled) detailPay += computePay(ctx, { ...r, count: (r.unit_count ?? 1) }).pay;
-  detailPay = round2(detailPay);
-  const byGrade = {};
-  const bySubject = {};
-  for (const r of allRows) {
-    if (r.cancelled) continue;
-    const { pay } = computePay(ctx, { ...r, count: (r.unit_count ?? 1) });
-    if (!pay) continue;
-    byGrade[r.class_grade || '未分年级'] = round2((byGrade[r.class_grade || '未分年级'] || 0) + pay);
-    bySubject[r.subject || '未填学科'] = round2((bySubject[r.subject || '未填学科'] || 0) + pay);
-  }
-  const checkAoa = [
-    ['财务勾稽校验报告'],
-    [],
-    ['一、金额勾稽'],
-    ['明细逐条课酬之和(元)', detailPay],
-    ['汇总表课酬合计(元)', round2(fin.totals.pay_total)],
-    ['勾稽结果', detailPay === round2(fin.totals.pay_total) ? '✓ 一致' : '✗ 不一致，请核查'],
-    [],
-    ['二、按课酬类型金额小计'],
-    ...fin.typeColumns.map((t) => [`按次计酬·${t}(元)`, round2(fin.totals.typePays[t])]),
-    ...fin.termColumns.map((t) => [`时段·${t}(元)`, round2(fin.totals.termPays[t])]),
-    [],
-    ['三、按年级金额小计'],
-    ...Object.entries(byGrade).map(([k, v]) => [k, v]),
-    [],
-    ['四、按学科金额小计'],
-    ...Object.entries(bySubject).map(([k, v]) => [k, v]),
-  ];
-  const ws3 = XLSX.utils.aoa_to_sheet(checkAoa);
-  ws3['!cols'] = [{ wch: 36 }, { wch: 16 }];
-  XLSX.utils.book_append_sheet(wb, ws3, '勾稽校验');
-
-  // Sheet4 口径说明
-  const notes = [
-    ['课酬财务审核包 —— 统计口径说明'],
-    [],
-    [`统计区间：${from_date} ~ ${to_date}${term ? '（时段：' + term + '）' : ''}`],
-    [`生成时间：${localDateTime()}`],
-    [`生成人：${req.user?.name || req.user?.username || '-'}`],
-    [],
-    ['一、课酬（钱）口径'],
-    ['· 课酬合计 = 按次计酬类型金额 + 非规时段金额。'],
-    ['· 常规正课、折算类型（早自习等）只出「折算课时」，不计钱（供教学业绩考核用）。'],
-    [],
-    ['二、按次计酬类型（元 = 单价 × 节数）'],
-    ...fin.typeColumns.map((t) => [`· ${t}：${ctx.periodTypePays.get(t) ?? 0} 元/节`]),
-    ...fin.typeColumns.flatMap((t) => {
-      const gp = ctx.periodTypeGradePays.get(t);
-      return gp && gp.size ? [[`· ${t} 分年级：` + [...gp.entries()].map(([g, p]) => `${g}${p}元`).join('，')]] : [];
-    }),
-    [],
-    ['三、非规时段课酬（元 = 节数 × 教师课酬标准）'],
-    ['· 各教师课酬标准见「教师信息」模块（按时段分档）。'],
-    ['· 时段：' + fin.termColumns.join(' / ')],
-    [],
-    ['四、折算课时系数（仅正课/折算类型，不计钱）'],
-    [`· 正课折算 = 节数 ×（学科系数 + 班额系数）。`],
-    ...fin.coefColumns.map((t) => [`· ${t}折算 = 节数 × 折算系数(${ctx.periodTypeCoefs.get(t) ?? 0.5})。`]),
-  ];
-  const ws4 = XLSX.utils.aoa_to_sheet(notes);
-  ws4['!cols'] = [{ wch: 120 }];
-  XLSX.utils.book_append_sheet(wb, ws4, '口径说明');
-
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`课酬财务审核包_${from_date}_${to_date}.xlsx`)}`);
-  res.send(buf);
 });
 
 export default router;
