@@ -897,7 +897,7 @@ router.get('/export', roleRequired(...RESULT_VIEW_ROLES), (req, res) => {
 
 // 系数配置：学科系数 + 班额系数 + 课时类型设置
 router.get('/coefficients', (req, res) => {
-  const subjects = db.prepare('SELECT id, subject, coefficient FROM subject_coefficients ORDER BY subject').all();
+  const subjects = db.prepare('SELECT id, subject, coefficient, no_size FROM subject_coefficients ORDER BY subject').all();
   const bands = db.prepare('SELECT id, min_size, coefficient FROM size_bands ORDER BY min_size').all();
   const periodSettings = {};
   for (const p of db.prepare('SELECT key, value FROM period_settings').all()) periodSettings[p.key] = p.value;
@@ -908,16 +908,17 @@ router.put('/coefficients', roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { subjects = [], bands = [], periods = {} } = req.body || {};
   // 按 id 匹配更新（改名/改档位时不产生重复）；无 id 的新记录才插入。
   // 全量同步：请求里没带的 id 视为「已删除」，从库中移除。
-  const upSubj = db.prepare('UPDATE subject_coefficients SET subject = ?, coefficient = ? WHERE id = ?');
-  const insSubj = db.prepare('INSERT INTO subject_coefficients (subject, coefficient) VALUES (?,?)');
+  const upSubj = db.prepare('UPDATE subject_coefficients SET subject = ?, coefficient = ?, no_size = ? WHERE id = ?');
+  const insSubj = db.prepare('INSERT INTO subject_coefficients (subject, coefficient, no_size) VALUES (?,?,?)');
   const existsSubjId = db.prepare('SELECT id FROM subject_coefficients WHERE id = ?');
   const seenSubj = new Set();
   for (const s of subjects) {
     const name = String(s.subject || '').trim();
     const coef = Number(s.coefficient);
     if (!name || !Number.isFinite(coef)) continue;
-    if (s.id != null && existsSubjId.get(s.id)) { upSubj.run(name, coef, Number(s.id)); seenSubj.add(Number(s.id)); }
-    else { const info = insSubj.run(name, coef); seenSubj.add(Number(info.lastInsertRowid)); }
+    const noSize = s.no_size ? 1 : 0;
+    if (s.id != null && existsSubjId.get(s.id)) { upSubj.run(name, coef, noSize, Number(s.id)); seenSubj.add(Number(s.id)); }
+    else { const info = insSubj.run(name, coef, noSize); seenSubj.add(Number(info.lastInsertRowid)); }
   }
   // 删除未出现在请求中的学科系数（含重复科目清理后的残留）
   const existingSubj = db.prepare('SELECT id FROM subject_coefficients').all().map((r) => r.id);

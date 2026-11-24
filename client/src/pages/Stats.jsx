@@ -121,7 +121,7 @@ export default function Stats() {
 
   // ===== 统计配置（分类弹窗 + 条目编辑弹窗） =====
   const CFG = {
-    subject: { title: '课时系数', desc: '正课折算 = 节数 ×（学科系数 + 班额系数）。', add: '添加学科' },
+    subject: { title: '课时系数', desc: '正课折算 = 节数 ×（学科系数 + 班额系数）；勾选「不计班额」的学科只按学科系数折算。', add: '添加学科' },
     band: { title: '班额系数', desc: '按统计班额匹配最高分档：走班取合班人数之和，分层取分层班人数，行政班取本班人数。', add: '添加分档' },
     typePay: { title: '按次计酬类型', desc: '晚自习 / 答疑 / 晚练 / 自定义，每节固定课酬，不参与学科/班额折算。', add: '添加类型' },
     typeCoef: { title: '折算类型', desc: '早自习等，节数 × 系数折算，不计钱（供教学业绩考核用）。', add: '添加折算类型' },
@@ -135,7 +135,7 @@ export default function Stats() {
     else if (k === 'typeCoef') setTypeCoefs(arr);
     else setGradePays(arr);
   };
-  const editDefaults = (k) => k === 'subject' ? { subject: '', coefficient: 1.0 }
+  const editDefaults = (k) => k === 'subject' ? { subject: '', coefficient: 1.0, no_size: 0 }
     : k === 'band' ? { min_size: '', coefficient: 1.0 }
     : k === 'typePay' ? { name: '', pay: 0 }
     : k === 'typeCoef' ? { name: '', coefficient: 0.5 }
@@ -724,7 +724,7 @@ export default function Stats() {
             <table className="coef-table">
               <thead>
                 <tr>
-                  {cat === 'subject' && <><th>学科</th><th className="num">系数</th></>}
+                  {cat === 'subject' && <><th>学科</th><th className="num">系数</th><th>班额</th></>}
                   {cat === 'band' && <><th>最低人数</th><th className="num">系数</th></>}
                   {cat === 'typePay' && <><th>类型名称</th><th className="num">固定课酬（元/节）</th></>}
                   {cat === 'typeCoef' && <><th>类型名称</th><th className="num">系数</th></>}
@@ -747,6 +747,7 @@ export default function Stats() {
                     {cat === 'typePay' && <td className="num">{it.pay}</td>}
                     {cat === 'typeCoef' && <td className="num">{it.coefficient}</td>}
                     {cat === 'gradePay' && <td className="num">{it.pay}</td>}
+                    {cat === 'subject' && <td>{it.no_size ? <span className="badge info">不计班额</span> : <span className="muted">按班额</span>}</td>}
                     <td>
                       <div className="toolbar" style={{ marginBottom: 0, gap: 6 }}>
                         <button className="btn sm" onClick={() => openEdit(cat, i)}>编辑</button>
@@ -775,6 +776,16 @@ export default function Stats() {
                 <>
                   <div><label>学科</label><input value={edit.data.subject} onChange={(e) => setData('subject', e.target.value)} placeholder="如 数学" /></div>
                   <div><label>系数</label><input type="number" step="0.1" value={edit.data.coefficient} onChange={(e) => setData('coefficient', e.target.value)} /></div>
+                  <div className="switch-row" style={{ gridColumn: '1 / -1' }}>
+                    <div className="switch-info">
+                      <div className="switch-info-title">不计班额系数</div>
+                      <div className="switch-info-desc">音乐 / 美术 / 体育 / 中医等只按学科系数折算，不叠加班额系数</div>
+                    </div>
+                    <label className="switch" title={edit.data.no_size ? '点击改为按班额' : '点击改为不计班额'}>
+                      <input type="checkbox" checked={!!edit.data.no_size} onChange={(e) => setData('no_size', e.target.checked ? 1 : 0)} />
+                      <span className="switch-track"><span className="switch-thumb" /></span>
+                    </label>
+                  </div>
                 </>
               )}
               {edit.key === 'band' && (

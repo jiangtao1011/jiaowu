@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS subject_coefficients (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   subject TEXT NOT NULL,
   coefficient REAL NOT NULL DEFAULT 1.0,
+  no_size INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -509,6 +510,9 @@ ensureColumn('applications', 'unit_count', 'REAL NOT NULL DEFAULT 1');
 // 上课记录按比例折算：unit_count = 折算次数/节数（可为小数，如一对一 100 分钟÷90 = 1.11 次）。
 // 常规/折算/正课等按整数节生成时 unit_count=1；按次计酬按「时长÷一次时长」写入小数次数。
 ensureColumn('lesson_instances', 'unit_count', 'REAL NOT NULL DEFAULT 1');
+
+// 学科系数「不计班额」标记：音乐/美术/体育/中医等学科只按学科系数折算，不叠加班额系数。
+ensureColumn('subject_coefficients', 'no_size', 'INTEGER NOT NULL DEFAULT 0');
 
 // 迁移：school_calendar 支持「年级级停课」——加 grade 列，并把唯一约束从 date 改为 (date, grade)。
 // 旧表是 date UNIQUE，需重建（该表本次会话刚建、生产无真实数据，重建安全）。

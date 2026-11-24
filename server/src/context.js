@@ -25,7 +25,8 @@ export function computePay(ctx, r) {
   const subj = baseSubject(r.subject);
   const size = ctx.effSize(r.class_id);
   const subjCoef = ctx.subjCoef.get(subj) ?? 1.0;
-  const sizeCoef = ctx.sizeCoefOf(size);
+  // 不计班额学科（音乐/美术/体育/中医等）：班额系数恒为 0，只按学科系数折算
+  const sizeCoef = ctx.noSizeSubjects.has(subj) ? 0 : ctx.sizeCoefOf(size);
 
   if (ctx.periodTypeCoefs.has(r.period_type)) {
     // 折算类型（早自习等）：折算课时 = 节数 × 折算系数，无课酬
@@ -42,7 +43,7 @@ export function computePay(ctx, r) {
     const p = parsePayStandard(r.pay_standard);
     return { weighted: count, pay: count * (Number(p[r.term]) || 0) };
   }
-  // 常规正课：折算 = 节数 ×（课时系数 + 班额系数）
+  // 常规正课：折算 = 节数 ×（课时系数 + 班额系数）；不计班额学科 = 节数 × 课时系数
   return { weighted: count * (subjCoef + sizeCoef), pay: 0 };
 }
 
@@ -61,6 +62,11 @@ export function loadContext() {
   const subjCoef = new Map(
     db.prepare('SELECT subject, coefficient FROM subject_coefficients').all()
       .map((r) => [r.subject, r.coefficient])
+  );
+  // 不计班额学科集合（音乐/美术/体育/中医等，no_size=1）
+  const noSizeSubjects = new Set(
+    db.prepare('SELECT subject FROM subject_coefficients WHERE no_size = 1').all()
+      .map((r) => r.subject)
   );
   const sizeBands = db.prepare('SELECT min_size, coefficient FROM size_bands ORDER BY min_size DESC').all();
   const periodSettings = {};
@@ -90,6 +96,7 @@ export function loadContext() {
     periodTypePays,
     periodTypeCoefs,
     periodTypeGradePays,
+    noSizeSubjects,
     // 某班级所属年级（班级不存在或无年级则返回 null）
     gradeOf(cid) {
       return classMap.get(cid)?.grade ?? null;
