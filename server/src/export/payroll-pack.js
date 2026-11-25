@@ -111,7 +111,7 @@ export async function buildPayrollPack({ rows, allRows, ctx, fin, fromDate, toDa
   const jkLastRow = fillSheet07(wb, { rows }).lastRow; // 07 明细区最后一行（含合计）
   fillSheet08(wb, { rows, ctx });
   fillSheet09(wb, { rows, ctx });
-  fillSheet10(wb, { teachers, ctx, jkLastRow });
+  fillSheet10(wb, { rows, teachers, ctx, jkLastRow });
   fillSheet11(wb, { teachers });
   const sumTotRow = fillSheet12(wb, { teachers, fin });
   fillSheet13(wb, { allRows, ctx });
@@ -577,32 +577,76 @@ function fillSheet09(wb, { rows, ctx }) {
   void sumRow;
 }
 
-// ===== 10 课时汇总：填名单 + 扩 07 引用范围；B/C/G 列补公式（分段课时/补课/竞赛） =====
-function fillSheet10(wb, { teachers, ctx, jkLastRow }) {
+// ===== 10 课时汇总：B~E=统计周期按自然周（周一~周日）拆分的常规正课折算课时（不含节假补课），
+//      F=早读午练 G=竞赛 H=监考，L 合计自动 =====
+function fillSheet10(wb, { rows, teachers, ctx, jkLastRow }) {
   const ws = wb.getWorksheet('10_课时汇总');
-  const dataRows = teachers.map((e) => {
-    // B 分段1总课时=02表S列(正课折算)；C=06表补课总节数(5组I/P/W/AD/AK)；G=09表竞赛节数×竞赛系数
-    return [e.teacher_name];
-  });
-  writeRows(ws, 3, 'A', dataRows);
-  // 补每教师公式（B/C/G 模板里是空，需要按系统数据填）
+  const START = 3; // 数据区 R3 起
+  const TPL_CAPACITY = 66; // 模板预置 66 行（R3~R68），合计行 R69
+  writeRows(ws, START, 'A', teachers.map((e) => [e.teacher_name]));
+
+  // 每周起始周一（自然周）——分段边界
+  const mondayOf = (dateStr) => {
+    const d = new Date(`${dateStr}T00:00:00`);
+    const diff = (d.getDay() + 6) % 7; // 周一=0
+    d.setDate(d.getDate() - diff);
+    return fmtDate(d);
+  };
+  // 常规正课按教师 × 周聚合折算课时（不含节假补课）
+  const segByTeacher = new Map(); // teacher_id -> Map<weekMonday, weighted>
+  for (const r of rows) {
+    if (r.cancelled) continue;
+    if (r.term !== '常规' || r.period_type !== '正课') continue;
+    const wk = mondayOf(r.date);
+    const { weighted } = computePay(ctx, { ...r, count: r.unit_count ?? 1 });
+    if (!segByTeacher.has(r.teacher_id)) segByTeacher.set(r.teacher_id, new Map());
+    const m = segByTeacher.get(r.teacher_id);
+    m.set(wk, round2((m.get(wk) || 0) + weighted));
+  }
+  // 全部周（按时间排序）
+  const weeks = [...new Set([...segByTeacher.values()].flatMap((m) => [...m.keys()]))].sort();
+
   for (let i = 0; i < teachers.length; i++) {
-    const rowIdx = 3 + i;
-    const name = teachers[i].teacher_name;
+    const rowIdx = START + i;
+    const e = teachers[i];
+    const name = e.teacher_name;
+    const m = segByTeacher.get(e.teacher_id) || new Map();
+    // B~E = 分段1~4（按周顺序填折算课时）
+    for (let s = 0; s < 4; s++) {
+      const wk = weeks[s];
+      ws.getCell(rowIdx, 2 + s).value = wk ? round2(m.get(wk) || 0) : null;
+    }
     // G 竞赛课时 = SUMIF(09表 B列教练名, F列课时) * 竞赛系数
     ws.getCell(rowIdx, 7).value = { formula: `SUMIF('09_竞赛培优'!$B$2:$B$147,${JSON.stringify(name)},'09_竞赛培优'!$F$2:$F$147)*'15_口径参数'!$C$18` };
+    // H 监考课时 = SUMIF(07表 F列教师, J列合计)
+    ws.getCell(rowIdx, 8).value = { formula: `SUMIF('07_监考课时'!$F$2:$F$${jkLastRow},${JSON.stringify(name)},'07_监考课时'!$J$2:$J$${jkLastRow})` };
   }
-  // 07 监考引用范围扩到实际行（模板固定 $F$2:$F$41）
-  const jkEnd = jkLastRow || 41;
-  for (let i = 0; i < teachers.length; i++) {
-    const rowIdx = 3 + i;
-    const name = teachers[i].teacher_name;
-    ws.getCell(rowIdx, 8).value = { formula: `SUMIF('07_监考课时'!$F$2:$F$${jkEnd},${JSON.stringify(name)},'07_监考课时'!$J$2:$J$${jkEnd})` };
+
+  // 清空超出实际教师数的预置数据行（R(3+n) ~ R68）
+  const lastDataRow = START + teachers.length - 1;
+  clearRange(ws, lastDataRow + 1, 'A', START + TPL_CAPACITY - 1, 'L');
+
+  // 合计行 R69 引用范围收缩到实际数据行
+  const totRow = START + TPL_CAPACITY; // R69
+  const tot = ws.getRow(totRow);
+  for (const col of ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L']) {
+    tot.getCell(col).value = { formula: `SUM(${col}${START}:${col}${lastDataRow})` };
   }
 }
 function fillSheet11(wb, { teachers }) {
   const ws = wb.getWorksheet('11_金额汇总');
-  writeRows(ws, 2, 'A', teachers.map((e) => [e.teacher_name])); // 数据区 R2 起
+  const START = 2; // 数据区 R2 起
+  const TPL_CAPACITY = 66; // 模板预置 66 行（R2~R67），合计行 R68
+  writeRows(ws, START, 'A', teachers.map((e) => [e.teacher_name]));
+  // 清空超出实际教师数的预置数据行
+  const lastDataRow = START + teachers.length - 1;
+  clearRange(ws, lastDataRow + 1, 'A', START + TPL_CAPACITY - 1, 'L');
+  // 合计行 R68 引用范围收缩
+  const totRow = START + TPL_CAPACITY; // R68
+  const tot = ws.getRow(totRow);
+  for (const col of ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']) {
+    tot.getCell(col).value = { formula: `SUM(${col}${START}:${col}${lastDataRow})` };
+  }
 }
 
 // ===== 12 财务汇总表：直接填值（审核层核心） =====
