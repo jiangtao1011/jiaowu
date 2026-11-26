@@ -1225,7 +1225,7 @@ router.get('/tasks/:taskId/applications', authRequired, (req, res) => {
 });
 
 // 附件下载（登录即可，需属本申报的审核人/填报人可看；此处简化为登录可下载）
-router.get('/applications/attachments/:attId/download', authRequired, (req, res) => {
+router.get('/attachments/:attId/download', authRequired, (req, res) => {
   const att = db.prepare('SELECT * FROM application_attachments WHERE id = ?').get(Number(req.params.attId));
   if (!att) return res.status(404).json({ ok: false, error: '附件不存在' });
   res.download(path.join(UPLOAD_DIR, att.stored_path), att.filename);

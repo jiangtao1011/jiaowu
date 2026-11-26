@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import api, { errMsg } from '../api.js';
 import { useToast } from '../components/feedback.jsx';
+import SignaturePad from '../components/SignaturePad.jsx';
 
 // 课程申报（课程中心终审）状态：pending 待审 → approved/rejected；审核人可撤回为 withdrawn
 const STATUS = { pending: '待审核', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
@@ -35,6 +36,7 @@ export default function CourseApply() {
   // 一对一（按次计酬）
   const [duration, setDuration] = useState('');        // 时长（分钟）
   const [files, setFiles] = useState([]);              // 辅导资料附件
+  const signatureRef = useRef(null);                   // 手写签名画板 ref
   // 固定折算（监考/竞赛等）
   const [periodCount, setPeriodCount] = useState(1);   // 自填课时数
   // 竞赛课收费：是否收费 + 学生名单
@@ -106,8 +108,14 @@ export default function CourseApply() {
     } else if (isOneToOne) {
       if (!duration || Number(duration) <= 0) return toast.error('请填写辅导时长（分钟）');
       if (!studentName.trim()) return toast.error('请填写学生姓名');
+      if (signatureRef.current?.isEmpty()) return toast.error('请让学生/家长签名');
       fd.append('form_data', JSON.stringify({ duration: Number(duration), student_name: studentName.trim() }));
       for (const f of files) fd.append('attachments', f);
+      // 签名转 PNG blob，作为附件提交（复用现有附件链路）
+      const sigBlob = await new Promise((resolve, reject) => {
+        signatureRef.current.toBlob((b) => (b ? resolve(b) : reject(new Error('签名导出失败'))));
+      });
+      fd.append('attachments', sigBlob, 'signature.png');
     } else if (chargeable) {
       // 收费竞赛课：收费则填学生名单，不收费则填课时数
       if (charging) {
@@ -134,6 +142,7 @@ export default function CourseApply() {
       await api.post(`/applications/tasks/${course.id}/apply`, fd);
       toast.success('申报已提交，待教务主任审核');
       setStudentName(''); setValues({}); setClassId(''); setPeriodNo(''); setSubject(''); setDuration(''); setFiles([]); setPeriodCount(1); setCharging(false); setStudents('');
+      signatureRef.current?.clear();
       loadMyRecords();
     } catch (e) { toast.error(errMsg(e)); }
   };
@@ -215,6 +224,14 @@ export default function CourseApply() {
               <div className="mapply-field">
                 <label>辅导学生姓名 *</label>
                 <input value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="如 张三" />
+              </div>
+              <div className="mapply-field">
+                <label>学生/家长签名 *</label>
+                <SignaturePad ref={signatureRef} />
+                <div className="sig-pad-row">
+                  <button type="button" className="mapply-chip" onClick={() => signatureRef.current?.clear()}>清空重签</button>
+                </div>
+                <p className="sig-pad-hint">请学生在画板上手写签名，作为上课存档凭证。</p>
               </div>
               <div className="mapply-field">
                 <label>辅导资料（可多选）</label>

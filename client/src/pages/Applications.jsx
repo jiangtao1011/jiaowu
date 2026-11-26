@@ -54,6 +54,8 @@ export default function Applications() {
   const [chargeReview, setChargeReview] = useState(null); // { app, fee, teacherPay }
   const [chargeFee, setChargeFee] = useState('');
   const [chargeTeacherPay, setChargeTeacherPay] = useState('');
+  // 附件预览弹窗
+  const [attPreview, setAttPreview] = useState(null); // { filename, url }
   // 课程填报批量导入
   const [courseImport, setCourseImport] = useState(null); // { task, file }
   const [coursePreview, setCoursePreview] = useState(null); // { token, rows, summary }
@@ -435,6 +437,30 @@ export default function Applications() {
     a.download = `课程二维码_${linkModal?.title || '课程'}.png`;
     a.click();
   };
+
+  // 预览申报附件（签名/辅导资料）：图片直接预览，非图片走下载
+  const previewAttachment = async (att) => {
+    try {
+      const token = localStorage.getItem('edu_token');
+      const res = await fetch(`/api/applications/attachments/${att.id}/download`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) { toast.error('预览失败'); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const isImg = (att.filename || '').match(/\.(png|jpe?g|gif|bmp|webp)$/i) || (blob.type || '').startsWith('image/');
+      if (isImg) {
+        setAttPreview({ filename: att.filename, url });
+      } else {
+        // 非图片：触发下载
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = att.filename || '附件';
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    } catch { toast.error('预览失败'); }
+  };
   const downloadShare = () => {
     if (!qrDataUrl) return;
     const url = linkModal.share_url || `${window.location.origin}/course/${linkModal.share_token}`;
@@ -718,7 +744,15 @@ export default function Applications() {
                       <td>{openTask.pay_mode === '按次计酬' ? `${a.unit_count ?? a.period_count ?? 1} 次` : `${a.period_count || 1} 节`}</td>
                       <td>{(() => {
                         try { return Object.values(a.form_data || {}).join(' / '); } catch { return '-'; }
-                      })()}</td>
+                      })()}{a.attachments?.length > 0 && (
+                        <div className="att-links" style={{ marginTop: 4 }}>
+                          {a.attachments.map((att) => (
+                            <button key={att.id} className="btn ghost sm" onClick={() => previewAttachment(att)} title={att.filename}>
+                              📎 {att.filename || '附件'}
+                            </button>
+                          ))}
+                        </div>
+                      )}</td>
                       <td><span className={`badge ${STATUS_CLS[a.status]}`}>{STATUS[a.status]}</span></td>
                       <td>
                         <div className="toolbar" style={{ marginBottom: 0 }}>
@@ -931,6 +965,22 @@ export default function Applications() {
             <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, marginBottom: 0 }}>
               <button className="btn" onClick={() => setChargeReview(null)}>取消</button>
               <button className="btn primary" onClick={submitChargeReview}>确认通过</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 附件预览弹层 */}
+      {attPreview && (
+        <div className="modal-overlay" onClick={() => { URL.revokeObjectURL(attPreview.url); setAttPreview(null); }}>
+          <div className="modal" style={{ maxWidth: 640 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>附件预览</h3>
+              <button className="btn ghost sm" onClick={() => { URL.revokeObjectURL(attPreview.url); setAttPreview(null); }}>关闭</button>
+            </div>
+            <div style={{ textAlign: 'center', padding: '12px 0' }}>
+              <img src={attPreview.url} alt={attPreview.filename || '附件'} style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: 8 }} />
+              <p className="muted" style={{ marginTop: 8 }}>{attPreview.filename}</p>
             </div>
           </div>
         </div>
