@@ -245,12 +245,15 @@ function fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate })
   const PER_DAY = 4; // 早读/午练/晚读/晚晚读
   const START_COL = 4; // D
 
-  // 1) 写日期行（R2）+ 星期行（R1 已固定「星期」标题，无需改）
+  // 1) 写星期行（R1）+ 日期行（R2）
+  const DOW_NAMES = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
   for (let di = 0; di < days.length && di < MAX_DAYS; di++) {
     const col = START_COL + di * PER_DAY;
     const cell = ws.getCell(2, col);
     cell.value = utcDate(days[di]);
     cell.numFmt = 'yyyy-mm-dd';
+    // R1 星期几（模板是「星期」占位，成品填实际星期几）
+    ws.getCell(1, col).value = DOW_NAMES[dowOf(days[di])];
   }
 
   // 2) 按「教师 × 日期 × 时段」聚合成打点次数
@@ -273,6 +276,8 @@ function fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate })
     ws.getCell(rowIdx, 1).value = e.teacher_name;
     ws.getCell(rowIdx, 2).value = info.grades.join('/');
     ws.getCell(rowIdx, 3).value = info.subjects.join('/');
+    // 汇总区 DM 姓名列必须与 A 列一致，否则 10/11 表 SUMIF 引用 A 列而 DM 显示旧名单，明细与汇总对不上
+    ws.getCell(rowIdx, 117).value = e.teacher_name; // DM 姓名
     // 打点区
     for (let di = 0; di < days.length && di < MAX_DAYS; di++) {
       for (let s = 0; s < PER_DAY; s++) {
@@ -283,6 +288,23 @@ function fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate })
     }
   }
 
+  // 清空超出实际教师数的预置数据行（模板预置 R5~R61 = 57 行）
+  const lastDataRow = 4 + teachers.length; // 最后数据行 = R(4+n)
+  const TPL_END = 61; // 模板预置最后一行
+  if (lastDataRow < TPL_END) {
+    for (let r = lastDataRow + 1; r <= TPL_END; r++) {
+      ws.getCell(r, 1).value = null;   // A 姓名
+      ws.getCell(r, 2).value = null;   // B 年级
+      ws.getCell(r, 3).value = null;   // C 学科
+      ws.getCell(r, 117).value = null; // DM 姓名
+      ws.getCell(r, 119).value = null; // DO 早读课时数
+      ws.getCell(r, 122).value = null; // DR 午练课时数
+      ws.getCell(r, 126).value = null; // DV 晚练单价
+      ws.getCell(r, 129).value = null; // DY 晚晚练单价
+      ws.getCell(r, 131).value = null; // EA 总金额
+    }
+  }
+
   // 4) 参数列：早读课时数 DO=119，午练课时数 DR=122（午练按次计酬不计课时），晚练/晚晚练单价 DV=126/DY=129
   for (let i = 0; i < teachers.length; i++) {
     const rowIdx = 5 + i;
@@ -290,6 +312,11 @@ function fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate })
     ws.getCell(rowIdx, 122).value = 0;                                          // DR 午练课时数（不计课时）
     ws.getCell(rowIdx, 126).value = ctx.periodTypePays.get('晚练') ?? 0;        // DV 晚练单价
     ws.getCell(rowIdx, 129).value = ctx.periodTypePays.get('晚晚练') ?? 0;      // DY 晚晚练单价
+    // EA 总金额 = 晚练(DW) + 晚晚练(DZ) + 午练金额(DQ×午练单价)。模板原公式漏了午练，这里覆盖补上。
+    const noonPay = ctx.periodTypePays.get('午练') ?? 0;
+    ws.getCell(rowIdx, 131).value = { formula: `SUM(DW${rowIdx},DZ${rowIdx},DQ${rowIdx}*'15_口径参数'!$C$${14})` };
+    // EA 列名补「含午练」，与 11 表 B 列「午练+晚练+晚晚练」名实相符
+    ws.getCell(1, 131).value = '总金额/元(含午练)';
   }
 }
 
@@ -495,8 +522,17 @@ function fillSheet08(wb, { rows, ctx }) {
     const rowIdx = 2 + i;
     const r = recs[i];
     const pay = (r.unit_count ?? 1) * (ctx.periodTypePays.get(r.period_type) ?? 0);
+    // 学生姓名：来自 applications.form_data.student_name（一对二为两个名字空格分隔）
+    let studentName = '';
+    if (r.form_data) {
+      try {
+        const fd = typeof r.form_data === 'string' ? JSON.parse(r.form_data) : r.form_data;
+        studentName = String(fd.student_name || '').trim();
+      } catch { /* 解析失败留空 */ }
+    }
     ws.getCell(rowIdx, 1).value = r.teacher_name; // A 授课教师
     ws.getCell(rowIdx, 2).value = r.period_type;  // B 课程类型
+    ws.getCell(rowIdx, 3).value = studentName;    // C 学生姓名
     ws.getCell(rowIdx, 4).value = r.unit_count ?? 1; // D 学生人数(用课时数近似)
     ws.getCell(rowIdx, 5).value = utcDate(r.date); // E 开始时间
     ws.getCell(rowIdx, 5).numFmt = 'yyyy-mm-dd';
@@ -536,14 +572,19 @@ function fillSheet09(wb, { rows, ctx }) {
     ws.getCell(rowIdx, 4).value = r.term;          // D 时段
     ws.getCell(rowIdx, 5).value = r.source;        // E 学生(用来源近似)
     ws.getCell(rowIdx, 6).value = r.unit_count ?? 1; // F 课时
-    ws.getCell(rowIdx, 7).value = r.manual_pay ?? 0; // G 收费
+    // G 收费/元 = 学生缴费（applications.charge_amount，经 source_id 回链）；无则为 0
+    ws.getCell(rowIdx, 7).value = (r.charge_amount != null && r.charge_amount !== '') ? Number(r.charge_amount) : 0;
   }
 
-  // 汇总区 I~M：按教练聚合节数（I教师名 J节数 K=竞赛系数 L=J*K M=补贴）
-  const byTeacher = new Map(); // teacher_id -> { name, count }
+  // 汇总区 I~M：按教练聚合节数与补贴（I教师名 J节数 K=竞赛系数 L=J*K M=补贴）
+  const byTeacher = new Map(); // teacher_id -> { name, count, pay }
   for (const r of recs) {
-    if (!byTeacher.has(r.teacher_id)) byTeacher.set(r.teacher_id, { name: r.teacher_name, count: 0 });
-    byTeacher.get(r.teacher_id).count = round1(byTeacher.get(r.teacher_id).count + (r.unit_count ?? 1));
+    if (!byTeacher.has(r.teacher_id)) byTeacher.set(r.teacher_id, { name: r.teacher_name, count: 0, pay: 0 });
+    const t = byTeacher.get(r.teacher_id);
+    t.count = round1(t.count + (r.unit_count ?? 1));
+    // 收费课补贴 = manual_pay × unit_count（manual_pay 非空才计；不收费课为 0）
+    const mp = r.manual_pay != null && r.manual_pay !== '' ? Number(r.manual_pay) : 0;
+    t.pay = round2(t.pay + mp * (r.unit_count ?? 1));
   }
   const coaches = [...byTeacher.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh'));
   const coef = ctx.periodTypeCoefs.get('竞赛') ?? 2; // 竞赛折算系数
@@ -554,7 +595,7 @@ function fillSheet09(wb, { rows, ctx }) {
     ws.getCell(rowIdx, 10).value = c.count; // J 节数
     ws.getCell(rowIdx, 11).value = { formula: `'15_口径参数'!$C$18` }; // K 折算系数
     ws.getCell(rowIdx, 12).value = { formula: `J${rowIdx}*K${rowIdx}` }; // L 总课时
-    ws.getCell(rowIdx, 13).value = 0;       // M 补贴(系统不收费竞赛)
+    ws.getCell(rowIdx, 13).value = c.pay;   // M 补贴（收费课金额汇总）
   }
   // 合计行：教练数超过模板 10 行(R2~R11)时，把合计行下移；否则清掉多余预置行
   const TPL_SUMMARY_ROWS = 10;
@@ -574,7 +615,41 @@ function fillSheet09(wb, { rows, ctx }) {
   tot.getCell('I').value = '合计';
   tot.getCell('J').value = { formula: `SUM(J2:J${Math.max(11, 1 + coaches.length)})` };
   tot.getCell('L').value = { formula: `SUM(L2:L${Math.max(11, 1 + coaches.length)})` };
+  tot.getCell('M').value = { formula: `SUM(M2:M${Math.max(11, 1 + coaches.length)})` };
   void sumRow;
+
+  // ===== 右侧「按学生收费」区（N/O 列）：每个学生一行，金额 = 各次收费课 charge_amount 按学生人数均摊后累计 =====
+  // 数据源：applications.form_data.students（学生名单）+ charge_amount（该次总收费）。
+  const studentFee = new Map(); // 学生名 -> 累计均摊金额
+  for (const r of recs) {
+    const fee = r.charge_amount != null && r.charge_amount !== '' ? Number(r.charge_amount) : 0;
+    if (!fee) continue;
+    let names = [];
+    if (r.form_data) {
+      try {
+        const fd = typeof r.form_data === 'string' ? JSON.parse(r.form_data) : r.form_data;
+        if (Array.isArray(fd.students)) names = fd.students.map((s) => String(s).trim()).filter(Boolean);
+      } catch { /* form_data 解析失败则跳过该条学生明细 */ }
+    }
+    if (!names.length) continue;
+    const per = round2(fee / names.length);
+    for (const n of names) studentFee.set(n, round2((studentFee.get(n) || 0) + per));
+  }
+  const feeStudents = [...studentFee.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh'));
+  const N_COL = 14, O_COL = 15;
+  // 标题 + 表头（占用 R1/R2 右侧，避开 I~M 汇总区的表头区）
+  ws.getCell(1, N_COL).value = '按学生收费（均摊）';
+  ws.getCell(2, N_COL).value = '学生';
+  ws.getCell(2, O_COL).value = '收费/元';
+  for (let i = 0; i < feeStudents.length; i++) {
+    const rowIdx = 3 + i;
+    ws.getCell(rowIdx, N_COL).value = feeStudents[i][0];
+    ws.getCell(rowIdx, O_COL).value = feeStudents[i][1];
+  }
+  // 合计行
+  const feeTotRow = 3 + feeStudents.length;
+  ws.getCell(feeTotRow, N_COL).value = '合计';
+  ws.getCell(feeTotRow, O_COL).value = { formula: `SUM(O3:O${2 + feeStudents.length})` };
 }
 
 // ===== 10 课时汇总：B~E=统计周期按自然周（周一~周日）拆分的常规正课折算课时（不含节假补课），
@@ -638,6 +713,9 @@ function fillSheet11(wb, { teachers }) {
   const START = 2; // 数据区 R2 起
   const TPL_CAPACITY = 66; // 模板预置 66 行（R2~R67），合计行 R68
   writeRows(ws, START, 'A', teachers.map((e) => [e.teacher_name]));
+  // B 列名：EA 金额实际含「午练 + 晚练 + 晚晚练」，模板列名只写了晚练+晚晚练，名实不符，这里修正
+  ws.getCell(1, 2).value = '午练+晚练+晚晚练补贴';
+  ws.getCell(2, 12).value = 'B ← 03_早午晚 EA 列（午练 + 晚练 + 晚晚练金额）';
   // 清空超出实际教师数的预置数据行
   const lastDataRow = START + teachers.length - 1;
   clearRange(ws, lastDataRow + 1, 'A', START + TPL_CAPACITY - 1, 'L');

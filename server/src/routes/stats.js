@@ -401,12 +401,14 @@ router.post('/instance/:id/restore', roleRequired(...CLERK_ROLES), (req, res) =>
 function queryRows(from_date, to_date, term, teacher_id, includeCancelled = false) {
   let sql = `
     SELECT li.*, t.name AS teacher_name, t.pay_standard, c.name AS class_name, c.grade AS class_grade,
-           pt.name AS parent_teacher_name
+           pt.name AS parent_teacher_name,
+           a.charge_amount AS charge_amount, a.form_data AS form_data
     FROM lesson_instances li
     JOIN teachers t ON t.id = li.teacher_id
     JOIN classes c ON c.id = li.class_id
     LEFT JOIN lesson_instances pli ON pli.id = li.parent_id
     LEFT JOIN teachers pt ON pt.id = pli.teacher_id
+    LEFT JOIN applications a ON a.id = li.source_id AND li.source = 'course'
     WHERE li.date >= ? AND li.date <= ?`;
   const params = [from_date, to_date];
   if (!includeCancelled) sql += ' AND li.cancelled = 0';
