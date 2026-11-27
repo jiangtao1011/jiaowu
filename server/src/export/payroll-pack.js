@@ -135,7 +135,7 @@ export async function buildPayrollPack({ rows, allRows, ctx, fin, fromDate, toDa
 
   fillSheet00(wb, { fromDate, toDate, term, userName });
   fillSheet01(wb, { teachers, teacherInfo, rows, ctx });
-  fillSheet02(wb, { rows, teachers, teacherInfo, ctx });
+  fillSheet02(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate });
   fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate, rowMap });
   fillSheet04(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate, rowMap });
   fillSheet06(wb, { rows, teachers, teacherInfo });
@@ -271,8 +271,12 @@ function fillSheet01(wb, { teachers, teacherInfo, rows, ctx }) {
 
 // ===== 02 普通课时统计：B年级 C任教班级 D任教学科；正课按「班级」拆到 E/G/I/K 四组节数，
 //       F/H/J/L 填对应班级的加权系数（=该班折算课时÷该班节数），使 M=E*F+G*H+I*J+K*L = 总折算课时。
-//       超过 4 个班的教师，第 5 个班起并入 K/L 组（节数累加、系数按折算÷总节数重算）。 =====
-function fillSheet02(wb, { rows, teachers, teacherInfo, ctx }) {
+//       超过 4 个班的教师，第 5 个班起并入 K/L 组（节数累加、系数按折算÷总节数重算）。
+//       底部两个核对区（模板标记「手填」）由系统自动生成，取代人工核对：
+//       · 「按日期核对」：每个常规正课上课日一行，B=日期、C=当日常规正课节数，最后一行合计（C=SUM 逐日）。
+//       · 「分年级核对」：高一/高二/高三各一行（C=该年级常规正课节数，从 lesson_instances.class_grade 聚合），
+//         最后一行合计；「实际表中数据」= 数据区全部节数（逐日汇总的分母），差异 = 实际 - 分年级合计（应为 0）。 =====
+function fillSheet02(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate }) {
   const ws = wb.getWorksheet('02_普通课时统计');
   // 每教师每个班级的「常规正课」节数与折算课时
   const byClass = new Map(); // teacher_id -> [{ cn, count, weighted }]
@@ -321,6 +325,76 @@ function fillSheet02(wb, { rows, teachers, teacherInfo, ctx }) {
       }
     }
   }
+
+  // ===== 底部核对区自动生成（模板标记「手填」） =====
+  // 模板固定行：R67 标题「按日期核对」、R73 合计（SUM(C68:C72)）、
+  //             R75 标题「分年级核对」、R78 合计（SUM(C75:C77)）、R80 实际/差异。
+  // 上课日超过模板预留 5 行时，在 R73 前插入差额行（复制日期行黄色样式），合计行随之下移。
+  const normalRows = rows.filter((r) => !r.cancelled && r.term === '常规' && r.period_type === '正课');
+  const dayCount = new Map(); // date -> 节数
+  for (const r of normalRows) {
+    dayCount.set(r.date, round1((dayCount.get(r.date) || 0) + (r.unit_count ?? 1)));
+  }
+  const days = [...dayCount.keys()].sort();
+
+  const TPL_DAY_ROWS = 5;         // 模板预置日期行 R68~R72
+  const TITLE_ROW = 67;           // 「按日期核对」标题行
+  const DAY_START = TITLE_ROW + 1; // 首行日期 = R68
+  const need = days.length;
+  // 日期区至少占满模板预置 5 行（少于 5 天时空行留白，合计行仍固定 R73）
+  const totalDateRows = Math.max(need, TPL_DAY_ROWS);
+  const extra = totalDateRows - TPL_DAY_ROWS;
+  if (extra > 0) {
+    const insertAt = DAY_START + TPL_DAY_ROWS; // 在最后一个预置日期行之后插入 = R73
+    ws.insertRows(insertAt, Array.from({ length: extra }, () => []), 'i');
+    // 复制日期行的黄色填充与边框样式（exceljs insertRows 不复制单元格样式）
+    const srcRow = insertAt - 1; // 模板最后一个日期行 R72
+    for (let k = 0; k < extra; k++) copyRowStyle(ws, srcRow, insertAt + k, 'A', 'E');
+  }
+
+  // 1) 按日期核对：B=日期（真日期）、C=当日节数，首行 DAY_START 起共 need 行
+  for (let i = 0; i < need; i++) {
+    const rowIdx = DAY_START + i;
+    const b = ws.getCell(rowIdx, 2);
+    b.value = utcDate(days[i]);
+    b.numFmt = 'yyyy-mm-dd';
+    ws.getCell(rowIdx, 3).value = dayCount.get(days[i]);
+  }
+  const daySumRow = DAY_START + totalDateRows; // 合计行：R73（或插入 extra 后下移）
+  // 合计行：B=合计（保留原样式），C=SUM 逐日，覆盖模板「SUM(C68:C72)」硬编码范围
+  ws.getCell(daySumRow, 2).value = '合计';
+  ws.getCell(daySumRow, 3).value = { formula: `SUM(C${DAY_START}:C${DAY_START + totalDateRows - 1})` };
+  // 标题去掉「（手填）」，标注由系统自动汇总
+  ws.getCell(TITLE_ROW, 1).value = '按日期核对（自动汇总）';
+
+  // 2) 分年级核对：按 class_grade 聚合常规正课节数，只填「高一/高二/高三」三行 + 合计
+  const gradeCount = new Map(); // grade -> 节数
+  for (const r of normalRows) {
+    const g = r.class_grade || '未分年级';
+    gradeCount.set(g, round1((gradeCount.get(g) || 0) + (r.unit_count ?? 1)));
+  }
+  // 分年级标题行 R75 下移 daySumRow - 73 行（与插入行数一致）
+  const GRADE_TITLE_ROW = 75 + (daySumRow - 73);
+  // 模板「高一总节数/高二总节数/高三总节数」标签分别占 R75/R76/R77 的 B 列，
+  // 「分年级核对（手填）」标题在 R75 的 A 列（与「高一」同行），故高一数据填 R75。
+  const GRADE_ROWS = ['高一', '高二', '高三'];
+  GRADE_ROWS.forEach((g, i) => {
+    ws.getCell(GRADE_TITLE_ROW + i, 3).value = gradeCount.get(g) || 0;
+  });
+  const gradeSumRow = GRADE_TITLE_ROW + GRADE_ROWS.length;
+  // 分年级合计：C=SUM 三行（不依赖 C75:C77 硬编码）
+  ws.getCell(gradeSumRow, 2).value = '合计';
+  ws.getCell(gradeSumRow, 3).value = { formula: `SUM(C${GRADE_TITLE_ROW}:C${GRADE_TITLE_ROW + GRADE_ROWS.length - 1})` };
+  // 标题去掉「（手填）」，标注由系统自动汇总
+  ws.getCell(GRADE_TITLE_ROW, 1).value = '分年级核对（自动汇总）';
+
+  // 3) 实际表中数据 = 数据区全部节数（E/G/I/K + N/P 六列），差异 = 实际 - 分年级合计（应为 0）
+  const diffRow = GRADE_TITLE_ROW + GRADE_ROWS.length + 2; // 模板 R80，随插入下移
+  const dataLast = 3 + teachers.length; // 数据区最后一行 = R(3+教师数)
+  ws.getCell(diffRow, 2).value = '实际表中数据';
+  ws.getCell(diffRow, 3).value = { formula: `SUM(E4:E${dataLast},G4:G${dataLast},I4:I${dataLast},K4:K${dataLast},N4:N${dataLast},P4:P${dataLast})` };
+  ws.getCell(diffRow, 4).value = '差异（应为 0）';
+  ws.getCell(diffRow, 5).value = { formula: `C${diffRow}-C${gradeSumRow}` };
 }
 
 // ===== 03 早午晚：逐日打点矩阵。模板每日占 4 列（早读/午练/晚读/晚晚读），28 天 = D~DK（列4~115）。
@@ -574,14 +648,13 @@ function fillSheet06(wb, { rows, teachers, teacherInfo }) {
     const m = perDate.get(e.teacher_id);
     const pay = payStd.get(e.teacher_id) || 0;
     if (m) {
-      let gi = 0;
-      for (const d of dates) {
-        if (gi >= 5) break;
-        const cnt = m.get(d);
+      // 组号按全局日期对齐：第 gi 组固定对应 dates[gi] 当天，教师当天有补课才填该组，
+      // 否则留空。这样 5 组分别对应 5 个补课日，每组汇总 = 当天全体教师的补课节数（各组应接近）。
+      for (let gi = 0; gi < dates.length && gi < 5; gi++) {
+        const cnt = m.get(dates[gi]);
         if (cnt) {
           ws.getCell(rowIdx, colIndex(GROUP_COUNT_COL[gi])).value = cnt;
           ws.getCell(rowIdx, colIndex(GROUP_PAY_COL[gi])).value = pay;
-          gi++;
         }
       }
     }
