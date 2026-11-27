@@ -40,11 +40,27 @@ const BATCH_ROLES = [...CLERK_ROLES, '年级组长'];
 // 可审核申报的角色：admin + 教务主任（主任专审）+ 年级组长（年级组长限本年级，一审）
 const REVIEW_ROLES = ['admin', '教务主任', '年级组长'];
 
-// 校验 period_type 是否合法：命中「按次计酬字典」或「折算字典」即保留；否则回退「答疑」。
+// 值日：独立类型（不走 period_type_pays/coefs，金额由档位固定，计酬走 manual_pay）
+const DUTY_TYPE = '值日';
+// 默认值日档位金额（可配置）
+const DEFAULT_DUTY_TIERS = [60, 65, 120, 130, 200, 300];
+
+// 读取值日档位金额数组（app_settings key=duty_pay_tiers，JSON 数组字符串）
+function dutyPayTiers() {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = 'duty_pay_tiers'").get();
+  if (!row?.value) return [...DEFAULT_DUTY_TIERS];
+  try {
+    const arr = JSON.parse(row.value);
+    return Array.isArray(arr) ? arr.map(Number).filter((n) => Number.isFinite(n) && n > 0) : [...DEFAULT_DUTY_TIERS];
+  } catch { return [...DEFAULT_DUTY_TIERS]; }
+}
+
+// 校验 period_type 是否合法：命中「按次计酬字典」或「折算字典」即保留；「值日」白名单；否则回退「答疑」。
 // 早自习本就在折算字典里，无需特判。正课不进入申报。
 function validPeriodType(t) {
   const name = String(t || '').trim();
   if (!name) return '答疑';
+  if (name === DUTY_TYPE) return name;
   if (db.prepare('SELECT 1 FROM period_type_pays WHERE name = ?').get(name)) return name;
   if (db.prepare('SELECT 1 FROM period_type_coefficients WHERE name = ?').get(name)) return name;
   return '答疑';
@@ -158,6 +174,26 @@ router.put('/apply-duration-config', authRequired, roleRequired(...DIRECTOR_ROLE
   return res.json({ ok: true, data: { once_duration_minutes: n } });
 });
 
+// ===== 值日档位金额配置 =====
+
+// 读取值日档位（登录即可，手机端填报选档位用）
+router.get('/duty-pays', authRequired, (req, res) => {
+  res.json({ ok: true, data: { tiers: dutyPayTiers() } });
+});
+
+// 更新值日档位（教务主任/admin）
+router.put('/duty-pays', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
+  const { tiers } = req.body || {};
+  if (!Array.isArray(tiers) || !tiers.length) return res.status(400).json({ ok: false, error: '档位需为非空数组' });
+  const cleaned = tiers.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+  if (!cleaned.length) return res.status(400).json({ ok: false, error: '档位需为正数金额' });
+  db.prepare(`INSERT INTO app_settings (key, value) VALUES ('duty_pay_tiers', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')`)
+    .run(JSON.stringify(cleaned));
+  logAudit(req.user.id, 'update_duty_pays', 'app_settings', `值日档位=${cleaned.join('、')}`);
+  return res.json({ ok: true, data: { tiers: cleaned } });
+});
+
 // 查找「活跃」（待审核/已通过）的重复申报，返回命中记录或 null。
 // 重复口径：同一教师 + 同一类型 + 同一时间维度 + 同一目标。
 //  - 临时（有 date）：teacher + type + date + 目标
@@ -192,14 +228,25 @@ function findDuplicate({ teacher_id, period_type, date, day_of_week, period_no, 
 // opts: { grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type }
 // gradeRange: 年级组长限定负责年级时传其年级名，非本年级直接抛错。
 function insertQnaPending(opts, filledBy, gradeRange) {
-  const { grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type } = opts;
+  const { grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type, pay_amount } = opts;
   if (!grade || !subject) throw new Error('年级和学科必填');
   if (gradeRange && grade !== gradeRange) throw new Error(`仅可申报负责年级「${gradeRange}」的课时`);
   const pt = validPeriodType(period_type);
 
-  // 折算类型（早自习/竞赛/培优/监考等）为年级级：忽略传入的班级，统一挂该年级虚班，保证审核通过能生成上课记录。
+  // 值日：金额必填且必须在档位白名单内；年级级（挂年级虚班）；一次一条（period_count 恒 1）
+  let resolvedPayAmount = null;
+  if (pt === DUTY_TYPE) {
+    if (pay_amount == null || !Number.isFinite(Number(pay_amount)) || Number(pay_amount) <= 0) {
+      throw new Error('值日需选择档位金额');
+    }
+    const tier = Number(pay_amount);
+    if (!dutyPayTiers().includes(tier)) throw new Error('值日档位金额无效，请重新选择');
+    resolvedPayAmount = tier;
+  }
+
+  // 折算类型（早自习/竞赛/培优/监考等）+ 值日 为年级级：忽略传入的班级，统一挂该年级虚班，保证审核通过能生成上课记录。
   let resolvedClassId = class_id ? Number(class_id) : null;
-  if (isCoefficientType(pt)) {
+  if (isCoefficientType(pt) || pt === DUTY_TYPE) {
     resolvedClassId = virtualClassIdForGrade(grade);
     if (!resolvedClassId) throw new Error(`年级「${grade}」暂无虚拟班，请先在班级管理里生成年级虚班`);
   }
@@ -217,11 +264,11 @@ function insertQnaPending(opts, filledBy, gradeRange) {
 
   const info = db
     .prepare(`INSERT INTO qna_lessons
-      (grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type, status, filled_by)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      (grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type, status, filled_by, pay_amount)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run(grade, subject, teacher_id, resolvedClassId,
       day_of_week != null ? Number(day_of_week) : null, period_no != null ? Number(period_no) : null,
-      content ?? null, date ?? null, Math.max(1, Number(period_count) || 1), pt, 'pending', filledBy);
+      content ?? null, date ?? null, Math.max(1, Number(period_count) || 1), pt, 'pending', filledBy, resolvedPayAmount);
   return Number(info.lastInsertRowid);
 }
 
@@ -315,7 +362,7 @@ router.get('/', authRequired, (req, res) => {
 // 答疑课填报（任意登录教师可填）。临时答疑必填 date（发生日期），period_count 为节数（默认 1）
 // 自主申报：teacher_id 优先取当前登录账号绑定的教师档案；无绑定时才用请求里的 teacher_id。
 router.post('/', authRequired, (req, res) => {
-  const { grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type } = req.body || {};
+  const { grade, subject, teacher_id, class_id, day_of_week, period_no, content, date, period_count, period_type, pay_amount } = req.body || {};
   // 自主申报身份：登录账号绑定的教师优先
   const resolvedTeacherId = req.user.teacher_id ?? (teacher_id ? Number(teacher_id) : null);
   // 自主申报学科：绑定教师有学科时用教师学科
@@ -324,7 +371,7 @@ router.post('/', authRequired, (req, res) => {
   try {
     const id = insertQnaPending({
       grade, subject: resolvedSubject, teacher_id: resolvedTeacherId,
-      class_id, day_of_week, period_no, content, date, period_count, period_type,
+      class_id, day_of_week, period_no, content, date, period_count, period_type, pay_amount,
     }, req.user.id);
     logAudit(req.user.id, 'fill_qna_lesson', `qna_lessons:${id}`, `填报${validPeriodType(period_type)} ${grade}${resolvedSubject}`);
     return res.json({ ok: true, data: { id } });
@@ -576,7 +623,7 @@ router.post('/batch', authRequired, roleRequired(...BATCH_ROLES), (req, res) => 
         day_of_week: it.day_of_week != null ? Number(it.day_of_week) : null,
         period_no: it.period_no != null ? Number(it.period_no) : null,
         content: it.content, date: it.date || null,
-        period_count: it.period_count, period_type: it.period_type,
+        period_count: it.period_count, period_type: it.period_type, pay_amount: it.pay_amount,
       }, req.user.id, gradeRange);
       inserted++;
       logAudit(req.user.id, 'batch_apply_qna', `qna_lessons:${id}`, `批量申报第 ${line} 行`);
@@ -600,6 +647,16 @@ function applyQnaPayroll(q) {
     if (!classId) return 0; // 年级无虚班，无法计酬
   }
   if (q.date) {
+    // 值日：固定金额计酬，生成 1 条记录带 manual_pay（computePay 命中手工金额分支，折算 0、课酬=档位金额）
+    if (q.period_type === DUTY_TYPE) {
+      const amount = Number(q.pay_amount);
+      if (!Number.isFinite(amount) || amount <= 0) return 0;
+      db.prepare(`
+        INSERT INTO lesson_instances (class_id, teacher_id, subject, date, period_no, period_type, term, source, source_id, note, unit_count, manual_pay)
+        VALUES (?,?,?,?,0,?, '常规', 'qna', ?, ?, 1, ?)`)
+        .run(classId, q.teacher_id, q.subject, q.date, q.period_type, q.id, q.content ?? null, amount);
+      return 1;
+    }
     // 临时/不定期：按填报的日期与节数生成上课记录，类型用记录里的 period_type。
     // period_no 记 0（无节次）——按次计酬只看条数，不占具体节次，避免与正课第 1 节等冲突。
     const count = Math.max(1, Number(q.period_count) || 1);

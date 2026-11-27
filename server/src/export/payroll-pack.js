@@ -39,32 +39,60 @@ function utcDate(dateStr) {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
-// 12 财务汇总表列映射（模板固定 45 列：A序号 B姓名 C~AP 各类型节数/金额/折算，AQ折算合计 AR课酬合计 AS备注）
-// kind: core=常规正课 / coef=折算类型(不计钱) / type=按次计酬(计钱) / term=非规时段(计钱)
-const SHEET12_COLS = [
-  { col: 'C', kind: 'core', field: 'count' }, { col: 'D', kind: 'core', field: 'weighted' },
-  { col: 'E', kind: 'coef', name: '早自习', field: 'count' }, { col: 'F', kind: 'coef', name: '早自习', field: 'weighted' },
-  { col: 'G', kind: 'coef', name: '竞赛', field: 'count' }, { col: 'H', kind: 'coef', name: '竞赛', field: 'weighted' },
-  { col: 'I', kind: 'coef', name: '培优', field: 'count' }, { col: 'J', kind: 'coef', name: '培优', field: 'weighted' },
-  { col: 'K', kind: 'coef', name: '监考·标准', field: 'count' }, { col: 'L', kind: 'coef', name: '监考·标准', field: 'weighted' },
-  { col: 'M', kind: 'coef', name: '监考·加时', field: 'count' }, { col: 'N', kind: 'coef', name: '监考·加时', field: 'weighted' },
-  { col: 'O', kind: 'coef', name: '监考·长时', field: 'count' }, { col: 'P', kind: 'coef', name: '监考·长时', field: 'weighted' },
-  { col: 'Q', kind: 'type', name: '晚自习', field: 'count' }, { col: 'R', kind: 'type', name: '晚自习', field: 'pay' },
-  { col: 'S', kind: 'type', name: '答疑', field: 'count' }, { col: 'T', kind: 'type', name: '答疑', field: 'pay' },
-  { col: 'U', kind: 'type', name: '晚练', field: 'count' }, { col: 'V', kind: 'type', name: '晚练', field: 'pay' },
-  { col: 'W', kind: 'type', name: '晚晚练', field: 'count' }, { col: 'X', kind: 'type', name: '晚晚练', field: 'pay' },
-  { col: 'Y', kind: 'type', name: '一对一', field: 'count' }, { col: 'Z', kind: 'type', name: '一对一', field: 'pay' },
-  { col: 'AA', kind: 'type', name: '一对二', field: 'count' }, { col: 'AB', kind: 'type', name: '一对二', field: 'pay' },
-  { col: 'AC', kind: 'type', name: '一对多', field: 'count' }, { col: 'AD', kind: 'type', name: '一对多', field: 'pay' },
-  { col: 'AE', kind: 'type', name: '午练', field: 'count' }, { col: 'AF', kind: 'type', name: '午练', field: 'pay' },
-  { col: 'AG', kind: 'term', name: '夏令营', field: 'count' }, { col: 'AH', kind: 'term', name: '夏令营', field: 'pay' },
-  { col: 'AI', kind: 'term', name: '冬令营', field: 'count' }, { col: 'AJ', kind: 'term', name: '冬令营', field: 'pay' },
-  { col: 'AK', kind: 'term', name: '全员夏令营', field: 'count' }, { col: 'AL', kind: 'term', name: '全员夏令营', field: 'pay' },
-  { col: 'AM', kind: 'term', name: '全员冬令营', field: 'count' }, { col: 'AN', kind: 'term', name: '全员冬令营', field: 'pay' },
-  { col: 'AO', kind: 'term', name: '节假补课', field: 'count' }, { col: 'AP', kind: 'term', name: '节假补课', field: 'pay' },
-];
+// 12 财务汇总表列：由系统字典 + 本期数据动态生成，不再写死 45 列。
+// 列顺序：序号, 姓名, 正课(节数/折算), 折算类型(节数/折算课时), 按次计酬类型(节数/金额), 非规时段(节数/金额), 折算合计, 课酬合计, 备注。
+// 返回 { cols, colCount }：cols 为 [{ name, kind, field }]，kind: core/coef/type/term。
+function buildSheet12Cols(ctx, rows) {
+  const cols = [];
+  // 固定：序号(A) 姓名(B)
+  cols.push({ name: '序号', kind: 'seq' });
+  cols.push({ name: '姓名', kind: 'name' });
+  // 正课
+  cols.push({ name: '正课', kind: 'core', field: 'count' });
+  cols.push({ name: '正课', kind: 'core', field: 'weighted' });
+  // 折算类型（不计钱）
+  for (const name of ctx.periodTypeCoefs.keys()) {
+    cols.push({ name, kind: 'coef', field: 'count' });
+    cols.push({ name, kind: 'coef', field: 'weighted' });
+  }
+  // 按次计酬类型（计钱）
+  for (const name of ctx.periodTypePays.keys()) {
+    cols.push({ name, kind: 'type', field: 'count' });
+    cols.push({ name, kind: 'type', field: 'pay' });
+  }
+  // 非规时段（计钱）：从本期记录收集，排除「常规」
+  const terms = [...new Set(rows.filter((r) => !r.cancelled && r.term !== '常规').map((r) => r.term))].sort();
+  for (const name of terms) {
+    cols.push({ name, kind: 'term', field: 'count' });
+    cols.push({ name, kind: 'term', field: 'pay' });
+  }
+  // 合计
+  cols.push({ name: '折算课时合计', kind: 'weighted_total' });
+  cols.push({ name: '课酬合计(元)', kind: 'pay_total' });
+  cols.push({ name: '备注', kind: 'note' });
+  return { cols, colCount: cols.length };
+}
+
+// 表头文字：按列 kind/field 生成中文标题（与模板格式一致）
+function sheet12Header(col) {
+  if (col.kind === 'seq') return '序号';
+  if (col.kind === 'name') return '教师姓名';
+  if (col.kind === 'weighted_total') return '折算课时合计';
+  if (col.kind === 'pay_total') return '课酬合计(元)';
+  if (col.kind === 'note') return '备注';
+  if (col.kind === 'core') return col.field === 'count' ? '正课节数' : '正课折算课时(不计钱)';
+  if (col.kind === 'coef') return col.field === 'count' ? `${col.name}节数` : `${col.name}折算课时(不计钱)`;
+  if (col.kind === 'type') return col.field === 'count' ? `${col.name}节数` : `${col.name}金额(元)`;
+  if (col.kind === 'term') return col.field === 'count' ? `${col.name}节数` : `${col.name}金额(元)`;
+  return col.name;
+}
 
 function sheet12Value(e, col) {
+  if (col.kind === 'seq') return null; // 序号在 fillSheet12 里按行号填
+  if (col.kind === 'name') return e.teacher_name;
+  if (col.kind === 'weighted_total') return round2(e.weighted_total);
+  if (col.kind === 'pay_total') return round2(e.pay_total);
+  if (col.kind === 'note') return '';
   if (col.kind === 'core') return col.field === 'count' ? e.core_count : round2(e.core_weighted);
   if (col.kind === 'coef') return col.field === 'count' ? (e.coefCounts[col.name] || 0) : round2(e.coefWeighted[col.name]);
   if (col.kind === 'type') return col.field === 'count' ? (e.typeCounts[col.name] || 0) : round2(e.typePays[col.name]);
@@ -82,7 +110,8 @@ function buildTeacherInfo(rows) {
     }
     const t = info.get(r.teacher_id);
     if (r.class_grade) t.grades.add(r.class_grade);
-    if (r.class_name && !/年级$/.test(r.class_name) && !/级部$/.test(r.class_name) && !t.classSet.has(r.class_name)) {
+    // 任教班级：排除虚班（年级虚班/个人课务通用虚班等），只保留真实班级
+    if (r.class_name && !r.class_is_virtual && !t.classSet.has(r.class_name)) {
       t.classSet.add(r.class_name); t.classes.push(r.class_name);
     }
     if (r.subject) t.subjects.add(r.subject);
@@ -101,22 +130,24 @@ export async function buildPayrollPack({ rows, allRows, ctx, fin, fromDate, toDa
   const teacherInfo = buildTeacherInfo(rows);
   const teachers = fin.teachers; // 已按姓名排序、仅计酬教师
 
+  // 15 口径参数表先填，产出「项目名 → 行号」映射，供 03/04/09/10 表公式运行时定位（去硬编码）
+  const rowMap = fillSheet15(wb, { ctx });
+
   fillSheet00(wb, { fromDate, toDate, term, userName });
-  fillSheet01(wb, { teachers, teacherInfo });
+  fillSheet01(wb, { teachers, teacherInfo, rows, ctx });
   fillSheet02(wb, { rows, teachers, teacherInfo, ctx });
-  fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate });
-  fillSheet04(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate });
+  fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate, rowMap });
+  fillSheet04(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate, rowMap });
   fillSheet06(wb, { rows, teachers, teacherInfo });
   fillSheet05(wb, { rows, teachers, teacherInfo, fromDate, toDate });
-  const jkLastRow = fillSheet07(wb, { rows }).lastRow; // 07 明细区最后一行（含合计）
+  const jkLastRow = fillSheet07(wb, { rows, ctx }).lastRow; // 07 明细区最后一行（含合计）
   fillSheet08(wb, { rows, ctx });
-  fillSheet09(wb, { rows, ctx });
-  fillSheet10(wb, { rows, teachers, ctx, jkLastRow });
+  fillSheet09(wb, { rows, ctx, rowMap });
+  fillSheet10(wb, { rows, teachers, ctx, jkLastRow, rowMap });
   fillSheet11(wb, { teachers });
-  const sumTotRow = fillSheet12(wb, { teachers, fin });
+  const sumRes = fillSheet12(wb, { teachers, fin, rows, ctx });
   fillSheet13(wb, { allRows, ctx });
-  fillSheet14(wb, { allRows, teachers, fin, sumTotRow });
-  fillSheet15(wb, { ctx });
+  fillSheet14(wb, { allRows, teachers, fin, sumTotRow: sumRes.totalRow, payColLetter: sumRes.payColLetter });
 
   return Buffer.from(await wb.xlsx.writeBuffer());
 }
@@ -153,6 +184,21 @@ function copyRowStyle(ws, srcRow, dstRow, c1, c2) {
   }
 }
 
+// 确保某 sheet 从 startRow 起有 need 行「带样式」的数据行。
+// 数据量超模板预置行数时，在数据区末尾插入差额行，并从模板最后一个数据行复制样式，
+// 使超出的行与预置行格式统一（黄色填充 + 边框 + 对齐）。
+// 参数：ws、startRow（数据区首行）、need（需要的行数）、tplCapacity（模板预置行数）、colRange（列范围字母，如 'L'）。
+function ensureRows(ws, startRow, need, tplCapacity, colRange) {
+  if (need <= tplCapacity) return;
+  const extra = need - tplCapacity;
+  const insertAt = startRow + tplCapacity; // 在最后一个预置数据行之后插入
+  ws.insertRows(insertAt, Array.from({ length: extra }, () => []), 'i');
+  const srcRow = insertAt - 1; // 模板最后一个数据行
+  for (let k = 0; k < extra; k++) {
+    copyRowStyle(ws, srcRow, insertAt + k, 'A', colRange);
+  }
+}
+
 // ===== 00 填写说明 =====
 function fillSheet00(wb, { fromDate, toDate, term, userName }) {
   const ws = wb.getWorksheet('00_填写说明');
@@ -169,14 +215,58 @@ function fillSheet00(wb, { fromDate, toDate, term, userName }) {
   }
 }
 
-// ===== 01 基础名单与系数：A姓名 B年级 C任教班级 D任教学科（数据区 R4 起） =====
-function fillSheet01(wb, { teachers, teacherInfo }) {
+// ===== 01 基础名单与系数：A姓名 B年级 C任教班级 D任教学科；E/G/I/K=各班人数，F/H/J/L=各班系数 =====
+// 「课型人数」= 该教师各任课班级的班额；「系数」= 学科系数 + 班额系数（不计班额学科只学科系数），
+// 与 02 表 F/H/J/L 口径一致。超过 4 个班时第 5 个班起并入第 4 组（人数累加、系数取折算÷人数近似）。
+function fillSheet01(wb, { teachers, teacherInfo, rows, ctx }) {
   const ws = wb.getWorksheet('01_基础名单与系数');
-  const dataRows = teachers.map((e) => {
+  // 每教师各班级的「班额」与「折算系数」
+  const byClass = new Map(); // teacher_id -> [{ cn, size, coef }]
+  for (const r of rows) {
+    if (r.cancelled) continue;
+    if (r.class_is_virtual) continue; // 跳过虚班
+    if (!byClass.has(r.teacher_id)) byClass.set(r.teacher_id, []);
+    const arr = byClass.get(r.teacher_id);
+    if (arr.find((x) => x.cn === r.class_name)) continue; // 去重
+    const cls = ctx.classMap.get(r.class_id);
+    const size = cls?.student_count || 0;
+    const subj = String(r.subject || '').replace(/[A-Za-z0-9一二三四五六七八九十]+层$/, '').trim();
+    const subjCoef = ctx.subjCoef.get(subj) ?? 1.0;
+    const sizeCoef = ctx.noSizeSubjects.has(subj) ? 0 : ctx.sizeCoefOf(size);
+    arr.push({ cn: r.class_name, size, coef: round2(subjCoef + sizeCoef) });
+  }
+
+  for (let i = 0; i < teachers.length; i++) {
+    const rowIdx = 4 + i;
+    const e = teachers[i];
     const info = teacherInfo.get(e.teacher_id) || { grades: [], classes: [], subjects: [] };
-    return [e.teacher_name, info.grades.join('/'), info.classes.join('/'), info.subjects.join('/')];
-  });
-  writeRows(ws, 4, 'A', dataRows);
+    const arr = byClass.get(e.teacher_id) || [];
+    arr.sort((a, b) => (b.size - a.size) || a.cn.localeCompare(b.cn, 'zh'));
+
+    ws.getCell(rowIdx, 1).value = e.teacher_name;
+    ws.getCell(rowIdx, 2).value = info.grades.join('/');
+    ws.getCell(rowIdx, 3).value = info.classes.join('/');
+    ws.getCell(rowIdx, 4).value = info.subjects.join('/');
+
+    // E/G/I/K=人数，F/H/J/L=系数（4 组，超出并入第 4 组）
+    const groups = [{ size: 0, coef: 0, n: 0 }, { size: 0, coef: 0, n: 0 }, { size: 0, coef: 0, n: 0 }, { size: 0, coef: 0, n: 0 }];
+    arr.forEach((c, idx) => {
+      const g = groups[Math.min(idx, 3)];
+      g.size += c.size; g.coef += c.coef; g.n++;
+    });
+    const sizeCols = [5, 7, 9, 11];   // E,G,I,K
+    const coefCols = [6, 8, 10, 12]; // F,H,J,L
+    for (let gi = 0; gi < 4; gi++) {
+      const g = groups[gi];
+      if (g.n > 0) {
+        ws.getCell(rowIdx, sizeCols[gi]).value = g.size;
+        ws.getCell(rowIdx, coefCols[gi]).value = round2(g.coef / g.n); // 组内多班时取平均系数
+      } else {
+        ws.getCell(rowIdx, sizeCols[gi]).value = null;
+        ws.getCell(rowIdx, coefCols[gi]).value = null;
+      }
+    }
+  }
 }
 
 // ===== 02 普通课时统计：B年级 C任教班级 D任教学科；正课按「班级」拆到 E/G/I/K 四组节数，
@@ -237,7 +327,7 @@ function fillSheet02(wb, { rows, teachers, teacherInfo, ctx }) {
 //      日期写 R2（每 4 列的第 1 列），R4 是「早读/午练/晚读/晚晚读」分组标题，数据区 R5 起。
 //      有记录打点 1（unit_count 累计），汇总列 DN~EA 由模板公式自动求和。
 //      早读=早自习，晚读=晚练，晚晚读=晚晚练，午练=午练（计酬类型但按次）。 =====
-function fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate }) {
+function fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate, rowMap }) {
   const ws = wb.getWorksheet('03_早午晚');
   const days = dateRange(fromDate, toDate);
   // 模板预置 28 天（D 列起，每 4 列一天）。本期 ≤28 天可直接覆盖；超 28 天则超出部分无法容纳，截断并告警由调用方处理。
@@ -313,8 +403,8 @@ function fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate })
     ws.getCell(rowIdx, 126).value = ctx.periodTypePays.get('晚练') ?? 0;        // DV 晚练单价
     ws.getCell(rowIdx, 129).value = ctx.periodTypePays.get('晚晚练') ?? 0;      // DY 晚晚练单价
     // EA 总金额 = 晚练(DW) + 晚晚练(DZ) + 午练金额(DQ×午练单价)。模板原公式漏了午练，这里覆盖补上。
-    const noonPay = ctx.periodTypePays.get('午练') ?? 0;
-    ws.getCell(rowIdx, 131).value = { formula: `SUM(DW${rowIdx},DZ${rowIdx},DQ${rowIdx}*'15_口径参数'!$C$${14})` };
+    const noonRow = rowMap.get('午练'); // 15 表「午练」行号（运行时定位，去硬编码 $C$14）
+    ws.getCell(rowIdx, 131).value = { formula: `SUM(DW${rowIdx},DZ${rowIdx},DQ${rowIdx}*'15_口径参数'!$C$${noonRow})` };
     // EA 列名补「含午练」，与 11 表 B 列「午练+晚练+晚晚练」名实相符
     ws.getCell(1, 131).value = '总金额/元(含午练)';
   }
@@ -323,7 +413,7 @@ function fillSheet03(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate })
 // ===== 04 坐班答疑：逐日档位打点。D~AE=28 天（每列一天），日期写 R1，档位 1/2/3 填数据行 R4+。
 //      档位映射：答疑·高一=100→1，答疑·其他=150→2，晚自习=180→3。
 //      同日第 2 场：向右加补录列 AI~AM（5 列），AF 合计公式 COUNTIF 扩到含补录区。 =====
-function fillSheet04(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate }) {
+function fillSheet04(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate, rowMap }) {
   const ws = wb.getWorksheet('04_坐班答疑');
   const days = dateRange(fromDate, toDate);
   const MAX_DAYS = 28;
@@ -381,17 +471,18 @@ function fillSheet04(wb, { rows, teachers, teacherInfo, ctx, fromDate, toDate })
     }
 
     // AF 合计公式：主区 D~AE + 补录区 AI~AM（按档位 COUNTIF）
-    // 档位单价引用 15 表 C 列：1→C3(100), 2→C4(150), 3→C5(180)，与模板原公式一致
+    // 档位单价引用 15 表 C 列：档位1/2/3 行号运行时定位（去硬编码 $C$3/C$4/C$5）
     const mainRng = `${colName(START_COL)}${rowIdx}:AE${rowIdx}`;
     const extraRng = `AI${rowIdx}:AM${rowIdx}`;
-    const parts = [1, 2, 3].map((t) =>
-      `COUNTIF(${mainRng},${t})*'15_口径参数'!$C$${2 + t}+COUNTIF(${extraRng},${t})*'15_口径参数'!$C$${2 + t}`
+    const tierRows = [1, 2, 3].map((t) => rowMap.get(`档位${t}`));
+    const parts = [1, 2, 3].map((t, idx) =>
+      `COUNTIF(${mainRng},${t})*'15_口径参数'!$C$${tierRows[idx]}+COUNTIF(${extraRng},${t})*'15_口径参数'!$C$${tierRows[idx]}`
     );
     ws.getCell(rowIdx, 32).value = { formula: parts.join('+') };
   }
 }
 
-// ===== 05 值日：系统无值日数据，但日期行 R1/R2 应覆盖区间（D~AG=30 天，超出向右扩展 AI+），保持骨架一致 =====
+// ===== 05 值日：按「教师 × 日期」打点金额（来自 lesson_instances period_type='值日'），逐日区 D~AG（30天），AH 合计公式自动 =====
 function fillSheet05(wb, { rows, teachers, teacherInfo, fromDate, toDate }) {
   const ws = wb.getWorksheet('05_值日');
   const days = dateRange(fromDate, toDate);
@@ -410,7 +501,42 @@ function fillSheet05(wb, { rows, teachers, teacherInfo, fromDate, toDate }) {
     cell.value = utcDate(days[di]);
     cell.numFmt = 'yyyy-mm-dd';
   }
-  void rows; void teachers; void teacherInfo;
+
+  // 值日记录：按「教师 × 日期」聚合金额（manual_pay 是值日档位金额）
+  const duty = new Map(); // `${teacher_id}|${date}` -> 金额
+  for (const r of rows) {
+    if (r.cancelled) continue;
+    if (r.period_type !== '值日') continue;
+    const amt = r.manual_pay != null && r.manual_pay !== '' ? Number(r.manual_pay) : 0;
+    const key = `${r.teacher_id}|${r.date}`;
+    duty.set(key, round2((duty.get(key) || 0) + amt));
+  }
+
+  // 有值日记录的教师（按姓名排序），填到 05 表数据区（R5 起，模板预置 23 行）
+  const dutyTeachers = [...new Set(rows.filter((r) => !r.cancelled && r.period_type === '值日').map((r) => r.teacher_id))]
+    .map((tid) => ({ id: tid, name: rows.find((r) => r.teacher_id === tid)?.teacher_name }))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh'));
+
+  dutyTeachers.forEach((t, i) => {
+    const rowIdx = 5 + i;
+    const info = teacherInfo.get(t.id) || { grades: [], subjects: [] };
+    // A 年级 B 科目 C 姓名
+    ws.getCell(rowIdx, 1).value = info.grades.join('/');
+    ws.getCell(rowIdx, 2).value = info.subjects.join('/');
+    ws.getCell(rowIdx, 3).value = t.name;
+    // 逐日金额打点
+    for (let di = 0; di < days.length && di < MAX_DAYS; di++) {
+      const amt = duty.get(`${t.id}|${days[di]}`);
+      if (amt) ws.getCell(rowIdx, START_COL + di).value = amt;
+    }
+  });
+
+  // 清空超出值日教师数的预置名单行（R(5+n) ~ R27）
+  for (let r = 5 + dutyTeachers.length; r <= 27; r++) {
+    ws.getCell(r, 1).value = null;
+    ws.getCell(r, 2).value = null;
+    ws.getCell(r, 3).value = null;
+  }
 }
 
 // ===== 06 周末补课：节假补课按「教师 × 周日」分布到 5 组，每组填节数1 槽 + 单价 =====
@@ -471,9 +597,33 @@ function fillSheet06(wb, { rows, teachers, teacherInfo }) {
 }
 
 // ===== 07 监考课时：E~J 明细区逐条（E日期 F教师 G折算课时），超出模板 40 行容量时扩行，合计行下移 =====
-function fillSheet07(wb, { rows }) {
+function fillSheet07(wb, { rows, ctx }) {
   const ws = wb.getWorksheet('07_监考课时');
-  const coefMap = { '监考·标准': 1, '监考·加时': 1.25, '监考·长时': 1.5 };
+  // 修复：模板 A~C「学科时长对照区」的 B 列（监考分钟数）底层样式含日期格式，
+  // exceljs 写回时会丢失 t="n" 导致数字被 Excel 解析成日期。这里把 B 列重建为文本值，彻底绕开歧义。
+  // 学科时长对照（分钟 → 折算课时）：从监考折算系数反推标准时长档位。
+  // 监考折算系数来自系统字典 period_type_coefficients（监考·标准/加时/长时）。
+  const jkStd = ctx.periodTypeCoefs.get('监考·标准') ?? 1;
+  const jkLong = ctx.periodTypeCoefs.get('监考·加时') ?? 1.25;
+  const jkLongest = ctx.periodTypeCoefs.get('监考·长时') ?? 1.5;
+  // 学科时长对照：语文/数学 120min(加时)、英语 120min、其余 90min(标准)；150min 对应长时(语文卷面时长)
+  const subjectDurationMap = { 语文: 150, 地理: 90, 物理: 90, 英语: 120, 化学: 90, 历史: 90, 生物: 90, 政治: 90, 技术: 90, 数学: 120 };
+  let di = 0;
+  for (const [subject, mins] of Object.entries(subjectDurationMap)) {
+    const row = 2 + di;
+    ws.getCell(row, 1).value = subject;             // A 学科
+    ws.getCell(row, 2).value = String(mins);        // B 监考时间（文本，避免日期歧义）
+    // C 折算课时：按分钟映射到字典系数（150→长时，120→加时，90→标准）
+    const coef = mins >= 150 ? jkLongest : mins >= 120 ? jkLong : jkStd;
+    ws.getCell(row, 3).value = coef;
+    di++;
+  }
+  // 监考折算系数：从系统字典读，不再写死 1/1.25/1.5
+  const coefMap = {
+    '监考·标准': jkStd,
+    '监考·加时': jkLong,
+    '监考·长时': jkLongest,
+  };
   const recs = rows.filter((r) => !r.cancelled && coefMap[r.period_type]).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.teacher_name < b.teacher_name ? -1 : 1)));
   // 模板明细区 R2 起（共 40 行至 R41），合计行 R42
   const START = 2;
@@ -497,6 +647,8 @@ function fillSheet07(wb, { rows }) {
     ws.getCell(rowIdx, 5).numFmt = 'yyyy-mm-dd';
     ws.getCell(rowIdx, 6).value = r.teacher_name;  // F 教师
     ws.getCell(rowIdx, 7).value = round2((r.unit_count ?? 1) * coefMap[r.period_type]); // G 监考1
+    // J 合计课时 = SUM(G:I)——插入的行没有公式，需给每一行显式补（10 表 SUMIF 依赖 J 列）
+    ws.getCell(rowIdx, 10).value = { formula: `SUM(G${rowIdx}:I${rowIdx})` };
   }
   // 合计行：E=合计, J=SUM(G2:G{last})
   const lastRow = START + recs.length - 1;
@@ -504,13 +656,6 @@ function fillSheet07(wb, { rows }) {
   const tot = ws.getRow(totRow);
   tot.getCell('E').value = '合计';
   tot.getCell('J').value = { formula: `SUM(G${START}:G${lastRow})` };
-  // 清空模板原合计行(R42)残留（若已下移则 R42 现在是明细区边界，无需处理；但保险起见清掉旧合计行内容）
-  const oldTotRow = START + TPL_CAPACITY;
-  if (oldTotRow !== totRow) {
-    const old = ws.getRow(oldTotRow);
-    old.getCell('E').value = null;
-    old.getCell('J').value = null;
-  }
   return { lastRow }; // 明细区最后一行（供 10 表更新 SUMIF 引用范围）
 }
 
@@ -558,9 +703,11 @@ function fillSheet08(wb, { rows, ctx }) {
 }
 
 // ===== 09 竞赛培优：A~G 明细区逐条 + I~M 按教练汇总区（I教师 J节数 K系数 L总课时 M补贴） =====
-function fillSheet09(wb, { rows, ctx }) {
+function fillSheet09(wb, { rows, ctx, rowMap }) {
   const ws = wb.getWorksheet('09_竞赛培优');
   const recs = rows.filter((r) => !r.cancelled && (r.period_type === '竞赛' || r.period_type === '培优')).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  // 模板明细区 R2~R31（30 行），竞赛记录可能超，先扩行复制样式
+  ensureRows(ws, 2, recs.length, 30, 'M');
   // 明细区 A~G
   for (let i = 0; i < recs.length; i++) {
     const rowIdx = 2 + i;
@@ -587,13 +734,13 @@ function fillSheet09(wb, { rows, ctx }) {
     t.pay = round2(t.pay + mp * (r.unit_count ?? 1));
   }
   const coaches = [...byTeacher.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh'));
-  const coef = ctx.periodTypeCoefs.get('竞赛') ?? 2; // 竞赛折算系数
+  const compRow = rowMap.get('竞赛折算') ?? rowMap.get('竞赛'); // 竞赛折算系数行号（运行时定位）
   for (let i = 0; i < coaches.length; i++) {
     const rowIdx = 2 + i; // 汇总区与明细区同起始行 R2 起（模板结构如此）
     const c = coaches[i];
     ws.getCell(rowIdx, 9).value = c.name;   // I 教师
     ws.getCell(rowIdx, 10).value = c.count; // J 节数
-    ws.getCell(rowIdx, 11).value = { formula: `'15_口径参数'!$C$18` }; // K 折算系数
+    ws.getCell(rowIdx, 11).value = { formula: `'15_口径参数'!$C$${compRow}` }; // K 折算系数
     ws.getCell(rowIdx, 12).value = { formula: `J${rowIdx}*K${rowIdx}` }; // L 总课时
     ws.getCell(rowIdx, 13).value = c.pay;   // M 补贴（收费课金额汇总）
   }
@@ -654,7 +801,7 @@ function fillSheet09(wb, { rows, ctx }) {
 
 // ===== 10 课时汇总：B~E=统计周期按自然周（周一~周日）拆分的常规正课折算课时（不含节假补课），
 //      F=早读午练 G=竞赛 H=监考，L 合计自动 =====
-function fillSheet10(wb, { rows, teachers, ctx, jkLastRow }) {
+function fillSheet10(wb, { rows, teachers, ctx, jkLastRow, rowMap }) {
   const ws = wb.getWorksheet('10_课时汇总');
   const START = 3; // 数据区 R3 起
   const TPL_CAPACITY = 66; // 模板预置 66 行（R3~R68），合计行 R69
@@ -691,8 +838,9 @@ function fillSheet10(wb, { rows, teachers, ctx, jkLastRow }) {
       const wk = weeks[s];
       ws.getCell(rowIdx, 2 + s).value = wk ? round2(m.get(wk) || 0) : null;
     }
-    // G 竞赛课时 = SUMIF(09表 B列教练名, F列课时) * 竞赛系数
-    ws.getCell(rowIdx, 7).value = { formula: `SUMIF('09_竞赛培优'!$B$2:$B$147,${JSON.stringify(name)},'09_竞赛培优'!$F$2:$F$147)*'15_口径参数'!$C$18` };
+    // G 竞赛课时 = SUMIF(09表 B列教练名, F列课时) * 竞赛系数（行号运行时定位）
+    const compRow = rowMap.get('竞赛折算') ?? rowMap.get('竞赛');
+    ws.getCell(rowIdx, 7).value = { formula: `SUMIF('09_竞赛培优'!$B$2:$B$147,${JSON.stringify(name)},'09_竞赛培优'!$F$2:$F$147)*'15_口径参数'!$C$${compRow}` };
     // H 监考课时 = SUMIF(07表 F列教师, J列合计)
     ws.getCell(rowIdx, 8).value = { formula: `SUMIF('07_监考课时'!$F$2:$F$${jkLastRow},${JSON.stringify(name)},'07_监考课时'!$J$2:$J$${jkLastRow})` };
   }
@@ -727,51 +875,79 @@ function fillSheet11(wb, { teachers }) {
   }
 }
 
-// ===== 12 财务汇总表：直接填值（审核层核心） =====
-function fillSheet12(wb, { teachers, fin }) {
+// ===== 12 财务汇总表：直接填值（审核层核心），列由系统字典动态生成 =====
+function fillSheet12(wb, { teachers, fin, rows, ctx }) {
   const ws = wb.getWorksheet('12_财务汇总表');
-  // 数据区 R2 起，模板预置 56 行（R2~R57），合计行 R58。
-  const TPL_CAPACITY = 56;
-  const dataRows = teachers.map((e, i) => {
-    const row = [i + 1, e.teacher_name];
-    for (const col of SHEET12_COLS) row.push(sheet12Value(e, col));
-    row.push(round2(e.weighted_total), round2(e.pay_total), ''); // AQ/AR/AS
-    return row;
+  const { cols, colCount } = buildSheet12Cols(ctx, rows);
+  const TPL_CAPACITY = 56; // 模板预置 56 行（R2~R57），合计行 R58
+
+  // 1) 表头行：动态写列标题（模板 12 表无合并单元格，直接覆盖 R1）
+  const head = ws.getRow(1);
+  cols.forEach((col, i) => {
+    const cell = head.getCell(i + 1);
+    cell.value = sheet12Header(col);
+    // 表头样式：沿用模板 A1 的样式（深蓝底白字加粗）
+    const tpl = ws.getCell(1, 1);
+    cell.fill = { ...tpl.fill };
+    cell.font = { ...tpl.font };
+    cell.alignment = { ...tpl.alignment };
+    cell.border = { ...tpl.border };
   });
 
-  // 教师数超模板容量：在合计行(R58)前插入差额行（复制上一行样式 'i'，合计行自动下移）
+  // 清掉模板 12 表超出动态列的残留列（表头 + 数据区 + 合计行）
+  // 模板预置 45 列，动态列可能更少（非规时段无数据时不生成对应列），需清尾。
+  const TPL_COLS = 45;
+  if (colCount < TPL_COLS) {
+    clearRange(ws, 1, colName(colCount + 1), ws.rowCount, colName(TPL_COLS));
+  }
+
+  // 2) 数据行：教师数超模板容量则先插入差额行
   if (teachers.length > TPL_CAPACITY) {
     const extra = teachers.length - TPL_CAPACITY;
     ws.insertRows(2 + TPL_CAPACITY, Array.from({ length: extra }, () => []), 'i');
-    // 手动补单元格级样式
-    const srcRow = 2 + TPL_CAPACITY - 1; // 最后一个模板数据行 R57
-    for (let k = 0; k < extra; k++) {
-      copyRowStyle(ws, srcRow, 2 + TPL_CAPACITY + k, 'A', 'AS');
-    }
+    const srcRow = 2 + TPL_CAPACITY - 1;
+    for (let k = 0; k < extra; k++) copyRowStyle(ws, srcRow, 2 + TPL_CAPACITY + k, 'A', colName(colCount));
   }
-  writeRows(ws, 2, 'A', dataRows);
+
+  teachers.forEach((e, i) => {
+    const rowIdx = 2 + i;
+    cols.forEach((col, j) => {
+      let v = sheet12Value(e, col);
+      if (col.kind === 'seq') v = i + 1;
+      ws.getCell(rowIdx, j + 1).value = v;
+    });
+  });
 
   const lastDataRow = 1 + teachers.length;
-  const TOTAL_ROW = lastDataRow + 1; // 合计行紧跟数据行
+  const TOTAL_ROW = lastDataRow + 1;
 
-  // 清空超出实际教师数的预置数据行（若有）
+  // 清空超出实际教师数的预置数据行
   if (teachers.length < TPL_CAPACITY) {
-    clearRange(ws, lastDataRow + 1, 'A', 2 + TPL_CAPACITY - 1, 'AS');
+    clearRange(ws, lastDataRow + 1, 'A', 2 + TPL_CAPACITY - 1, colName(colCount));
   }
 
-  // 合计行公式：引用范围 = R2~R{lastDataRow}
+  // 3) 合计行：数值列写 SUM 公式（seq/name/note 列除外）
   const tot = ws.getRow(TOTAL_ROW);
-  tot.getCell('A').value = '合计';
-  for (const col of SHEET12_COLS.map((c) => c.col).concat(['AQ', 'AR'])) {
-    tot.getCell(col).value = { formula: `SUM(${col}2:${col}${lastDataRow})` };
-  }
-  tot.getCell('AS').value = '';
-  return TOTAL_ROW;
+  let payColLetter = null;
+  cols.forEach((col, i) => {
+    const letter = colName(i + 1);
+    if (col.kind === 'seq') tot.getCell(letter).value = '合计';
+    else if (col.kind === 'name' || col.kind === 'note') tot.getCell(letter).value = '';
+    else tot.getCell(letter).value = { formula: `SUM(${letter}2:${letter}${lastDataRow})` };
+    if (col.kind === 'pay_total') payColLetter = letter; // 记录课酬合计列字母，供 14 表勾稽引用
+  });
+
+  return { totalRow: TOTAL_ROW, payColLetter };
 }
 
 // ===== 13 课酬明细：逐条一行（含停课/代课/原教师/状态），与 /export 同口径 =====
 function fillSheet13(wb, { allRows, ctx }) {
   const ws = wb.getWorksheet('13_课酬明细');
+  // 模板预置 31 行（R2~R31），明细通常远多于此，需先扩行并复制样式，否则超出行无边框/填充
+  const START = 2;
+  const TPL_CAPACITY = 30; // R2~R31
+  ensureRows(ws, START, allRows.length, TPL_CAPACITY, 'L');
+
   const srcLabel = { schedule: '课表', adjust: '代课/调课', extra: '加课', qna: '申报', course: '个人课务' };
   allRows.forEach((r, i) => {
     const rowIdx = 2 + i;
@@ -791,13 +967,14 @@ function fillSheet13(wb, { allRows, ctx }) {
 }
 
 // ===== 14 勾稽校验：按实际行数重写引用范围 =====
-function fillSheet14(wb, { allRows, teachers, fin, sumTotRow }) {
+function fillSheet14(wb, { allRows, teachers, fin, sumTotRow, payColLetter }) {
   const ws = wb.getWorksheet('14_勾稽校验');
   const detailLast = 1 + allRows.length;  // 13 表最后数据行
   const set = (cell, val) => { ws.getCell(cell).value = val; };
 
   set('B4', { formula: `SUM('13_课酬明细'!$L$2:$L$${detailLast})` });
-  set('B5', { formula: `'12_财务汇总表'!AR${sumTotRow}` });
+  // 12 表课酬合计列随动态列生成而变化，用传入的列字母（不再写死 AR）
+  set('B5', { formula: `'12_财务汇总表'!${payColLetter}${sumTotRow}` });
   set('B6', { formula: 'IF(B4=B5,"✓ 一致","✗ 不一致")' });
 
   // 二、按类型金额小计（逐行找「按类型·X」标题，覆盖公式）
@@ -814,14 +991,57 @@ function fillSheet14(wb, { allRows, teachers, fin, sumTotRow }) {
   void teachers; void fin;
 }
 
-// ===== 15 口径参数：从系统字典覆盖 C 列取值 =====
+// ===== 15 口径参数：从系统字典写值 + 返回「项目名 → 行号」映射 =====
+// 供其它表公式运行时定位 15 表行号（去硬编码 $C$14/$C$18 等）。
 function fillSheet15(wb, { ctx }) {
   const ws = wb.getWorksheet('15_口径参数');
-  const map = new Map();
-  for (const [name, pay] of ctx.periodTypePays.entries()) map.set(name, pay);
-  for (const [name, coef] of ctx.periodTypeCoefs.entries()) map.set(name, coef);
+
+  // 先扫模板既有行，建「项目名 → 行号」映射（B 列=项目名）
+  const rowMap = new Map();
   for (let r = 1; r <= ws.rowCount; r++) {
-    const b = ws.getCell(r, 2).value; // B 项目名
-    if (typeof b === 'string' && map.has(b.trim())) ws.getCell(r, 3).value = map.get(b.trim());
+    const b = ws.getCell(r, 2).value;
+    if (typeof b === 'string' && b.trim()) rowMap.set(b.trim(), r);
   }
+
+  // 系统字典 → 15 表「项目名」的取值（显式命名，避免碰运气）
+  const assigns = new Map();
+  // 按次计酬类型：项目名 = 类型名（晚自习/答疑/晚练/晚晚练/一对一/一对二/一对多/午练）
+  for (const [name, pay] of ctx.periodTypePays.entries()) assigns.set(name, pay);
+  // 折算类型：项目名 = 类型名（早自习/竞赛/培优/监考·标准/监考·加时/监考·长时）
+  for (const [name, coef] of ctx.periodTypeCoefs.entries()) assigns.set(name, coef);
+  // 折算系数区的「竞赛折算」别名（模板 B 列写「竞赛折算」，字典名是「竞赛」）
+  const aliasCoef = {
+    '早自习': '早自习折算',
+    '竞赛': '竞赛折算',
+    '培优': '培优折算',
+  };
+  for (const [src, dst] of Object.entries(aliasCoef)) {
+    const v = ctx.periodTypeCoefs.get(src);
+    if (v != null) assigns.set(dst, v);
+  }
+  // 档位（坐班答疑）：1/2/3 固定 100/150/180（模板预置，非字典项，这里补写保证存在）
+  assigns.set('档位1', 100);
+  assigns.set('档位2', 150);
+  assigns.set('档位3', 180);
+  // 分年级覆盖价（答疑@高一=100 等）→ 追加到 15 表（项目名 = `${type}@${grade}`）
+  for (const [type, gmap] of ctx.periodTypeGradePays.entries()) {
+    for (const [grade, pay] of gmap.entries()) assigns.set(`${type}@${grade}`, pay);
+  }
+
+  // 写值：已有行覆盖 C 列；缺失行追加（A=类别、B=项目名、C=取值）
+  const insRow = (name, val) => {
+    const r = ws.rowCount + 1;
+    ws.getCell(r, 1).value = '按次计酬/折算'; // 类别（通用占位）
+    ws.getCell(r, 2).value = name;
+    ws.getCell(r, 3).value = val;
+    rowMap.set(name, r);
+    return r;
+  };
+  for (const [name, val] of assigns.entries()) {
+    const r = rowMap.get(name);
+    if (r) ws.getCell(r, 3).value = val;
+    else insRow(name, val);
+  }
+
+  return rowMap;
 }

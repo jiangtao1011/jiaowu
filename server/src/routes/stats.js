@@ -401,6 +401,7 @@ router.post('/instance/:id/restore', roleRequired(...CLERK_ROLES), (req, res) =>
 function queryRows(from_date, to_date, term, teacher_id, includeCancelled = false) {
   let sql = `
     SELECT li.*, t.name AS teacher_name, t.pay_standard, c.name AS class_name, c.grade AS class_grade,
+           c.is_virtual AS class_is_virtual,
            pt.name AS parent_teacher_name,
            a.charge_amount AS charge_amount, a.form_data AS form_data
     FROM lesson_instances li

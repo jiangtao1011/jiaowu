@@ -7,7 +7,7 @@ import MobileTopBar from '../mobile/MobileTopBar.jsx';
 
 const STATUS = { pending: '待年级组长审核', grade_approved: '待课程中心终审', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', grade_approved: 'info', approved: 'ok', rejected: '', withdrawn: 'info' };
-const TYPE_ICON = { 答疑: '问', 晚自习: '晚', 晚练: '练', 早自习: '早', 一对一: '一', 一对二: '二', 一对多: '多' };
+const TYPE_ICON = { 答疑: '问', 晚自习: '晚', 晚练: '练', 早自习: '早', 一对一: '一', 一对二: '二', 一对多: '多', 值日: '值' };
 
 export default function MobileApply() {
   const location = useLocation();
@@ -37,6 +37,9 @@ export default function MobileApply() {
   });
   const [periodCount, setPeriodCount] = useState(1);
   const [content, setContent] = useState('');
+  // 值日档位金额（来自 duty-pays 接口）
+  const [dutyTiers, setDutyTiers] = useState([]);
+  const [dutyPay, setDutyPay] = useState('');
 
   // 批量申报（教务员/年级组长）：公共字段填一次 + 教师多选
   const [batchCtx, setBatchCtx] = useState(null);
@@ -95,6 +98,13 @@ export default function MobileApply() {
     })();
   }, []);
 
+  // 拉取值日档位金额
+  useEffect(() => {
+    (async () => {
+      try { setDutyTiers((await api.get('/applications/duty-pays')).data.data.tiers || []); } catch { /* 默认空 */ }
+    })();
+  }, []);
+
   const today = () => {
     const d = new Date();
     const p = (n) => String(n).padStart(2, '0');
@@ -106,6 +116,7 @@ export default function MobileApply() {
     setError('');
     setGrade(''); setClassId(''); setContent('');
     setDate(today()); setPeriodCount(1);
+    setDutyPay('');
     if (m === '批量') {
       setBatchGrade(batchCtx?.managed_grade || '');
       setBatchType(batchCtx?.typePays?.[0]?.name || '答疑');
@@ -127,10 +138,12 @@ export default function MobileApply() {
     if (mode === '答疑' && !grade) return toast.error('请选择年级');
     if (mode === '晚自习' && !classId) return toast.error('请选择班级');
     if (mode === '早自习' && !grade) return toast.error('请选择年级');
+    if (mode === '值日' && !grade) return toast.error('请选择年级');
+    if (mode === '值日' && !dutyPay) return toast.error('请选择值日档位');
     if (!date) return toast.error('请选择日期');
     try {
-      // 答疑/早自习为年级级（挂年级虚班）；晚自习为班级级（挂行政班）
-      const isGradeLevel = mode === '答疑' || mode === '早自习';
+      // 答疑/早自习/值日为年级级（挂年级虚班）；晚自习为班级级（挂行政班）
+      const isGradeLevel = mode === '答疑' || mode === '早自习' || mode === '值日';
       const virtualClassId = isGradeLevel
         ? (self.qna_grades.find((g) => g.grade === grade)?.virtual_class_id ?? null)
         : null;
@@ -143,6 +156,7 @@ export default function MobileApply() {
         period_type: mode,
         content: content || null,
       };
+      if (mode === '值日') payload.pay_amount = Number(dutyPay);
       await api.post('/applications', payload);
       toast.success(`${mode}申报已提交，待年级组长审核`);
       setMode(null);
@@ -254,6 +268,14 @@ export default function MobileApply() {
                   <div className="mapply-card-body">
                     <div className="mapply-card-title">申报早自习</div>
                     <div className="mapply-card-desc">针对年级 · 按课时数折算</div>
+                  </div>
+                  <div className="mapply-card-arrow">›</div>
+                </button>
+                <button className="mapply-card" onClick={() => openMode('值日')}>
+                  <div className="mapply-card-icon duty">值</div>
+                  <div className="mapply-card-body">
+                    <div className="mapply-card-title">申报值日</div>
+                    <div className="mapply-card-desc">针对年级 · 按档位金额计酬</div>
                   </div>
                   <div className="mapply-card-arrow">›</div>
                 </button>
@@ -439,6 +461,47 @@ export default function MobileApply() {
           </div>
 
           <button className="mapply-submit" onClick={submit}>提交早自习申报</button>
+        </div>
+      )}
+
+      {/* 值日申报表单（年级级，挂年级虚班，按档位金额计酬） */}
+      {mode === '值日' && (
+        <div className="mapply-form">
+          <button className="mapply-back" onClick={() => setMode(null)}>‹ 返回</button>
+          <h2>申报值日</h2>
+          <p className="mapply-form-hint">值日针对年级，按档位固定金额计酬。选择年级、日期与档位即可。</p>
+
+          <div className="mapply-field">
+            <label>年级</label>
+            <div className="mapply-chips">
+              {self?.qna_grades?.map((g) => (
+                <button key={g.grade} type="button" className={`mapply-chip ${grade === g.grade ? 'on' : ''}`} onClick={() => setGrade(g.grade)}>{g.grade}</button>
+              ))}
+            </div>
+            {self?.qna_grades?.length === 0 && <p className="mapply-empty">暂无可申报的年级</p>}
+          </div>
+
+          <div className="mapply-field">
+            <label>日期</label>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </div>
+
+          <div className="mapply-field">
+            <label>值日档位</label>
+            <div className="mapply-chips">
+              {dutyTiers.map((t) => (
+                <button key={t} type="button" className={`mapply-chip ${dutyPay === String(t) ? 'on' : ''}`} onClick={() => setDutyPay(String(t))}>{t} 元</button>
+              ))}
+            </div>
+            {dutyTiers.length === 0 && <p className="mapply-empty">暂无可用档位，请联系教务主任配置</p>}
+          </div>
+
+          <div className="mapply-field">
+            <label>内容说明（选填）</label>
+            <textarea rows={3} value={content} onChange={(e) => setContent(e.target.value)} placeholder="如 值日看班" />
+          </div>
+
+          <button className="mapply-submit" onClick={submit}>提交值日申报</button>
         </div>
       )}
 

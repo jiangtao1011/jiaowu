@@ -454,6 +454,8 @@ ensureColumn('qna_lessons', 'period_type', "TEXT NOT NULL DEFAULT '答疑'");
 // 迁移：qna_lessons 两级审批——年级组长一审人与时间（pending→grade_approved 由年级组长操作）
 ensureColumn('qna_lessons', 'grade_reviewed_by', 'INTEGER REFERENCES users(id)');
 ensureColumn('qna_lessons', 'grade_reviewed_at', 'TEXT');
+// 迁移：qna_lessons 增加 pay_amount（值日档位固定金额，其它类型为 NULL）
+ensureColumn('qna_lessons', 'pay_amount', 'REAL');
 // 迁移：schedules 增加 makeup_set（补课课表套号，用于多套补课课表轮换；NULL=普通课表或旧补课课表）
 ensureColumn('schedules', 'makeup_set', 'INTEGER');
 // 迁移：schedule_changes 增加 to_subject（调课时换成的科目；代课/停课为 NULL）

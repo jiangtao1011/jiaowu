@@ -1452,6 +1452,7 @@ a.stat-card:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); c
 .mapply-card-icon.early { background: #e67700; }
 .mapply-card-icon.review { background: #5f3dc4; }
 .mapply-card-icon.custom { background: #0a9396; }
+.mapply-card-icon.duty { background: #c2255c; }
 .mapply-card-body { flex: 1; min-width: 0; }
 .mapply-card-title { font-size: 17px; font-weight: 700; color: var(--text); }
 .mapply-card-desc { font-size: 13px; color: var(--muted); margin-top: 2px; }
@@ -2130,3 +2131,17 @@ a.kpi-link:hover .kpi-card { box-shadow: var(--shadow-lg); transform: translateY
 .sig-pad-row { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
 .sig-pad-row button { flex-shrink: 0; }
 .sig-pad-hint { font-size: 12.5px; color: var(--muted, #888); margin-top: 6px; }
+
+/* ============ 审核列表：操作菜单收敛 + 按月折叠 ============ */
+.row-actions { position: relative; }
+.row-actions-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 30;
+  display: flex; flex-direction: column; gap: 4px; min-width: 110px;
+  background: #fff; border: 1px solid var(--border, #e2e8f0); border-radius: 8px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.12); padding: 6px;
+}
+.row-actions-menu .btn { width: 100%; justify-content: flex-start; }
+.month-fold-row { cursor: pointer; background: var(--bg-soft, #f8fafc); }
+.month-fold-row td { padding: 8px 12px; font-size: 14px; }
+.month-fold-arrow { display: inline-block; margin-right: 6px; transition: transform .15s; color: var(--muted, #888); }
+.month-fold-arrow.open { transform: rotate(90deg); }

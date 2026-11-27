@@ -29,6 +29,8 @@ export default function Applications() {
   const [editingQna, setEditingQna] = useState(null); // 正在编辑的记录 id；null 表示新增
   const [qnaModal, setQnaModal] = useState(false); // 新增/编辑弹窗
   const [listMode, setListMode] = useState('pending'); // pending(待处理) | history(历史记录)
+  const [expandedMonths, setExpandedMonths] = useState(() => new Set()); // 历史记录按月折叠：已展开的月份集合
+  const [openActionId, setOpenActionId] = useState(null); // 当前展开操作菜单的记录 id
   const [importFile, setImportFile] = useState(null); // 批量导入文件
   const [qnaPreview, setQnaPreview] = useState(null); // 导入预览 { token, rows, summary }
   // 申报列表筛选
@@ -186,6 +188,10 @@ export default function Applications() {
   const reviewQna = async (id, approved) => {
     try { await api.patch(`/applications/${id}/review`, { approved }); toast.success('已审核'); loadQna(); } catch (e) { toast.error(errMsg(e)); }
   };
+
+  // 月份分组 key：YYYY-MM（按 date 字段，无 date 则归「未定日期」）
+  const monthOf = (q) => (q.date ? String(q.date).slice(0, 7) : '未定日期');
+  const toggleMonth = (m) => setExpandedMonths((s) => { const n = new Set(s); n.has(m) ? n.delete(m) : n.add(m); return n; });
 
   // 一键审核：批量通过当前列表中所有待本角色处理的记录
   const reviewAllQna = async () => {
@@ -633,51 +639,71 @@ export default function Applications() {
             <table>
               <thead><tr><th>年级</th><th>学科</th><th>类型</th><th>教师</th><th>班级</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>
-                {qnaList.filter((q) => {
-                  if (listMode === 'pending') return q.status === 'pending' || q.status === 'grade_approved';
-                  return q.status === 'approved' || q.status === 'rejected' || q.status === 'withdrawn';
-                }).map((q) => (
-                  <tr key={q.id}>
-                    <td>{q.grade}</td><td>{q.subject}</td><td><span className={`period-tag period-${q.period_type}`}>{q.period_type}</span></td><td>{q.teacher_name || '-'}</td><td>{q.class_name || '-'}</td>
-                    <td>{q.date ? `${q.date} ${q.period_count ? `×${q.period_count}节` : ''}` : (q.day_of_week ? `周${q.day_of_week} 第${q.period_no}节` : '-')}</td>
-                    <td><span className={`badge ${STATUS_CLS[q.status]}`}>{STATUS[q.status]}</span>
-                      {q.grade_reviewed_by_name && <div className="muted" style={{ fontSize: 11 }}>一审：{q.grade_reviewed_by_name}</div>}
-                    </td>
-                    <td>
-                      <div className="toolbar" style={{ marginBottom: 0 }}>
-                        {/* 编辑：仅管理员（年级组长只审不改），历史记录模式不显示 */}
-                        {isAdmin && listMode === 'pending' && q.status !== 'withdrawn' && (
-                          <button className="btn sm" onClick={() => openQnaModal(q)}>编辑</button>
-                        )}
-                        {/* 审核：年级组长对 pending 一审；管理员对 pending（兜底）与 grade_approved 终审 */}
-                        {listMode === 'pending' && isGradeLeader && !isAdmin && q.status === 'pending' && (
-                          <>
-                            <button className="btn sm primary" onClick={() => reviewQna(q.id, true)}>一审通过</button>
-                            <button className="btn sm danger" onClick={() => reviewQna(q.id, false)}>驳回</button>
-                          </>
-                        )}
-                        {listMode === 'pending' && isAdmin && (q.status === 'pending' || q.status === 'grade_approved') && (
-                          <>
-                            <button className="btn sm primary" onClick={() => reviewQna(q.id, true)}>终审通过</button>
-                            <button className="btn sm danger" onClick={() => reviewQna(q.id, false)}>驳回</button>
-                          </>
-                        )}
-                        {/* 撤回：仅管理员对 approved 记录 */}
-                        {isAdmin && q.status === 'approved' && (
-                          <button className="btn sm danger" onClick={() => withdrawQna(q.id)}>撤回</button>
-                        )}
-                        {/* 删除：仅管理员 */}
-                        {isAdmin && (
-                          <button className="btn sm danger" onClick={() => deleteQna(q.id)}>删除</button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {qnaList.filter((q) => {
-                  if (listMode === 'pending') return q.status === 'pending' || q.status === 'grade_approved';
-                  return q.status === 'approved' || q.status === 'rejected' || q.status === 'withdrawn';
-                }).length === 0 && <tr><td colSpan={8} className="muted">{listMode === 'pending' ? '暂无待处理申报' : '暂无历史记录'}</td></tr>}
+                {(() => {
+                  const visible = qnaList.filter((q) => {
+                    if (listMode === 'pending') return q.status === 'pending' || q.status === 'grade_approved';
+                    return q.status === 'approved' || q.status === 'rejected' || q.status === 'withdrawn';
+                  });
+                  // 行渲染
+                  const renderRow = (q) => (
+                    <tr key={q.id}>
+                      <td>{q.grade}</td><td>{q.subject}</td><td><span className={`period-tag period-${q.period_type}`}>{q.period_type}</span></td><td>{q.teacher_name || '-'}</td><td>{q.class_name || '-'}</td>
+                      <td>{q.date ? `${q.date} ${q.period_count ? `×${q.period_count}节` : ''}` : (q.day_of_week ? `周${q.day_of_week} 第${q.period_no}节` : '-')}</td>
+                      <td><span className={`badge ${STATUS_CLS[q.status]}`}>{STATUS[q.status]}</span>
+                        {q.grade_reviewed_by_name && <div className="muted" style={{ fontSize: 11 }}>一审：{q.grade_reviewed_by_name}</div>}
+                      </td>
+                      <td>
+                        <div className="row-actions">
+                          <button className="btn sm" onClick={() => setOpenActionId(openActionId === q.id ? null : q.id)}>操作</button>
+                          {openActionId === q.id && (
+                            <div className="row-actions-menu">
+                              {isAdmin && listMode === 'pending' && q.status !== 'withdrawn' && (
+                                <button className="btn sm" onClick={() => { setOpenActionId(null); openQnaModal(q); }}>编辑</button>
+                              )}
+                              {listMode === 'pending' && isGradeLeader && !isAdmin && q.status === 'pending' && (
+                                <button className="btn sm primary" onClick={() => { setOpenActionId(null); reviewQna(q.id, true); }}>一审通过</button>
+                              )}
+                              {listMode === 'pending' && isAdmin && (q.status === 'pending' || q.status === 'grade_approved') && (
+                                <button className="btn sm primary" onClick={() => { setOpenActionId(null); reviewQna(q.id, true); }}>终审通过</button>
+                              )}
+                              {listMode === 'pending' && (q.status === 'pending' || q.status === 'grade_approved') && (
+                                <button className="btn sm danger" onClick={() => { setOpenActionId(null); reviewQna(q.id, false); }}>驳回</button>
+                              )}
+                              {isAdmin && q.status === 'approved' && (
+                                <button className="btn sm danger" onClick={() => { setOpenActionId(null); withdrawQna(q.id); }}>撤回</button>
+                              )}
+                              {isAdmin && (
+                                <button className="btn sm danger" onClick={() => { setOpenActionId(null); deleteQna(q.id); }}>删除</button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                  if (visible.length === 0) {
+                    return <tr><td colSpan={8} className="muted">{listMode === 'pending' ? '暂无待处理申报' : '暂无历史记录'}</td></tr>;
+                  }
+                  // 待处理：平铺
+                  if (listMode === 'pending') return visible.map(renderRow);
+                  // 历史记录：按月折叠
+                  const months = [...new Set(visible.map(monthOf))].sort((a, b) => (a === '未定日期' ? 1 : b === '未定日期' ? -1 : (b < a ? 1 : -1)));
+                  return months.flatMap((m) => {
+                    const items = visible.filter((q) => monthOf(q) === m);
+                    const open = expandedMonths.has(m);
+                    const rows = [
+                      <tr key={`month-${m}`} className="month-fold-row" onClick={() => toggleMonth(m)}>
+                        <td colSpan={8}>
+                          <span className={`month-fold-arrow ${open ? 'open' : ''}`}>▸</span>
+                          <strong>{m === '未定日期' ? '未定日期' : `${m.slice(0,4)}年${m.slice(5,7)}月`}</strong>
+                          <span className="hint" style={{ marginLeft: 8 }}>{items.length} 条</span>
+                        </td>
+                      </tr>,
+                    ];
+                    if (open) rows.push(...items.map(renderRow));
+                    return rows;
+                  });
+                })()}
               </tbody>
             </table>
           </div>
@@ -755,32 +781,37 @@ export default function Applications() {
                       )}</td>
                       <td><span className={`badge ${STATUS_CLS[a.status]}`}>{STATUS[a.status]}</span></td>
                       <td>
-                        <div className="toolbar" style={{ marginBottom: 0 }}>
-                          {isAdmin && a.status === 'pending' && !a.is_charge && (openTask.pay_mode === '固定折算' || openTask.pay_mode === '折算') && (
-                            <select
-                              style={{ width: 140, padding: '4px 8px' }}
-                              value={appCoefMap[a.id] || openTask.period_type || ''}
-                              onChange={(e) => setAppCoefMap({ ...appCoefMap, [a.id]: e.target.value })}
-                              title="折算档位（按实际时长手工调整）"
-                            >
-                              {typeCoefs.map((t) => <option key={t.id} value={t.name}>{t.name}（{t.coefficient}）</option>)}
-                            </select>
-                          )}
-                          {isAdmin && a.status === 'pending' && (
-                            <>
-                              {a.is_charge ? (
-                                <button className="btn sm primary" onClick={() => openChargeReview(a)}>通过并录入</button>
-                              ) : (
-                                <button className="btn sm primary" onClick={() => reviewApp(a.id, true, appCoefMap[a.id])}>通过</button>
+                        <div className="row-actions">
+                          <button className="btn sm" onClick={() => setOpenActionId(openActionId === `app-${a.id}` ? null : `app-${a.id}`)}>操作</button>
+                          {openActionId === `app-${a.id}` && (
+                            <div className="row-actions-menu">
+                              {isAdmin && a.status === 'pending' && !a.is_charge && (openTask.pay_mode === '固定折算' || openTask.pay_mode === '折算') && (
+                                <select
+                                  style={{ width: '100%', padding: '4px 8px', marginBottom: 4 }}
+                                  value={appCoefMap[a.id] || openTask.period_type || ''}
+                                  onChange={(e) => setAppCoefMap({ ...appCoefMap, [a.id]: e.target.value })}
+                                  title="折算档位（按实际时长手工调整）"
+                                >
+                                  {typeCoefs.map((t) => <option key={t.id} value={t.name}>{t.name}（{t.coefficient}）</option>)}
+                                </select>
                               )}
-                              <button className="btn sm danger" onClick={() => reviewApp(a.id, false)}>驳回</button>
-                            </>
-                          )}
-                          {isAdmin && a.status === 'approved' && (
-                            <button className="btn sm danger" onClick={() => withdrawApp(a.id)}>撤回</button>
-                          )}
-                          {isAdmin && (
-                            <button className="btn sm danger" onClick={() => deleteApp(a.id)}>删除</button>
+                              {isAdmin && a.status === 'pending' && (
+                                <>
+                                  {a.is_charge ? (
+                                    <button className="btn sm primary" onClick={() => { setOpenActionId(null); openChargeReview(a); }}>通过并录入</button>
+                                  ) : (
+                                    <button className="btn sm primary" onClick={() => { setOpenActionId(null); reviewApp(a.id, true, appCoefMap[a.id]); }}>通过</button>
+                                  )}
+                                  <button className="btn sm danger" onClick={() => { setOpenActionId(null); reviewApp(a.id, false); }}>驳回</button>
+                                </>
+                              )}
+                              {isAdmin && a.status === 'approved' && (
+                                <button className="btn sm danger" onClick={() => { setOpenActionId(null); withdrawApp(a.id); }}>撤回</button>
+                              )}
+                              {isAdmin && (
+                                <button className="btn sm danger" onClick={() => { setOpenActionId(null); deleteApp(a.id); }}>删除</button>
+                              )}
+                            </div>
                           )}
                         </div>
                       </td>
