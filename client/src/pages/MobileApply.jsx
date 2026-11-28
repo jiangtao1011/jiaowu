@@ -9,6 +9,14 @@ const STATUS = { pending: '待年级组长审核', grade_approved: '待课程中
 const STATUS_CLS = { pending: 'warn', grade_approved: 'info', approved: 'ok', rejected: '', withdrawn: 'info' };
 const TYPE_ICON = { 答疑: '问', 晚自习: '晚', 晚练: '练', 早自习: '早', 一对一: '一', 一对二: '二', 一对多: '多', 值日: '值' };
 
+// 值日日报状态 → 文案 + 徽标色
+const DUTY_STATUS = {
+  pending: { label: '待一审', cls: 'warn' },
+  grade_approved: { label: '待终审', cls: 'info' },
+  approved: { label: '已通过', cls: 'ok' },
+  rejected: { label: '已驳回', cls: 'danger' },
+};
+
 export default function MobileApply() {
   const location = useLocation();
   // 在移动壳内（/m/apply）作为 tab 时，嵌入壳视觉；独立 /apply 页保留原品牌 header
@@ -37,9 +45,11 @@ export default function MobileApply() {
   });
   const [periodCount, setPeriodCount] = useState(1);
   const [content, setContent] = useState('');
-  // 值日档位金额（来自 duty-pays 接口）
-  const [dutyTiers, setDutyTiers] = useState([]);
-  const [dutyPay, setDutyPay] = useState('');
+  // 值日：我的排班 + 交日报
+  const [myDuties, setMyDuties] = useState([]);
+  const [dutyReportFor, setDutyReportFor] = useState(null); // 正在交日报的排班 { id, duty_date }
+  const [dutyReportContent, setDutyReportContent] = useState('');
+  const [dutyReportFiles, setDutyReportFiles] = useState([]);
 
   // 批量申报（教务员/年级组长）：公共字段填一次 + 教师多选
   const [batchCtx, setBatchCtx] = useState(null);
@@ -98,12 +108,11 @@ export default function MobileApply() {
     })();
   }, []);
 
-  // 拉取值日档位金额
-  useEffect(() => {
-    (async () => {
-      try { setDutyTiers((await api.get('/applications/duty-pays')).data.data.tiers || []); } catch { /* 默认空 */ }
-    })();
-  }, []);
+  // 拉取我的值日排班（值日老师视角）
+  const loadMyDuties = async () => {
+    try { setMyDuties((await api.get('/duty/my-duties')).data.data || []); } catch { /* 忽略 */ }
+  };
+  useEffect(() => { loadMyDuties(); }, []);
 
   const today = () => {
     const d = new Date();
@@ -116,7 +125,6 @@ export default function MobileApply() {
     setError('');
     setGrade(''); setClassId(''); setContent('');
     setDate(today()); setPeriodCount(1);
-    setDutyPay('');
     if (m === '批量') {
       setBatchGrade(batchCtx?.managed_grade || '');
       setBatchType(batchCtx?.typePays?.[0]?.name || '答疑');
@@ -131,6 +139,27 @@ export default function MobileApply() {
       setReviewFilter('');
       loadReviews();
     }
+    if (m === '值日') {
+      loadMyDuties();
+    }
+  };
+
+  // 提交值日日报（截图）
+  const submitDutyReport = async () => {
+    if (!dutyReportFor) return;
+    if (dutyReportFiles.length === 0) return toast.error('请上传日报截图');
+    const fd = new FormData();
+    fd.append('assignment_id', dutyReportFor.id);
+    if (dutyReportContent.trim()) fd.append('content', dutyReportContent.trim());
+    for (const f of dutyReportFiles) fd.append('attachments', f);
+    try {
+      await api.post('/duty/reports', fd);
+      toast.success('日报已提交，待审核');
+      setDutyReportFor(null);
+      setDutyReportContent('');
+      setDutyReportFiles([]);
+      loadMyDuties();
+    } catch (e) { toast.error(errMsg(e)); }
   };
 
   const submit = async () => {
@@ -138,12 +167,10 @@ export default function MobileApply() {
     if (mode === '答疑' && !grade) return toast.error('请选择年级');
     if (mode === '晚自习' && !classId) return toast.error('请选择班级');
     if (mode === '早自习' && !grade) return toast.error('请选择年级');
-    if (mode === '值日' && !grade) return toast.error('请选择年级');
-    if (mode === '值日' && !dutyPay) return toast.error('请选择值日档位');
     if (!date) return toast.error('请选择日期');
     try {
-      // 答疑/早自习/值日为年级级（挂年级虚班）；晚自习为班级级（挂行政班）
-      const isGradeLevel = mode === '答疑' || mode === '早自习' || mode === '值日';
+      // 答疑/早自习为年级级（挂年级虚班）；晚自习为班级级（挂行政班）
+      const isGradeLevel = mode === '答疑' || mode === '早自习';
       const virtualClassId = isGradeLevel
         ? (self.qna_grades.find((g) => g.grade === grade)?.virtual_class_id ?? null)
         : null;
@@ -156,7 +183,6 @@ export default function MobileApply() {
         period_type: mode,
         content: content || null,
       };
-      if (mode === '值日') payload.pay_amount = Number(dutyPay);
       await api.post('/applications', payload);
       toast.success(`${mode}申报已提交，待年级组长审核`);
       setMode(null);
@@ -271,14 +297,16 @@ export default function MobileApply() {
                   </div>
                   <div className="mapply-card-arrow">›</div>
                 </button>
-                <button className="mapply-card" onClick={() => openMode('值日')}>
-                  <div className="mapply-card-icon duty">值</div>
-                  <div className="mapply-card-body">
-                    <div className="mapply-card-title">申报值日</div>
-                    <div className="mapply-card-desc">针对年级 · 按档位金额计酬</div>
-                  </div>
-                  <div className="mapply-card-arrow">›</div>
-                </button>
+                {myDuties.length > 0 && (
+                  <button className="mapply-card" onClick={() => openMode('值日')}>
+                    <div className="mapply-card-icon duty">值</div>
+                    <div className="mapply-card-body">
+                      <div className="mapply-card-title">我的值日</div>
+                      <div className="mapply-card-desc">查看排班 · 交日报截图</div>
+                    </div>
+                    <div className="mapply-card-arrow">›</div>
+                  </button>
+                )}
               </>
             )}
             {canBatch && (
@@ -464,44 +492,52 @@ export default function MobileApply() {
         </div>
       )}
 
-      {/* 值日申报表单（年级级，挂年级虚班，按档位金额计酬） */}
+      {/* 我的值日（查看排班 + 交日报截图） */}
       {mode === '值日' && (
         <div className="mapply-form">
           <button className="mapply-back" onClick={() => setMode(null)}>‹ 返回</button>
-          <h2>申报值日</h2>
-          <p className="mapply-form-hint">值日针对年级，按档位固定金额计酬。选择年级、日期与档位即可。</p>
+          <h2>我的值日</h2>
+          <p className="mapply-form-hint">查看你的值日排班；履职后上传日报截图，审核通过后计酬。</p>
 
-          <div className="mapply-field">
-            <label>年级</label>
-            <div className="mapply-chips">
-              {self?.qna_grades?.map((g) => (
-                <button key={g.grade} type="button" className={`mapply-chip ${grade === g.grade ? 'on' : ''}`} onClick={() => setGrade(g.grade)}>{g.grade}</button>
-              ))}
-            </div>
-            {self?.qna_grades?.length === 0 && <p className="mapply-empty">暂无可申报的年级</p>}
-          </div>
-
-          <div className="mapply-field">
-            <label>日期</label>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          </div>
-
-          <div className="mapply-field">
-            <label>值日档位</label>
-            <div className="mapply-chips">
-              {dutyTiers.map((t) => (
-                <button key={t} type="button" className={`mapply-chip ${dutyPay === String(t) ? 'on' : ''}`} onClick={() => setDutyPay(String(t))}>{t} 元</button>
-              ))}
-            </div>
-            {dutyTiers.length === 0 && <p className="mapply-empty">暂无可用档位，请联系教务主任配置</p>}
-          </div>
-
-          <div className="mapply-field">
-            <label>内容说明（选填）</label>
-            <textarea rows={3} value={content} onChange={(e) => setContent(e.target.value)} placeholder="如 值日看班" />
-          </div>
-
-          <button className="mapply-submit" onClick={submit}>提交值日申报</button>
+          {!dutyReportFor ? (
+            myDuties.length === 0
+              ? <p className="mapply-empty">暂无值日排班</p>
+              : myDuties.map((d) => (
+                  <div key={d.id} className="mapply-record">
+                    <div className="mapply-record-icon">值</div>
+                    <div className="mapply-record-body">
+                      <div className="mapply-record-line1">
+                        <span className="mapply-record-title">{d.duty_date}</span>
+                        <span className="period-tag period-值日">值日</span>
+                      </div>
+                      <div className="mapply-record-line2">{d.grade ? `${d.grade}` : ''}{d.note ? ` · ${d.note}` : ''}</div>
+                    </div>
+                    <div className="mapply-record-side">
+                      {d.report_id
+                        ? <span className={`badge ${(DUTY_STATUS[d.report_status] || {}).cls || 'warn'}`}>{(DUTY_STATUS[d.report_status] || {}).label || d.report_status}</span>
+                        : <button className="btn sm primary" onClick={() => setDutyReportFor({ id: d.id, duty_date: d.duty_date })}>交日报</button>}
+                    </div>
+                  </div>
+                ))
+          ) : (
+            <>
+              <div className="mapply-field">
+                <label>值日日期</label>
+                <input value={dutyReportFor.duty_date} readOnly />
+              </div>
+              <div className="mapply-field">
+                <label>日报截图（必填）*</label>
+                <input type="file" accept="image/*" multiple onChange={(e) => setDutyReportFiles([...e.target.files])} />
+                {dutyReportFiles.length > 0 && <p className="mapply-form-hint" style={{ marginBottom: 0 }}>已选 {dutyReportFiles.length} 张图片</p>}
+              </div>
+              <div className="mapply-field">
+                <label>内容说明（选填）</label>
+                <textarea rows={3} value={dutyReportContent} onChange={(e) => setDutyReportContent(e.target.value)} placeholder="如 早自习出勤正常，晚自习答疑 X 人" />
+              </div>
+              <button className="mapply-submit" onClick={submitDutyReport}>提交日报</button>
+              <button className="mapply-back" style={{ marginTop: 12, textAlign: 'center', display: 'block' }} onClick={() => { setDutyReportFor(null); setDutyReportContent(''); setDutyReportFiles([]); }}>‹ 返回列表</button>
+            </>
+          )}
         </div>
       )}
 

@@ -28,6 +28,7 @@ import MobileTimetable from './mobile/MobileTimetable.jsx';
 import MobileSubstitute from './mobile/MobileSubstitute.jsx';
 import MobileInspection from './mobile/MobileInspection.jsx';
 import MobileAssessment from './mobile/MobileAssessment.jsx';
+import MobileCourses from './mobile/MobileCourses.jsx';
 import { RESULT_VIEW_ROLES } from './roles.js';
 
 function AuthGuard({ children }) {
@@ -101,6 +102,7 @@ function AppRoutes() {
         <Route path="substitute" element={<MobileSubstitute />} />
         <Route path="inspection" element={<MobileInspection />} />
         <Route path="assessment" element={<MobileAssessment />} />
+        <Route path="courses" element={<MobileCourses />} />
         <Route path="notices" element={<MobileNotices />} />
         <Route path="me" element={<MobileMe onLogout={logout} />} />
       </Route>

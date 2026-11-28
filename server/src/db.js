@@ -427,6 +427,52 @@ CREATE INDEX IF NOT EXISTS idx_lesson_instances_date ON lesson_instances(date);
 CREATE INDEX IF NOT EXISTS idx_lesson_instances_teacher ON lesson_instances(teacher_id);
 `);
 
+// ===== 值日（独立于自主申报）：排班 + 履职日报（截图） + 两级审批后计酬 =====
+// 值日老师是早自习出勤、晚自习答疑考勤的主要执行角色；管理员/组长安排值日，
+// 老师履职后上传「其它系统日报截图」交日报，日报通过后才按档位金额计酬。
+db.exec(`
+CREATE TABLE IF NOT EXISTS duty_assignments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  teacher_id INTEGER NOT NULL REFERENCES teachers(id),
+  grade TEXT,
+  duty_date TEXT NOT NULL,
+  pay_amount REAL NOT NULL DEFAULT 0,
+  note TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_duty_assignments_teacher ON duty_assignments(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_duty_assignments_date ON duty_assignments(duty_date);
+
+CREATE TABLE IF NOT EXISTS duty_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  assignment_id INTEGER NOT NULL REFERENCES duty_assignments(id),
+  teacher_id INTEGER NOT NULL REFERENCES teachers(id),
+  duty_date TEXT NOT NULL,
+  content TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  filled_by INTEGER REFERENCES users(id),
+  grade_reviewed_by INTEGER REFERENCES users(id),
+  grade_reviewed_at TEXT,
+  reviewed_by INTEGER REFERENCES users(id),
+  reviewed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_duty_reports_assignment ON duty_reports(assignment_id);
+CREATE INDEX IF NOT EXISTS idx_duty_reports_status ON duty_reports(status);
+
+CREATE TABLE IF NOT EXISTS duty_report_attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_id INTEGER NOT NULL REFERENCES duty_reports(id),
+  filename TEXT NOT NULL,
+  stored_path TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_duty_report_attachments_report ON duty_report_attachments(report_id);
+`);
+
+
 // 迁移：为旧库补充 schedules.term 列
 ensureColumn('schedules', 'term', "TEXT NOT NULL DEFAULT '常规'");
 // 迁移：为旧库补充 schedules.course_type 列，并按班级类型回填走班

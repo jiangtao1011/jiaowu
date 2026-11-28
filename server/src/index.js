@@ -19,6 +19,7 @@ import statsRoutes from './routes/stats.js';
 import workplanRoutes from './routes/workplan.js';
 import dashboardRoutes from './routes/dashboard.js';
 import assessmentRoutes from './routes/assessment.js';
+import dutyRoutes from './routes/duty.js';
 import adminRoutes from './routes/admin.js';
 import datacenterRoutes from './routes/datacenter.js';
 
@@ -53,6 +54,7 @@ app.use('/api/stats', statsRoutes);
 app.use('/api/workplan', workplanRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/assessment', assessmentRoutes);
+app.use('/api/duty', dutyRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/datacenter', datacenterRoutes);
 

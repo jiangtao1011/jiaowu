@@ -914,6 +914,27 @@ router.get('/tasks', authRequired, (req, res) => {
   })) });
 });
 
+// 我的可填报课程（手机端课程填报列表）：所有登录用户可见全部课程。
+// 返回精简字段，供移动端卡片列表用；点课程跳 /course/:share_token 填报。
+router.get('/my-tasks', authRequired, (req, res) => {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const today = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  const rows = db.prepare(`
+    SELECT id, title, pay_mode, period_type, subject, grade, deadline, chargeable, share_token
+    FROM application_tasks
+    ORDER BY id`).all();
+  const data = rows.map((t) => {
+    const expired = t.deadline != null && t.deadline < today;
+    return {
+      id: t.id, title: t.title, pay_mode: t.pay_mode, period_type: t.period_type,
+      subject: t.subject, grade: t.grade, deadline: t.deadline, chargeable: !!t.chargeable,
+      share_token: t.share_token, expired,
+    };
+  });
+  return res.json({ ok: true, data });
+});
+
 // 创建课程（教务主任：自定义字段 + 计酬配置 + 分享）
 router.post('/tasks', authRequired, roleRequired(...DIRECTOR_ROLES), (req, res) => {
   const { title, deadline, filler_role, form_schema, pay_mode, period_type, subject, grade, chargeable } = req.body || {};

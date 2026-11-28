@@ -9,6 +9,14 @@ import { downloadShareImage } from '../utils/shareImage.js';
 const STATUS = { pending: '待年级组长审核', grade_approved: '待课程中心终审', approved: '已通过', rejected: '已驳回', withdrawn: '已撤回' };
 const STATUS_CLS = { pending: 'warn', grade_approved: 'info', approved: 'ok', rejected: '', withdrawn: 'info' };
 
+// 值日日报状态 → 文案 + 徽标色（复用现有 badge 语义色）
+const DUTY_STATUS = {
+  pending: { label: '待一审', cls: 'warn' },
+  grade_approved: { label: '待终审', cls: 'info' },
+  approved: { label: '已通过', cls: 'ok' },
+  rejected: { label: '已驳回', cls: 'danger' },
+};
+
 export default function Applications() {
   const [tab, setTab] = useState('qna');
   const [error, setError] = useState('');
@@ -72,6 +80,102 @@ export default function Applications() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 一次时长（分钟），按次计酬按比例折算用
   const [onceDuration, setOnceDuration] = useState(90);
+
+  // ===== 值日（独立功能）=====
+  const isDutyArrange = ['admin', '教务主任', '教务员', '年级组长'].includes(user.role); // 可安排值日
+  const [dutyTiers, setDutyTiers] = useState([]);            // 值日档位金额
+  const [dutyAssignments, setDutyAssignments] = useState([]); // 排班列表
+  const [dutyReports, setDutyReports] = useState([]);         // 日报列表
+  const [dutyForm, setDutyForm] = useState({ teacher_id: '', grade: '', duty_date: '', day_of_week: '', from: '', to: '', pay_amount: '', note: '', mode: 'once' }); // once | fixed
+  const [dutyReportStatus, setDutyReportStatus] = useState(''); // 日报筛选状态
+  const [dutyImportFile, setDutyImportFile] = useState(null); // 值日批量导入文件
+  const [dutyImportPreview, setDutyImportPreview] = useState(null); // { token, rows, summary }
+  const loadDuty = async () => {
+    try {
+      const [t, a, r] = await Promise.all([
+        api.get('/duty/tiers'),
+        api.get('/duty/assignments'),
+        api.get('/duty/reports', { params: dutyReportStatus ? { status: dutyReportStatus } : {} }),
+      ]);
+      setDutyTiers(t.data.data.tiers || []);
+      setDutyAssignments(a.data.data);
+      setDutyReports(r.data.data);
+    } catch (e) { setError(errMsg(e)); }
+  };
+  useEffect(() => { if (isDutyArrange) loadDuty(); }, [dutyReportStatus]);
+
+  // 安排值日
+  const submitDuty = async () => {
+    const f = dutyForm;
+    if (!f.teacher_id) return toast.error('请选择值日教师');
+    if (!f.pay_amount) return toast.error('请选择值日档位');
+    if (f.mode === 'once' && !f.duty_date) return toast.error('请填写值日日期');
+    if (f.mode === 'fixed' && (!f.day_of_week || !f.from || !f.to)) return toast.error('固定排班需填星期 + 起止日期');
+    const payload = {
+      teacher_id: Number(f.teacher_id),
+      grade: f.grade || null,
+      pay_amount: Number(f.pay_amount),
+      note: f.note || null,
+    };
+    if (f.mode === 'once') payload.duty_date = f.duty_date;
+    else { payload.day_of_week = Number(f.day_of_week); payload.from = f.from; payload.to = f.to; }
+    try {
+      const r = await api.post('/duty/assignments', payload);
+      toast.success(`已安排值日 ${r.data.data.inserted} 天`);
+      setDutyForm({ teacher_id: '', grade: '', duty_date: '', day_of_week: '', from: '', to: '', pay_amount: '', note: '', mode: 'once' });
+      loadDuty();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+  const deleteDutyAssignment = async (id) => {
+    if (!(await toast.confirm('确定删除该值日排班？', { danger: true }))) return;
+    try { await api.delete(`/duty/assignments/${id}`); toast.success('已删除'); loadDuty(); } catch (e) { toast.error(errMsg(e)); }
+  };
+  const reviewDutyReport = async (id, approved) => {
+    try { await api.patch(`/duty/reports/${id}/review`, { approved }); toast.success(approved ? '已通过' : '已驳回'); loadDuty(); } catch (e) { toast.error(errMsg(e)); }
+  };
+  // 预览值日日报截图
+  const previewDutyAtt = async (att) => {
+    try {
+      const token = localStorage.getItem('edu_token');
+      const res = await fetch(`/api/duty/attachments/${att.id}/download`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) { toast.error('预览失败'); return; }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setAttPreview({ filename: att.filename, url });
+    } catch { toast.error('预览失败'); }
+  };
+  // 值日批量导入：下载模板 / 预览 / 确认
+  const downloadDutyTemplate = async () => {
+    try {
+      const token = localStorage.getItem('edu_token');
+      const r = await fetch('/api/duty/assignments/import-template', { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) throw new Error('下载失败');
+      const blob = await r.blob();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = '值日排班导入模板.xlsx';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+  const previewDutyImport = async () => {
+    if (!dutyImportFile) return toast.error('请先选择文件（.xlsx / .csv）');
+    const fd = new FormData();
+    fd.append('file', dutyImportFile);
+    try {
+      const { token, rows, summary } = (await api.post('/duty/assignments/import/preview', fd)).data.data;
+      setDutyImportPreview({ token, rows, summary });
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+  const confirmDutyImport = async (row_ids) => {
+    try {
+      const r = await api.post('/duty/assignments/import/confirm', { token: dutyImportPreview.token, row_ids });
+      toast.success(`已导入值日排班 ${r.data.data.inserted} 条`);
+      setDutyImportFile(null);
+      setDutyImportPreview(null);
+      loadDuty();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
 
   const loadQna = async (filter = qnaFilter) => {
     try {
@@ -568,6 +672,7 @@ export default function Applications() {
       <div className="toolbar">
         <button className={`btn ${tab === 'qna' ? 'primary' : ''}`} onClick={() => setTab('qna')}>课时申报</button>
         {isAdmin && <button className={`btn ${tab === 'tasks' ? 'primary' : ''}`} onClick={() => setTab('tasks')}>课程申报</button>}
+        {isDutyArrange && <button className={`btn ${tab === 'duty' ? 'primary' : ''}`} onClick={() => setTab('duty')}>值日安排</button>}
       </div>
 
       {/* 课时申报 */}
@@ -949,6 +1054,151 @@ export default function Applications() {
         </>
       )}
 
+      {/* 值日安排（独立功能：排班 + 履职日报 + 两级审批后计酬） */}
+      {tab === 'duty' && isDutyArrange && (
+        <>
+          {/* 安排值日 */}
+          <div className="card">
+            <div className="card-head">
+              <h3>安排值日</h3>
+              <span className="muted" style={{ fontSize: 12.5 }}>值日老师履职后上传日报截图，两级审批通过后按档位计酬</span>
+            </div>
+            <div className="seg-switch">
+              <button className={`seg-btn ${dutyForm.mode === 'once' ? 'on' : ''}`} onClick={() => setDutyForm({ ...dutyForm, mode: 'once' })}>临时单次</button>
+              <button className={`seg-btn ${dutyForm.mode === 'fixed' ? 'on' : ''}`} onClick={() => setDutyForm({ ...dutyForm, mode: 'fixed' })}>固定排班</button>
+            </div>
+            <div className="form-grid">
+              <div><label>值日教师 *</label>
+                <select value={dutyForm.teacher_id} onChange={(e) => setDutyForm({ ...dutyForm, teacher_id: e.target.value })}>
+                  <option value="">请选择</option>
+                  {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              <div><label>年级</label>
+                <select value={dutyForm.grade} onChange={(e) => setDutyForm({ ...dutyForm, grade: e.target.value })}>
+                  <option value="">请选择（可选）</option>
+                  {grades.map((g) => <option key={g} value={g}>{g}</option>)}
+                </select>
+              </div>
+              <div><label>档位金额 *</label>
+                <select value={dutyForm.pay_amount} onChange={(e) => setDutyForm({ ...dutyForm, pay_amount: e.target.value })}>
+                  <option value="">请选择</option>
+                  {dutyTiers.map((t) => <option key={t} value={t}>{t} 元</option>)}
+                </select>
+              </div>
+              {dutyForm.mode === 'once' ? (
+                <div><label>值日日期 *</label><input type="date" value={dutyForm.duty_date} onChange={(e) => setDutyForm({ ...dutyForm, duty_date: e.target.value })} /></div>
+              ) : (
+                <>
+                  <div><label>星期 *</label>
+                    <select value={dutyForm.day_of_week} onChange={(e) => setDutyForm({ ...dutyForm, day_of_week: e.target.value })}>
+                      <option value="">请选择</option>
+                      {['周一','周二','周三','周四','周五','周六','周日'].map((d, i) => <option key={i + 1} value={i + 1}>{d}</option>)}
+                    </select>
+                  </div>
+                  <div><label>开始日期 *</label><input type="date" value={dutyForm.from} onChange={(e) => setDutyForm({ ...dutyForm, from: e.target.value })} /></div>
+                  <div><label>结束日期 *</label><input type="date" value={dutyForm.to} onChange={(e) => setDutyForm({ ...dutyForm, to: e.target.value })} /></div>
+                </>
+              )}
+              <div style={{ gridColumn: '1 / -1' }}><label>备注（选填）</label><input value={dutyForm.note} onChange={(e) => setDutyForm({ ...dutyForm, note: e.target.value })} placeholder="如 值日看班" /></div>
+            </div>
+            <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 14, marginBottom: 0 }}>
+              <button className="btn primary" onClick={submitDuty}>安排值日</button>
+            </div>
+
+            {/* 批量导入 */}
+            <div className="duty-import-bar">
+              <span className="duty-import-label">批量导入临时排班</span>
+              <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => setDutyImportFile(e.target.files[0])} style={{ width: 'auto' }} />
+              <button className="btn sm" onClick={previewDutyImport} disabled={!dutyImportFile}>预览</button>
+              <button className="btn sm ghost" onClick={downloadDutyTemplate}>下载模板</button>
+            </div>
+          </div>
+
+          {/* 值日排班 */}
+          <div className="card">
+            <div className="card-head"><h3>值日排班</h3><span className="hint">{dutyAssignments.length} 条</span></div>
+            {dutyAssignments.length === 0 ? (
+              <p className="muted" style={{ textAlign: 'center', padding: '24px 0', margin: 0 }}>暂无值日排班，用上方表单或批量导入安排</p>
+            ) : (
+              <table>
+                <thead><tr><th>教师</th><th>年级</th><th>日期</th><th>档位</th><th>日报</th><th></th></tr></thead>
+                <tbody>
+                  {dutyAssignments.map((a) => (
+                    <tr key={a.id}>
+                      <td className="strong">{a.teacher_name}</td>
+                      <td>{a.grade || '-'}</td>
+                      <td className="num">{a.duty_date}</td>
+                      <td className="num">{a.pay_amount} 元</td>
+                      <td>{a.report_id
+                        ? <span className={`badge ${(DUTY_STATUS[a.report_status] || {}).cls || 'warn'}`}>{(DUTY_STATUS[a.report_status] || {}).label || a.report_status}</span>
+                        : <span className="badge neutral">未交日报</span>}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>{!a.report_id && <button className="btn sm danger" onClick={() => deleteDutyAssignment(a.id)}>删除</button>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* 值日日报审核 */}
+          <div className="card">
+            <div className="card-head">
+              <h3>值日日报审核</h3>
+              <select value={dutyReportStatus} onChange={(e) => setDutyReportStatus(e.target.value)} style={{ width: 130 }}>
+                <option value="">全部状态</option>
+                <option value="pending">待一审</option>
+                <option value="grade_approved">待终审</option>
+                <option value="approved">已通过</option>
+                <option value="rejected">已驳回</option>
+              </select>
+            </div>
+            {dutyReports.length === 0 ? (
+              <p className="muted" style={{ textAlign: 'center', padding: '24px 0', margin: 0 }}>暂无值日日报</p>
+            ) : (
+              <div className="duty-report-list">
+                {dutyReports.map((r) => (
+                  <div key={r.id} className="duty-report-item">
+                    <div className="duty-report-avatar">{r.teacher_name?.charAt(0) || '值'}</div>
+                    <div className="duty-report-main">
+                      <div className="duty-report-head">
+                        <span className="duty-report-name">{r.teacher_name}</span>
+                        <span className="duty-report-date">{r.duty_date}</span>
+                        <span className="duty-report-pay">{r.pay_amount} 元</span>
+                        <span className={`badge ${(DUTY_STATUS[r.status] || {}).cls || 'warn'}`}>{(DUTY_STATUS[r.status] || {}).label || r.status}</span>
+                      </div>
+                      {r.content && <div className="duty-report-content">{r.content}</div>}
+                      {r.attachments?.length > 0 && (
+                        <div className="duty-report-atts">
+                          {r.attachments.map((att) => (
+                            <button key={att.id} className="duty-report-att" onClick={() => previewDutyAtt(att)} title={att.filename}>
+                              <span className="duty-report-att-ico">🖼</span>
+                              <span className="duty-report-att-name">{att.filename || '截图'}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {(r.status === 'pending' || r.status === 'grade_approved') && (
+                      <div className="duty-report-actions">
+                        {isGradeLeader && r.status === 'pending' && (
+                          <button className="btn sm primary" onClick={() => reviewDutyReport(r.id, true)}>一审通过</button>
+                        )}
+                        {isAdmin && (
+                          <button className="btn sm primary" onClick={() => reviewDutyReport(r.id, true)}>终审通过</button>
+                        )}
+                        <button className="btn sm danger" onClick={() => reviewDutyReport(r.id, false)}>驳回</button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       {/* 课程填报批量导入弹窗 */}
       {courseImport && (
         <div className="modal-overlay" onClick={() => { setCourseImport(null); setCoursePreview(null); }}>
@@ -981,6 +1231,18 @@ export default function Applications() {
           summary={coursePreview.summary}
           onConfirm={confirmCourseImport}
           onClose={() => setCoursePreview(null)}
+        />
+      )}
+
+      {/* 值日排班批量导入预览 */}
+      {dutyImportPreview && (
+        <ImportPreview
+          title="批量导入值日排班"
+          columns={['教师', '日期', '年级', '档位金额', '备注']}
+          rows={dutyImportPreview.rows}
+          summary={dutyImportPreview.summary}
+          onConfirm={confirmDutyImport}
+          onClose={() => setDutyImportPreview(null)}
         />
       )}
 
