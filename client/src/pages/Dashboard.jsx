@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api.js';
 import WorkCalendar from '../components/WorkCalendar.jsx';
-import { KpiCard, DonutChart, HBarChart, StackedBar, ChartSkeleton, CHART_COLORS } from '../components/charts.jsx';
+import { KpiCard, DonutChart, ChartSkeleton, CHART_COLORS } from '../components/charts.jsx';
 import { RESULT_VIEW_ROLES } from '../roles.js';
 
 const ROLE_LABELS = {
@@ -10,6 +10,11 @@ const ROLE_LABELS = {
 };
 const CAT_COLORS = {
   工作: '#167d6f', 会议: '#3b5bdb', 考试: '#c0392b', 检查: '#b0731f', 活动: '#7a4fb0', 其它: '#6b7280',
+};
+// 课务类型构成：大类配色（墨绿主系 + 琥珀金/暖色点缀，避免堆积条同质）
+const TYPE_COLORS = {
+  core: '#167d6f', early: '#0f5f54', late: '#3b5bdb', drill: '#7a4fb0',
+  qa: '#2e8b57', comp: '#c9a24b', custom: '#c0392b', invig: '#5f3dc4', other: '#8894a3',
 };
 const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
@@ -80,21 +85,61 @@ export default function Dashboard() {
     { name: '通知回复', value: data.todo.replies },
   ].filter((d) => d.value > 0);
 
-  // 课务类型构成（堆积条）
-  const typeChart = (data.lessonTypeStats || []).map((t) => ({ name: t.type, value: t.count }));
+  // 课务类型构成：把 13 种细类归并为 7 个业务大类，做「总览 + 横向指标条」看板
+  const typeKind = (t) => {
+    if (t === '正课') return { name: '正课', key: 'core' };
+    if (t === '早自习') return { name: '早自习', key: 'early' };
+    if (t === '晚自习') return { name: '晚自习', key: 'late' };
+    if (['晚练', '晚晚练', '午练'].includes(t)) return { name: '早晚练', key: 'drill' };
+    if (t === '答疑') return { name: '答疑', key: 'qa' };
+    if (t === '竞赛') return { name: '竞赛', key: 'comp' };
+    if (t === '一对一' || t === '一对二' || t === '一对多') return { name: '私人定制', key: 'custom' };
+    if (t && t.startsWith('监考')) return { name: '监考', key: 'invig' };
+    return { name: '其它', key: 'other' };
+  };
+  const typeRaw = (data.lessonTypeStats || []).map((t) => ({ name: t.type, value: t.count }));
+  const typeTotal = typeRaw.reduce((s, d) => s + d.value, 0);
+  const typeAgg = new Map();
+  for (const d of typeRaw) {
+    const k = typeKind(d.name);
+    if (!typeAgg.has(k.key)) typeAgg.set(k.key, { ...k, value: 0 });
+    typeAgg.get(k.key).value += d.value;
+  }
+  const TYPE_ORDER = ['core', 'early', 'late', 'drill', 'qa', 'comp', 'custom', 'invig', 'other'];
+  const typeChart = TYPE_ORDER
+    .map((k) => typeAgg.get(k))
+    .filter(Boolean)
+    .sort((a, b) => b.value - a.value);
 
-  // 检查达标率排行：按组类型分开展示，不达标置顶 + 红色
+  // 检查达标率：按组类型，分两段展示——① 四档分布概览（一眼看全貌）② 需关注 Top3
   const passLine = 90;
-  const inspChart = [...inspGroups]
-    .filter((g) => g.type === inspType && g.avg_score != null)
-    .sort((a, b) => (a.pass_rate ?? 0) - (b.pass_rate ?? 0))
-    .slice(0, 8)
+  const inspGroupsOfType = [...inspGroups].filter((g) => g.type === inspType && g.avg_score != null);
+  const inspChart = inspGroupsOfType
     .map((g) => ({
       name: g.name,
-      value: Math.round(g.avg_score * 10) / 10,
+      subject: g.subject || '',
+      grade: g.grade || '',
+      leader: g.leader_name || '',
+      avg: Math.round(g.avg_score * 10) / 10,
+      passRate: g.pass_rate ?? 0,
       pass: (g.pass_rate ?? 0) >= passLine,
-      coverage: g.coverage,
+      coverage: g.coverage ?? 0,
+      checked: g.checked_count ?? 0,
+      total: g.teacher_count ?? 0,
     }));
+  // 四档达标率分布（严重不达标 <60 / 偏低 60-79 / 接近 80-89 / 达标 ≥90）
+  const passBands = [
+    { key: 'bad', label: '严重不达标', range: '<60%', min: 0, max: 60 },
+    { key: 'low', label: '偏低', range: '60-79%', min: 60, max: 80 },
+    { key: 'near', label: '接近', range: '80-89%', min: 80, max: 90 },
+    { key: 'ok', label: '达标', range: '≥90%', min: 90, max: Infinity },
+  ].map((b) => ({ ...b, count: inspChart.filter((g) => g.passRate >= b.min && g.passRate < b.max).length }));
+  // 需关注 Top3（达标率最低，且达标率 < 90 才叫「需关注」；全达标则显示前三名）
+  const attention = inspChart
+    .filter((g) => !g.pass)
+    .sort((a, b) => a.passRate - b.passRate)
+    .slice(0, 3);
+  const totalGroups = inspChart.length;
 
   // ===== 个人工作台 =====
   if (!isMgmt) {
@@ -210,15 +255,40 @@ export default function Dashboard() {
         {/* 课务类型构成 */}
         <div className="card">
           <div className="card-head"><h3>课务类型构成</h3><Link to="/stats" style={{ fontSize: 13 }}>统计中心 →</Link></div>
-          <StackedBar data={typeChart} />
+          {typeChart.length === 0
+            ? <div className="chart-empty">暂无课务数据</div>
+            : (
+              <div className="type-board">
+                <div className="type-total">
+                  <div className="type-total-num">{typeTotal}</div>
+                  <div className="type-total-label">本区间总节数</div>
+                </div>
+                <div className="type-bars">
+                  {typeChart.map((t) => {
+                    const pct = typeTotal ? Math.round((t.value / typeTotal) * 100) : 0;
+                    return (
+                      <div key={t.key} className="type-bar-row">
+                        <div className="type-bar-top">
+                          <span className="type-bar-name"><span className="type-bar-dot" style={{ background: TYPE_COLORS[t.key] }} />{t.name}</span>
+                          <span className="type-bar-val"><b>{t.value}</b><span className="type-bar-pct">{pct}%</span></span>
+                        </div>
+                        <div className="type-bar-track">
+                          <div className="type-bar-fill" style={{ width: `${pct}%`, background: TYPE_COLORS[t.key] }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
         </div>
       </div>
 
       <div className="dash-charts">
-        {/* 检查达标率排行 */}
+        {/* 检查达标率 */}
         <div className="card">
           <div className="card-head">
-            <h3>检查达标率排行</h3>
+            <h3>检查达标率</h3>
             <div className="toolbar" style={{ marginBottom: 0, gap: 6 }}>
               {['备课组', '教研组'].map((t) => (
                 <button key={t} className={`btn sm ${inspType === t ? 'primary' : ''}`} onClick={() => setInspType(t)}>{t}</button>
@@ -226,9 +296,58 @@ export default function Dashboard() {
               <Link to="/inspections" style={{ fontSize: 13 }}>常规检查 →</Link>
             </div>
           </div>
-          {inspChart.length === 0
+          {totalGroups === 0
             ? <div className="chart-empty">暂无{inspType}检查数据</div>
-            : <HBarChart data={inspChart.map((g) => ({ name: g.name, value: g.value, color: g.pass ? 'var(--primary)' : 'var(--danger)' }))} height={Math.max(180, inspChart.length * 40)} maxValue={100} />}
+            : (
+              <>
+                {/* 四档分布概览：一眼看全貌 */}
+                <div className="pass-band-track">
+                  {passBands.map((b) => (
+                    <div key={b.key} className={`pass-band pass-${b.key}`} style={{ width: `${totalGroups ? Math.round((b.count / totalGroups) * 100) : 0}%` }} title={`${b.label}：${b.count} 个组`} />
+                  ))}
+                </div>
+                <div className="pass-band-legend">
+                  {passBands.map((b) => (
+                    <div key={b.key} className="pass-band-legend-item">
+                      <span className={`pass-band-dot pass-${b.key}`} />
+                      <span className="pass-band-name">{b.label}</span>
+                      <span className="pass-band-range">{b.range}</span>
+                      <b className={`pass-band-count pass-${b.key}`}>{b.count}</b>
+                    </div>
+                  ))}
+                </div>
+
+                {/* 需关注 Top3 */}
+                <div className="attention-head">
+                  <span className="attention-title">需关注</span>
+                  <span className="attention-note">达标率最低的前 3 个组</span>
+                </div>
+                {attention.length === 0 ? (
+                  <div className="chart-empty ok">✓ 全部组已达标</div>
+                ) : (
+                  <div className="attention-list">
+                    {attention.map((g, i) => (
+                      <div key={g.name} className="attention-item">
+                        <span className={`attention-rank ${i === 0 ? 'first' : ''}`}>{i + 1}</span>
+                        <div className="attention-main">
+                          <div className="attention-name-line">
+                            <span className="attention-name">{g.name}</span>
+                            {g.subject && <span className="rank-tag">{g.subject}</span>}
+                            {g.grade && <span className="rank-tag muted">{g.grade}</span>}
+                            {g.leader && <span className="rank-leader">组长 {g.leader}</span>}
+                          </div>
+                          <div className="attention-meta">
+                            <span className="attention-pr">{g.passRate}%</span>
+                            <span>平均分 {g.avg}</span>
+                            <span>覆盖率 {g.coverage}%</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
         </div>
 
         {/* 今日课务 */}
