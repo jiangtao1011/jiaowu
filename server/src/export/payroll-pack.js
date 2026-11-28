@@ -142,8 +142,8 @@ export async function buildPayrollPack({ rows, allRows, ctx, fin, fromDate, toDa
   fillSheet05(wb, { rows, teachers, teacherInfo, fromDate, toDate });
   const jkLastRow = fillSheet07(wb, { rows, ctx }).lastRow; // 07 明细区最后一行（含合计）
   fillSheet08(wb, { rows, ctx });
-  fillSheet09(wb, { rows, ctx, rowMap });
-  fillSheet10(wb, { rows, teachers, ctx, jkLastRow, rowMap });
+  const compSummary = fillSheet09(wb, { rows, ctx, rowMap });
+  fillSheet10(wb, { rows, teachers, ctx, jkLastRow, compSummary });
   fillSheet11(wb, { teachers });
   const sumRes = fillSheet12(wb, { teachers, fin, rows, ctx });
   fillSheet13(wb, { allRows, ctx });
@@ -797,14 +797,20 @@ function fillSheet09(wb, { rows, ctx, rowMap }) {
   }
 
   // 汇总区 I~M：按教练聚合节数与补贴（I教师名 J节数 K=竞赛系数 L=J*K M=补贴）
+  // 收费课（manual_pay 非空）走手工课酬、折算课时为 0，故 J 节数/L 总课时只累计「不收费课」，
+  // 收费课只进 M 补贴。这样 10 表 G 列（竞赛课时）不会把收费课折算进去。
   const byTeacher = new Map(); // teacher_id -> { name, count, pay }
   for (const r of recs) {
     if (!byTeacher.has(r.teacher_id)) byTeacher.set(r.teacher_id, { name: r.teacher_name, count: 0, pay: 0 });
     const t = byTeacher.get(r.teacher_id);
-    t.count = round1(t.count + (r.unit_count ?? 1));
-    // 收费课补贴 = manual_pay × unit_count（manual_pay 非空才计；不收费课为 0）
-    const mp = r.manual_pay != null && r.manual_pay !== '' ? Number(r.manual_pay) : 0;
-    t.pay = round2(t.pay + mp * (r.unit_count ?? 1));
+    const isCharge = r.manual_pay != null && r.manual_pay !== '';
+    if (isCharge) {
+      // 收费课：只计补贴（manual_pay × unit_count），不计折算节数
+      t.pay = round2(t.pay + Number(r.manual_pay) * (r.unit_count ?? 1));
+    } else {
+      // 不收费课：计折算节数
+      t.count = round1(t.count + (r.unit_count ?? 1));
+    }
   }
   const coaches = [...byTeacher.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh'));
   const compRow = rowMap.get('竞赛折算') ?? rowMap.get('竞赛'); // 竞赛折算系数行号（运行时定位）
@@ -870,11 +876,14 @@ function fillSheet09(wb, { rows, ctx, rowMap }) {
   const feeTotRow = 3 + feeStudents.length;
   ws.getCell(feeTotRow, N_COL).value = '合计';
   ws.getCell(feeTotRow, O_COL).value = { formula: `SUM(O3:O${2 + feeStudents.length})` };
+
+  // 返回汇总区教练行范围（R2 ~ R(1+coaches.length)），供 10 表 G 列引用 I 列教练名 → L 列折算课时。
+  return { coachesLastRow: 1 + coaches.length };
 }
 
 // ===== 10 课时汇总：B~E=统计周期按自然周（周一~周日）拆分的常规正课折算课时（不含节假补课），
 //      F=早读午练 G=竞赛 H=监考，L 合计自动 =====
-function fillSheet10(wb, { rows, teachers, ctx, jkLastRow, rowMap }) {
+function fillSheet10(wb, { rows, teachers, ctx, jkLastRow, compSummary }) {
   const ws = wb.getWorksheet('10_课时汇总');
   const START = 3; // 数据区 R3 起
   const TPL_CAPACITY = 66; // 模板预置 66 行（R3~R68），合计行 R69
@@ -900,22 +909,42 @@ function fillSheet10(wb, { rows, teachers, ctx, jkLastRow, rowMap }) {
   }
   // 全部周（按时间排序）
   const weeks = [...new Set([...segByTeacher.values()].flatMap((m) => [...m.keys()]))].sort();
+  // 统计周期跨的自然周可能超过模板固定 4 段。前 3 段各占 1 周，第 4 段 = 第 4 周起所有周合并，
+  // 保证 B~E 合计 = 02 表 M 列（全区常规正课折算课时），不因超 4 周丢数。
+  const overflow = weeks.length > 4;
 
   for (let i = 0; i < teachers.length; i++) {
     const rowIdx = START + i;
     const e = teachers[i];
     const name = e.teacher_name;
     const m = segByTeacher.get(e.teacher_id) || new Map();
-    // B~E = 分段1~4（按周顺序填折算课时）
+    // B~E = 分段1~4：前 3 段各一周，第 4 段合并第 4 周及以后
     for (let s = 0; s < 4; s++) {
-      const wk = weeks[s];
-      ws.getCell(rowIdx, 2 + s).value = wk ? round2(m.get(wk) || 0) : null;
+      if (s < 3) {
+        const wk = weeks[s];
+        ws.getCell(rowIdx, 2 + s).value = wk ? round2(m.get(wk) || 0) : null;
+      } else {
+        // 第 4 段：第 4 周起全部累加（无第 4 周时留空）
+        if (weeks.length <= 3) {
+          ws.getCell(rowIdx, 5).value = null;
+        } else {
+          let sum = 0;
+          for (let w = 3; w < weeks.length; w++) sum += m.get(weeks[w]) || 0;
+          ws.getCell(rowIdx, 5).value = round2(sum);
+        }
+      }
     }
-    // G 竞赛课时 = SUMIF(09表 B列教练名, F列课时) * 竞赛系数（行号运行时定位）
-    const compRow = rowMap.get('竞赛折算') ?? rowMap.get('竞赛');
-    ws.getCell(rowIdx, 7).value = { formula: `SUMIF('09_竞赛培优'!$B$2:$B$147,${JSON.stringify(name)},'09_竞赛培优'!$F$2:$F$147)*'15_口径参数'!$C$${compRow}` };
+    // G 竞赛课时 = 09 表汇总区 I列教练名 → L列总课时（已折算、只含不收费课，收费课不计折算）。
+    // 汇总区教练行 R2 ~ R(compSummary.coachesLastRow)。
+    const compLast = compSummary?.coachesLastRow ?? 11;
+    ws.getCell(rowIdx, 7).value = { formula: `SUMIF('09_竞赛培优'!$I$2:$I$${compLast},${JSON.stringify(name)},'09_竞赛培优'!$L$2:$L$${compLast})` };
     // H 监考课时 = SUMIF(07表 F列教师, J列合计)
     ws.getCell(rowIdx, 8).value = { formula: `SUMIF('07_监考课时'!$F$2:$F$${jkLastRow},${JSON.stringify(name)},'07_监考课时'!$J$2:$J$${jkLastRow})` };
+  }
+
+  // 溢出合并时，把第 4 段表头改为「分段4及以后」提示财务该段含多周
+  if (overflow) {
+    ws.getCell(2, 5).value = '分段4及以后总课时';
   }
 
   // 清空超出实际教师数的预置数据行（R(3+n) ~ R68）

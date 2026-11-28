@@ -157,6 +157,37 @@ function durationToUnits(durationMin, perUnitMin) {
   return Math.max(0.1, Math.round((d / p) * 10) / 10);
 }
 
+// 单次辅导时长合理性上限（分钟）：超出视为手误/异常。
+const MAX_ONCE_MINUTES = 720; // 12 小时
+
+// 解析「HH:MM」为分钟数；无效返回 null。
+function timeToMinutes(t) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(t).trim());
+  if (!m) return null;
+  const h = Number(m[1]), min = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(min) || h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
+// 起止时间 → 时长（分钟）：结束须晚于开始（同一天内，不支持跨天）。无效返回 null。
+function minutesBetween(startTime, endTime) {
+  const s = timeToMinutes(startTime);
+  const e = timeToMinutes(endTime);
+  if (s == null || e == null) return null;
+  const diff = e - s;
+  return diff > 0 ? diff : null;
+}
+
+// 计算按次计酬课的「时长（分钟）」：优先由起止时间自动计算，兼容旧的 duration 字段（批量导入）。
+// 返回 null 表示无法解析或无效。
+function resolveDurationMinutes(fd) {
+  const st = String(fd?.start_time ?? '').trim();
+  const et = String(fd?.end_time ?? '').trim();
+  if (st || et) return minutesBetween(st, et);
+  const d = Number(fd?.duration ?? fd?.时长 ?? 0);
+  return Number.isFinite(d) && d > 0 ? d : null;
+}
+
 // 读取一次时长配置（登录即可，手机端估算提示用）
 router.get('/apply-duration-config', authRequired, (req, res) => {
   res.json({ ok: true, data: { once_duration_minutes: onceDurationMinutes() } });
@@ -991,8 +1022,20 @@ router.post('/tasks/:taskId/apply', authRequired, uploadAttachment.array('attach
   let count = 1;
   let unitCount = 1; // 按比例折算次数（按次计酬为小数；其余恒为 1）
   if (task.pay_mode === '按次计酬') {
-    // 一对一/一对二：次数 = 时长 ÷ 一次时长，按比例折算（可小数）。
-    const durationMin = Number(fd.duration ?? fd.时长 ?? 0);
+    // 一对一/一对二：时长由起止时间自动计算（必填），次数 = 时长 ÷ 一次时长，按比例折算（可小数）。
+    const startTime = String(fd.start_time ?? '').trim();
+    const endTime = String(fd.end_time ?? '').trim();
+    if (!startTime || !endTime) {
+      return res.status(400).json({ ok: false, error: '请填写辅导开始时间与结束时间' });
+    }
+    const durationMin = minutesBetween(startTime, endTime);
+    if (durationMin == null) {
+      return res.status(400).json({ ok: false, error: '结束时间须晚于开始时间（时间格式 HH:MM）' });
+    }
+    if (durationMin > MAX_ONCE_MINUTES) {
+      return res.status(400).json({ ok: false, error: `单次辅导时长 ${durationMin} 分钟超出上限（${MAX_ONCE_MINUTES} 分钟），请核对起止时间` });
+    }
+    // 起止时间已存于 fd（start_time/end_time），时长作为中间量只用于折算次数，不重复固化。
     unitCount = durationToUnits(durationMin, onceDurationMinutes());
   } else if (task.pay_mode === '正课折算') {
     // 心理课：每次固定 1 课时

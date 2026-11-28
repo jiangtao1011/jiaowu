@@ -11,7 +11,7 @@ const STATUS_CLS = { pending: 'warn', approved: 'ok', rejected: '', withdrawn: '
 // 手机端课程填报页（分享链接 /course/:token 打开，需登录）。
 // 按课程的计酬方式渲染三个固定场景：
 //   - 正课折算（心理课）：时间、班级、节次 → 每次固定 1 课时
-//   - 按次计酬（一对一）：辅导时间、时长(分钟)、学生姓名、上传辅导资料 → 节数=⌈时长/90⌉
+//   - 按次计酬（一对一）：辅导起止时间（自动算时长）、学生姓名、上传辅导资料 → 节数=时长÷一次时长
 //   - 固定折算（竞赛课）：辅导时间、学生姓名、上课内容 → 老师自填课时数
 export default function CourseApply() {
   const { token } = useParams();
@@ -34,7 +34,8 @@ export default function CourseApply() {
   const [subject, setSubject] = useState('');          // 正课折算学科（任务未预设时选）
   const [classes, setClasses] = useState([]);
   // 一对一（按次计酬）
-  const [duration, setDuration] = useState('');        // 时长（分钟）
+  const [startTime, setStartTime] = useState('');     // 开始时间（HH:MM）
+  const [endTime, setEndTime] = useState('');         // 结束时间（HH:MM）
   const [files, setFiles] = useState([]);              // 辅导资料附件
   const signatureRef = useRef(null);                   // 手写签名画板 ref
   // 固定折算（监考/竞赛等）
@@ -93,6 +94,21 @@ export default function CourseApply() {
 
   const setVal = (key, v) => setValues((prev) => ({ ...prev, [key]: v }));
 
+  // 解析「HH:MM」为分钟数；无效返回 null
+  const timeToMinutes = (t) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(t).trim());
+    if (!m) return null;
+    const h = Number(m[1]), min = Number(m[2]);
+    if (h > 23 || min > 59) return null;
+    return h * 60 + min;
+  };
+  // 起止时间 → 时长分钟；结束须晚于开始，否则 null
+  const minutesBetween = (s, e) => {
+    const sm = timeToMinutes(s), em = timeToMinutes(e);
+    if (sm == null || em == null) return null;
+    return em > sm ? em - sm : null;
+  };
+
   const submit = async () => {
     if (!date) return toast.error('请选择上课日期');
     const fd = new FormData();
@@ -106,10 +122,12 @@ export default function CourseApply() {
       fd.append('period_no', periodNo);
       if (!course.subject) fd.append('form_data', JSON.stringify({ subject }));
     } else if (isOneToOne) {
-      if (!duration || Number(duration) <= 0) return toast.error('请填写辅导时长（分钟）');
+      if (!startTime || !endTime) return toast.error('请填写辅导开始时间与结束时间');
+      const durMin = minutesBetween(startTime, endTime);
+      if (durMin == null) return toast.error('结束时间须晚于开始时间');
       if (!studentName.trim()) return toast.error('请填写学生姓名');
       if (signatureRef.current?.isEmpty()) return toast.error('请让学生/家长签名');
-      fd.append('form_data', JSON.stringify({ duration: Number(duration), student_name: studentName.trim() }));
+      fd.append('form_data', JSON.stringify({ start_time: startTime, end_time: endTime, student_name: studentName.trim() }));
       for (const f of files) fd.append('attachments', f);
       // 签名转 PNG blob，作为附件提交（复用现有附件链路）
       const sigBlob = await new Promise((resolve, reject) => {
@@ -141,7 +159,7 @@ export default function CourseApply() {
     try {
       await api.post(`/applications/tasks/${course.id}/apply`, fd);
       toast.success('申报已提交，待教务主任审核');
-      setStudentName(''); setValues({}); setClassId(''); setPeriodNo(''); setSubject(''); setDuration(''); setFiles([]); setPeriodCount(1); setCharging(false); setStudents('');
+      setStudentName(''); setValues({}); setClassId(''); setPeriodNo(''); setSubject(''); setStartTime(''); setEndTime(''); setFiles([]); setPeriodCount(1); setCharging(false); setStudents('');
       signatureRef.current?.clear();
       loadMyRecords();
     } catch (e) { toast.error(errMsg(e)); }
@@ -150,12 +168,12 @@ export default function CourseApply() {
   if (loading) return <div className="mapply"><div className="mapply-loading">加载中…</div></div>;
   if (error && !course) return <div className="mapply"><div className="alert error">{error}</div></div>;
 
-  // 一对一：按比例估算次数（时长 ÷ 一次时长，保留 1 位小数）
+  // 一对一：按起止时间计算时长（分钟），再按比例估算次数（时长 ÷ 一次时长，保留 1 位小数）
+  const durationMin = startTime && endTime ? minutesBetween(startTime, endTime) : null;
   const estCount = (() => {
-    const d = Number(duration);
-    if (!Number.isFinite(d) || d <= 0) return null;
+    if (durationMin == null) return null;
     const p = Number.isFinite(onceDuration) && onceDuration > 0 ? onceDuration : 90;
-    return Math.round((d / p) * 10) / 10;
+    return Math.round((durationMin / p) * 10) / 10;
   })();
 
   return (
@@ -217,10 +235,20 @@ export default function CourseApply() {
           {isOneToOne && (
             <>
               <div className="mapply-field">
-                <label>辅导时长（分钟）*</label>
-                <input type="number" min="1" value={duration} onChange={(e) => setDuration(e.target.value)} placeholder="如 90" />
-                {estCount != null && <p className="mapply-form-hint">按 1 次 = {onceDuration} 分钟，本次计 {estCount} 次</p>}
+                <label>开始时间 *</label>
+                <input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
               </div>
+              <div className="mapply-field">
+                <label>结束时间 *</label>
+                <input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+              </div>
+              <p className="mapply-form-hint">
+                {durationMin != null && endTime && durationMin > 0
+                  ? `本次时长 ${durationMin} 分钟，按 1 次 = ${onceDuration} 分钟，计 ${estCount} 次`
+                  : endTime && durationMin == null
+                    ? '结束时间须晚于开始时间'
+                    : '请填写辅导起止时间，时长与次数将自动计算'}
+              </p>
               <div className="mapply-field">
                 <label>辅导学生姓名 *</label>
                 <input value={studentName} onChange={(e) => setStudentName(e.target.value)} placeholder="如 张三" />
