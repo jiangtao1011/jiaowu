@@ -30,6 +30,9 @@ const ABBR = {
 };
 const abbr = (s) => (s && ABBR[s]) || s;
 
+// 常用科目（补录课程快捷选择）
+const COMMON_SUBJECTS = ['语文', '数学', '英语', '物理', '化学', '生物', '政治', '历史', '地理', '日语', '技术', '通用', '信息', '体育', '音乐', '美术', '心理', '中医'];
+
 // 科目 → 颜色（缩略图色块用，柔和区分）
 const SUBJECT_COLORS = {
   语文: '#c0392b', 数学: '#3b5bdb', 英语: '#7a4fb0', 物理: '#167d6f', 化学: '#2e8b57',
@@ -320,6 +323,10 @@ export default function Schedules() {
   const [spDay, setSpDay] = useState('');       // 整节对调：星期
   const [spA, setSpA] = useState('');           // 整节对调：节次 A
   const [spB, setSpB] = useState('');           // 整节对调：节次 B
+  // 补录遗漏课程
+  const [showAddSingle, setShowAddSingle] = useState(false);
+  const [addForm, setAddForm] = useState({ class_id: '', teacher_id: '', subject: '', day_of_week: '', period_no: '', period_type: '正课', term: '常规', effective_from: '' });
+  const [addSaving, setAddSaving] = useState(false);
 
   const load = async () => {
     try {
@@ -382,6 +389,39 @@ export default function Schedules() {
     } catch (e) { setError(errMsg(e)); }
   };
   useEffect(() => { loadSchedules(); }, [classId, grade, term, asOf]);
+
+  // 补录课程：当前所选班级+星期+节次的常规时段冲突（仅提示）
+  const addConflicts = (() => {
+    const { class_id, day_of_week, period_no } = addForm;
+    if (!class_id || !day_of_week || !period_no) return [];
+    const dow = Number(day_of_week), pno = Number(period_no);
+    return rows.filter((r) => r.class_id === Number(class_id) && r.day_of_week === dow && r.period_no === pno && r.term === '常规' && r.effective_to == null);
+  })();
+
+  const submitAddSingle = async () => {
+    const f = addForm;
+    if (!f.class_id) return toast.error('请选择班级');
+    if (!f.teacher_id) return toast.error('请选择教师');
+    if (!f.subject.trim()) return toast.error('请填写科目');
+    if (!f.day_of_week) return toast.error('请选择星期');
+    if (!f.period_no || Number(f.period_no) < 1) return toast.error('请填写节次');
+    if (!f.effective_from) return toast.error('请填写生效日期');
+    setAddSaving(true);
+    try {
+      const r = await api.post('/schedules/add-single', {
+        class_id: Number(f.class_id), teacher_id: Number(f.teacher_id),
+        subject: f.subject.trim(), day_of_week: Number(f.day_of_week), period_no: Number(f.period_no),
+        period_type: f.period_type, term: f.term, effective_from: f.effective_from,
+      });
+      const conflicts = r.data.data?.conflicts || [];
+      const suffix = conflicts.length ? `（该节次已有 ${conflicts.map((c) => c.subject).join('、')}，请核对）` : '';
+      toast.success(`已补录课程${suffix}。请到「统计中心」重新生成该区间的上课记录，历史计酬才会更新`);
+      setShowAddSingle(false);
+      setAddForm({ class_id: '', teacher_id: '', subject: '', day_of_week: '', period_no: '', period_type: '正课', term: '常规', effective_from: '' });
+      loadSchedules();
+    } catch (e) { toast.error(errMsg(e)); }
+    setAddSaving(false);
+  };
 
   // 拉取版本切换点（时间轴），并自动定位到「当前最新」所在的最新版本
   const loadVersions = async () => {
@@ -929,6 +969,7 @@ export default function Schedules() {
         <h3 style={{ margin: 0 }}>课表</h3>
         <div className="toolbar" style={{ marginBottom: 0 }}>
           <button className="btn" onClick={() => setSwapPeriods(true)}>整节对调</button>
+          <button className="btn" onClick={() => setShowAddSingle(true)}>补录课程</button>
           <button className="btn" onClick={openPrintAllSchedules}>打印总课表</button>
           <button className="btn primary" onClick={() => setShowImport(true)}>导入课表</button>
         </div>
@@ -971,6 +1012,87 @@ export default function Schedules() {
             <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, marginBottom: 0 }}>
               <button className="btn" onClick={() => setSwapPeriods(false)}>取消</button>
               <button className="btn primary" onClick={confirmSwapPeriods}>确认对调</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAddSingle && (
+        <div className="modal-overlay" onClick={() => setShowAddSingle(false)}>
+          <div className="modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3>补录课程</h3>
+              <button className="btn ghost" onClick={() => setShowAddSingle(false)}>关闭</button>
+            </div>
+            <p className="muted" style={{ marginTop: 0 }}>
+              用于补回课表导入时遗漏的课程。填「生效日期」后，该课从该日期起长期生效；保存后请到「统计中心」重新生成上课记录，历史计酬才会更新。
+            </p>
+            <div className="form-grid">
+              <div className="form-row">
+                <label>班级 *</label>
+                <select value={addForm.class_id} onChange={(e) => setAddForm({ ...addForm, class_id: e.target.value })}>
+                  <option value="">选择班级</option>
+                  {classes
+                    .filter((c) => c.type === '行政班' || c.type === '分层' || (c.type === '走班' && (c.members || []).length > 0))
+                    .sort((a, b) => (String(a.grade || '').localeCompare(String(b.grade || ''), 'zh')) || String(a.name).localeCompare(String(b.name), 'zh', { numeric: true }))
+                    .map((c) => <option key={c.id} value={c.id}>{c.grade ? `${c.grade} · ` : ''}{c.name}{c.type !== '行政班' ? `（${c.type}）` : ''}</option>)}
+                </select>
+              </div>
+              <div className="form-row">
+                <label>教师 *</label>
+                <select value={addForm.teacher_id} onChange={(e) => setAddForm({ ...addForm, teacher_id: e.target.value })}>
+                  <option value="">选择教师</option>
+                  {teachers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              <div className="form-row">
+                <label>科目 *</label>
+                <input list="add-subject-list" value={addForm.subject} onChange={(e) => setAddForm({ ...addForm, subject: e.target.value })} placeholder="如 日语" />
+                <datalist id="add-subject-list">
+                  {COMMON_SUBJECTS.map((s) => <option key={s} value={s} />)}
+                </datalist>
+              </div>
+              <div className="form-row">
+                <label>星期 *</label>
+                <select value={addForm.day_of_week} onChange={(e) => setAddForm({ ...addForm, day_of_week: e.target.value })}>
+                  <option value="">选择星期</option>
+                  {DAYS.map((d, i) => <option key={i + 1} value={i + 1}>{d}</option>)}
+                </select>
+              </div>
+              <div className="form-row">
+                <label>节次 *</label>
+                <input type="number" min="1" step="1" value={addForm.period_no} onChange={(e) => setAddForm({ ...addForm, period_no: e.target.value })} placeholder="如 6" />
+              </div>
+              <div className="form-row">
+                <label>类型</label>
+                <select value={addForm.period_type} onChange={(e) => setAddForm({ ...addForm, period_type: e.target.value })}>
+                  <option value="正课">正课</option>
+                  <option value="早自习">早自习</option>
+                  <option value="晚自习">晚自习</option>
+                  <option value="答疑">答疑</option>
+                </select>
+              </div>
+              <div className="form-row">
+                <label>时段</label>
+                <select value={addForm.term} onChange={(e) => setAddForm({ ...addForm, term: e.target.value })}>
+                  {TERMS.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div className="form-row">
+                <label>生效日期 *</label>
+                <input type="date" value={addForm.effective_from} onChange={(e) => setAddForm({ ...addForm, effective_from: e.target.value })} title="从该日期起长期生效" />
+              </div>
+            </div>
+
+            {addConflicts.length > 0 && (
+              <div className="alert warn" style={{ marginTop: 12 }}>
+                该班该节次（常规时段）已有课：{addConflicts.map((c) => `${c.subject}${c.teacher_name ? `（${c.teacher_name}）` : ''}`).join('、')}。仍可保存，请人工确认是否共置。
+              </div>
+            )}
+
+            <div className="toolbar" style={{ justifyContent: 'flex-end', marginTop: 16, marginBottom: 0 }}>
+              <button className="btn" onClick={() => setShowAddSingle(false)}>取消</button>
+              <button className="btn primary" onClick={submitAddSingle} disabled={addSaving}>{addSaving ? '保存中…' : '保存'}</button>
             </div>
           </div>
         </div>

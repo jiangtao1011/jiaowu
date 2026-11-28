@@ -293,7 +293,7 @@ function buildScheduleRecord(row, ctx) {
 }
 
 function persistSchedule(record, opts) {
-  db.prepare(`
+  return db.prepare(`
     INSERT INTO schedules (class_id, teacher_id, subject, day_of_week, period_no, period_type, term, effective_from, effective_to, makeup_set)
     VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(record.class_id, record.teacher_id, record.subject, record.day_of_week, record.period_no, record.period_type, record.term, opts.effectiveFrom, opts.effectiveTo, opts.makeupSet);
@@ -482,6 +482,52 @@ router.post('/import', roleRequired(...CLERK_ROLES), upload.single('file'), (req
 
   logAudit(req.user.id, 'import_schedules', 'schedules', `导入课表 ${inserted} 条${opts.scope === 'append' ? '（追加）' : `（${opts.effectiveFrom} 起生效，范围 ${opts.scope}）`}`);
   return res.json({ ok: true, data: { inserted, errors, effective_from: opts.effectiveFrom, effective_to: opts.effectiveTo, scope: opts.scope } });
+});
+
+// 单条补录遗漏课程：直接新增一条带 effective_from 的课表记录（长期生效）。
+// 用于「某门课从开学起遗漏，需补回课表」。不自动重算上课记录，由用户在统计中心重新生成。
+// 节次冲突仅提示不拦截（走班/分层本就共存，行政班也允许人工确认后保存）。
+router.post('/add-single', roleRequired(...CLERK_ROLES), (req, res) => {
+  const { class_id, teacher_id, subject, day_of_week, period_no, period_type, term, effective_from } = req.body || {};
+  const classId = Number(class_id);
+  const teacherId = Number(teacher_id);
+  const dow = Number(day_of_week);
+  const pno = Number(period_no);
+  const effFrom = effective_from ? String(effective_from).trim() : '';
+
+  if (!Number.isInteger(classId) || classId <= 0) return res.status(400).json({ ok: false, error: '请选择班级' });
+  if (!Number.isInteger(teacherId) || teacherId <= 0) return res.status(400).json({ ok: false, error: '请选择教师' });
+  if (!Number.isInteger(dow) || dow < 1 || dow > 7) return res.status(400).json({ ok: false, error: '星期应为 1-7' });
+  if (!Number.isInteger(pno) || pno < 1) return res.status(400).json({ ok: false, error: '节次应为正整数' });
+  if (!effFrom || !/^\d{4}-\d{2}-\d{2}$/.test(effFrom)) return res.status(400).json({ ok: false, error: '请填写生效日期（格式 YYYY-MM-DD）' });
+
+  const cls = db.prepare('SELECT id, name, type FROM classes WHERE id = ?').get(classId);
+  const teacher = db.prepare('SELECT id, name FROM teachers WHERE id = ?').get(teacherId);
+  if (!cls) return res.status(400).json({ ok: false, error: '班级不存在' });
+  if (!teacher) return res.status(400).json({ ok: false, error: '教师不存在' });
+  // 拒绝「无成员的空走班」：这类走班没关联任何行政班，课表视图里看不到、也无法拖拽/代课/停课。
+  // 补录课应挂行政班，或挂已配置成员的走班（成员≥1）。
+  if (cls.type === '走班') {
+    const memberCount = db.prepare('SELECT COUNT(*) AS n FROM class_members WHERE class_id = ?').get(classId).n;
+    if (!memberCount) return res.status(400).json({ ok: false, error: `「${cls.name}」是未关联任何行政班的走班，补录课程请选择行政班（或先在班级管理中给该走班配置成员）` });
+  }
+
+  const finalType = PERIOD_TYPES.includes(period_type) ? period_type : '正课';
+  const finalTerm = TERMS.includes(term) ? term : '常规';
+
+  // 冲突提示：该班该星期该节次当前仍生效的常规时段课程（不拦截）
+  const conflicts = db.prepare(`
+    SELECT s.subject, t.name AS teacher_name
+    FROM schedules s LEFT JOIN teachers t ON t.id = s.teacher_id
+    WHERE s.class_id = ? AND s.day_of_week = ? AND s.period_no = ?
+      AND s.term = '常规' AND s.effective_to IS NULL
+    ORDER BY s.subject`).all(classId, dow, pno);
+
+  const record = { class_id: classId, teacher_id: teacherId, subject: subject || null, day_of_week: dow, period_no: pno, period_type: finalType, term: finalTerm };
+  const info = persistSchedule(record, { effectiveFrom: effFrom, effectiveTo: null, makeupSet: null });
+
+  logAudit(req.user.id, 'add_single_schedule', `schedules:${info.lastInsertRowid}`, `补录课程 ${cls.name} ${subject || ''} ${effFrom} 起`);
+  return res.json({ ok: true, data: { id: Number(info.lastInsertRowid), conflicts } });
 });
 
 // 删除补课课表（仅管理员）。按套号 + 可选年级删除整套「节假补课」课表。
