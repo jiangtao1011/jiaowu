@@ -234,6 +234,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--text-soft); }
 .btn.ghost:hover { background: var(--bg); }
 .btn.sm { padding: 5px 11px; font-size: 12.5px; }
+.btn.xs { padding: 3px 8px; font-size: 12px; border-radius: 6px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
@@ -2145,3 +2146,33 @@ a.kpi-link:hover .kpi-card { box-shadow: var(--shadow-lg); transform: translateY
 .month-fold-row td { padding: 8px 12px; font-size: 14px; }
 .month-fold-arrow { display: inline-block; margin-right: 6px; transition: transform .15s; color: var(--muted, #888); }
 .month-fold-arrow.open { transform: rotate(90deg); }
+
+/* ============ 审核列表：待处理按日期分组 + 勾选批量 ============ */
+.review-batchbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; margin-bottom: 12px;
+  background: var(--primary-050, #f0f7f5); border: 1px solid var(--primary-100, #d6ebe6);
+  border-radius: 8px; position: sticky; top: 0; z-index: 20;
+}
+.review-batchbar-count { font-size: 13px; font-weight: 600; color: var(--primary-900, #0a3f38); }
+.date-group-row td { padding: 0; border-bottom: none; background: var(--bg, #f5f6f8); }
+.date-group-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid var(--border, #e6e8ec);
+}
+.date-group-fold {
+  border: none; background: transparent; cursor: pointer; padding: 2px 4px;
+  font-size: 14px; color: var(--muted, #888); transition: transform .15s;
+}
+.date-group-fold.open { transform: rotate(90deg); }
+.date-group-label { font-size: 14px; font-weight: 600; color: var(--text, #1f2937); }
+.date-group-meta { font-size: 12px; color: var(--muted, #6b7280); }
+.type-group-row td { padding: 0; border-bottom: none; background: var(--bg-soft, #f8fafc); }
+.type-group-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 12px; padding-left: 32px; border-bottom: 1px solid var(--border, #e6e8ec);
+}
+.type-group-head .period-tag { margin-right: 2px; }
+tr.row-selected td { background: var(--primary-050, #f0f7f5); }
+label.check { display: inline-flex; align-items: center; margin: 0; cursor: pointer; }
+label.check input { width: auto; margin: 0; cursor: pointer; }

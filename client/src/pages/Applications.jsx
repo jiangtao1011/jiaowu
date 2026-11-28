@@ -35,6 +35,9 @@ export default function Applications() {
   const [qnaPreview, setQnaPreview] = useState(null); // 导入预览 { token, rows, summary }
   // 申报列表筛选
   const [qnaFilter, setQnaFilter] = useState({ status: '', period_type: '', grade: '', date: '' });
+  // 待处理勾选（批量审核）：选中的申报 id 集合；分组折叠态：已展开的日期组
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [expandedDates, setExpandedDates] = useState(() => new Set());
 
   // 申报状态
   const [tasks, setTasks] = useState([]);
@@ -193,6 +196,26 @@ export default function Applications() {
   const monthOf = (q) => (q.date ? String(q.date).slice(0, 7) : '未定日期');
   const toggleMonth = (m) => setExpandedMonths((s) => { const n = new Set(s); n.has(m) ? n.delete(m) : n.add(m); return n; });
 
+  // 日期分组 key：YYYY-MM-DD（待处理按日期分组；无 date 归「未定日期」）
+  const dateOf = (q) => (q.date ? String(q.date).slice(0, 10) : '未定日期');
+  // 日期显示标签：今天 / 明天 / 昨天 / 星期X / 直接日期
+  const dateLabel = (d) => {
+    if (d === '未定日期') return '未定日期';
+    const today = new Date();
+    const p = (n) => String(n).padStart(2, '0');
+    const todayStr = `${today.getFullYear()}-${p(today.getMonth() + 1)}-${p(today.getDate())}`;
+    const dt = new Date(`${d}T00:00:00`);
+    const diff = Math.round((dt - new Date(`${todayStr}T00:00:00`)) / 86400000);
+    const wd = '日一二三四五六'[dt.getDay()];
+    if (diff === 0) return '今天';
+    if (diff === 1) return '明天';
+    if (diff === -1) return '昨天';
+    return `${d.slice(5).replace('-', '/')} 周${wd}`;
+  };
+
+  // 当前角色是否可审核某条记录（年级组长一审 pending；管理员终审 pending + grade_approved）
+  const canReviewTarget = (q) => (isGradeLeader && !isAdmin) ? q.status === 'pending' : (q.status === 'pending' || q.status === 'grade_approved');
+
   // 一键审核：批量通过当前列表中所有待本角色处理的记录
   const reviewAllQna = async () => {
     // 年级组长一审 pending；管理员终审 pending + grade_approved
@@ -204,6 +227,47 @@ export default function Applications() {
       try { await api.patch(`/applications/${q.id}/review`, { approved: true }); ok++; } catch { /* 单条失败继续 */ }
     }
     toast.success(`一键审核完成：通过 ${ok}/${targets.length} 条`);
+    loadQna();
+  };
+
+  // 勾选切换 / 全选某个待处理分组
+  const toggleSelect = (id) => setSelectedIds((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelectAll = (ids) => setSelectedIds((s) => {
+    const n = new Set(s);
+    const all = ids.every((id) => n.has(id));
+    ids.forEach((id) => (all ? n.delete(id) : n.add(id)));
+    return n;
+  });
+  // 清空勾选（切换列表/筛选后自动失效）
+  const clearSelection = () => setSelectedIds(new Set());
+  const toggleDateGroup = (d) => setExpandedDates((s) => { const n = new Set(s); n.has(d) ? n.delete(d) : n.add(d); return n; });
+
+  // 批量审核选中的记录（通过/驳回）
+  const reviewSelectedQna = async (approved) => {
+    const targets = qnaList.filter((q) => selectedIds.has(q.id));
+    if (!targets.length) return toast.warn('请先勾选要审核的记录');
+    const verb = approved ? '通过' : '驳回';
+    if (!(await toast.confirm(`确定${verb}选中的 ${targets.length} 条申报？`, { danger: true }))) return;
+    let ok = 0;
+    for (const q of targets) {
+      try { await api.patch(`/applications/${q.id}/review`, { approved }); ok++; } catch { /* 单条失败继续 */ }
+    }
+    toast.success(`批量${verb}完成：${ok}/${targets.length} 条`);
+    setSelectedIds(new Set());
+    loadQna();
+  };
+
+  // 分组一键审核：通过/驳回某日期组（或某日期×类型）下全部可操作记录
+  const reviewGroupQna = async (items, approved) => {
+    const targets = items.filter((q) => (isGradeLeader && !isAdmin) ? q.status === 'pending' : (q.status === 'pending' || q.status === 'grade_approved'));
+    if (!targets.length) return toast.warn('该组没有待审核记录');
+    const verb = approved ? '通过' : '驳回';
+    if (!(await toast.confirm(`确定${verb}该组 ${targets.length} 条申报？`, { danger: true }))) return;
+    let ok = 0;
+    for (const q of targets) {
+      try { await api.patch(`/applications/${q.id}/review`, { approved }); ok++; } catch { /* 单条失败继续 */ }
+    }
+    toast.success(`分组${verb}完成：${ok}/${targets.length} 条`);
     loadQna();
   };
 
@@ -611,11 +675,20 @@ export default function Applications() {
           <div className="card">
             <div className="card-head">
               <div className="toolbar" style={{ marginBottom: 0 }}>
-                <button className={`btn sm ${listMode === 'pending' ? 'primary' : ''}`} onClick={() => { setListMode('pending'); loadQna({ status: '', period_type: '', grade: '', date: '' }); }}>待处理</button>
-                <button className={`btn sm ${listMode === 'history' ? 'primary' : ''}`} onClick={() => { setListMode('history'); loadQna({ status: '', period_type: '', grade: '', date: '' }); }}>历史记录</button>
+                <button className={`btn sm ${listMode === 'pending' ? 'primary' : ''}`} onClick={() => { setListMode('pending'); clearSelection(); loadQna({ status: '', period_type: '', grade: '', date: '' }); }}>待处理</button>
+                <button className={`btn sm ${listMode === 'history' ? 'primary' : ''}`} onClick={() => { setListMode('history'); clearSelection(); loadQna({ status: '', period_type: '', grade: '', date: '' }); }}>历史记录</button>
                 {listMode === 'pending' && <button className="btn sm primary" onClick={reviewAllQna}>一键审核</button>}
               </div>
             </div>
+            {listMode === 'pending' && selectedIds.size > 0 && (
+              <div className="review-batchbar">
+                <span className="review-batchbar-count">已选 {selectedIds.size} 条</span>
+                <span className="spacer" />
+                <button className="btn sm primary" onClick={() => reviewSelectedQna(true)}>批量通过</button>
+                <button className="btn sm danger" onClick={() => reviewSelectedQna(false)}>批量驳回</button>
+                <button className="btn sm ghost" onClick={clearSelection}>取消选择</button>
+              </div>
+            )}
             <div className="toolbar">
               <select value={qnaFilter.status} onChange={(e) => setQnaFilter({ ...qnaFilter, status: e.target.value })} style={{ width: 120 }}>
                 <option value="">全部状态</option>
@@ -637,7 +710,7 @@ export default function Applications() {
               <span className="hint">共 {qnaList.length} 条</span>
             </div>
             <table>
-              <thead><tr><th>年级</th><th>学科</th><th>类型</th><th>教师</th><th>班级</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
+              <thead><tr>{listMode === 'pending' && <th style={{ width: 36 }}></th>}<th>年级</th><th>学科</th><th>类型</th><th>教师</th><th>班级</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>
                 {(() => {
                   const visible = qnaList.filter((q) => {
@@ -646,7 +719,12 @@ export default function Applications() {
                   });
                   // 行渲染
                   const renderRow = (q) => (
-                    <tr key={q.id}>
+                    <tr key={q.id} className={selectedIds.has(q.id) ? 'row-selected' : ''}>
+                      {listMode === 'pending' && (
+                        <td onClick={(e) => e.stopPropagation()}>
+                          <label className="check"><input type="checkbox" checked={selectedIds.has(q.id)} onChange={() => toggleSelect(q.id)} /></label>
+                        </td>
+                      )}
                       <td>{q.grade}</td><td>{q.subject}</td><td><span className={`period-tag period-${q.period_type}`}>{q.period_type}</span></td><td>{q.teacher_name || '-'}</td><td>{q.class_name || '-'}</td>
                       <td>{q.date ? `${q.date} ${q.period_count ? `×${q.period_count}节` : ''}` : (q.day_of_week ? `周${q.day_of_week} 第${q.period_no}节` : '-')}</td>
                       <td><span className={`badge ${STATUS_CLS[q.status]}`}>{STATUS[q.status]}</span>
@@ -682,10 +760,56 @@ export default function Applications() {
                     </tr>
                   );
                   if (visible.length === 0) {
-                    return <tr><td colSpan={8} className="muted">{listMode === 'pending' ? '暂无待处理申报' : '暂无历史记录'}</td></tr>;
+                    return <tr><td colSpan={listMode === 'pending' ? 9 : 8} className="muted">{listMode === 'pending' ? '暂无待处理申报' : '暂无历史记录'}</td></tr>;
                   }
-                  // 待处理：平铺
-                  if (listMode === 'pending') return visible.map(renderRow);
+                  // 待处理：按日期分组（组内按类型分组 + 勾选全选/组一键审核）
+                  if (listMode === 'pending') {
+                    const dates = [...new Set(visible.map(dateOf))].sort((a, b) => (a === '未定日期' ? 1 : b === '未定日期' ? -1 : (a < b ? -1 : 1)));
+                    return dates.flatMap((d) => {
+                      const dayItems = visible.filter((q) => dateOf(q) === d);
+                      // 日内按类型分组
+                      const typeOrder = [...new Set(dayItems.map((q) => q.period_type))].sort((a, b) => a.localeCompare(b, 'zh'));
+                      const open = expandedDates.has(d);
+                      const dayReviewable = dayItems.filter(canReviewTarget);
+                      const dayHeader = (
+                        <tr key={`d-${d}`} className="date-group-row">
+                          <td colSpan={9}>
+                            <div className="date-group-head">
+                              <button className={`date-group-fold ${open ? 'open' : ''}`} onClick={() => toggleDateGroup(d)}>▸</button>
+                              <strong className="date-group-label">{dateLabel(d)}</strong>
+                              <span className="date-group-meta">{dayItems.length} 条 · {dayReviewable.length} 待审</span>
+                              <span className="spacer" />
+                              <button className="btn xs ghost" onClick={() => { const ids = dayReviewable.map((x) => x.id); if (!ids.length) return toast.warn('该日没有待审核记录'); toggleSelectAll(ids); }}>{dayReviewable.every((x) => selectedIds.has(x.id)) && dayReviewable.length ? '取消全选' : '全选'}</button>
+                              <button className="btn xs primary" onClick={() => reviewGroupQna(dayItems, true)}>整日通过</button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                      if (!open) return [dayHeader];
+                      // 类型小节
+                      const typeBlocks = typeOrder.map((tp) => {
+                        const tpItems = dayItems.filter((q) => q.period_type === tp).sort((a, b) => (a.teacher_name || '').localeCompare(b.teacher_name || '', 'zh'));
+                        const tpReviewable = tpItems.filter(canReviewTarget);
+                        return (
+                          <React.Fragment key={`d-${d}-t-${tp}`}>
+                            <tr className="type-group-row">
+                              <td colSpan={9}>
+                                <div className="type-group-head">
+                                  <span className={`period-tag period-${tp}`}>{tp}</span>
+                                  <span className="date-group-meta">{tpItems.length} 条</span>
+                                  <span className="spacer" />
+                                  <button className="btn xs ghost" onClick={() => { const ids = tpReviewable.map((x) => x.id); if (!ids.length) return toast.warn('该类型没有待审核记录'); toggleSelectAll(ids); }}>{tpReviewable.every((x) => selectedIds.has(x.id)) && tpReviewable.length ? '取消全选' : '全选'}</button>
+                                  <button className="btn xs primary" onClick={() => reviewGroupQna(tpItems, true)}>整组通过</button>
+                                </div>
+                              </td>
+                            </tr>
+                            {tpItems.map(renderRow)}
+                          </React.Fragment>
+                        );
+                      });
+                      return [dayHeader, ...typeBlocks];
+                    });
+                  }
                   // 历史记录：按月折叠
                   const months = [...new Set(visible.map(monthOf))].sort((a, b) => (a === '未定日期' ? 1 : b === '未定日期' ? -1 : (b < a ? 1 : -1)));
                   return months.flatMap((m) => {
